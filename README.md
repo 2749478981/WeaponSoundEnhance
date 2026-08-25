@@ -1,5 +1,9 @@
 # WeaponSoundEnhance
 
+<div align="center">
+  <img src="assets/icon.png" alt="WeaponSoundEnhance icon" width="256">
+</div>
+
 给《怪物猎人：世界 / 冰原》增加「武器派生攻击音效」的原生 DLL 插件。
 
 **独立插件**：不依赖任何 Lua 脚本引擎、不依赖游戏音频引擎，也不调用游戏托管音频函数。
