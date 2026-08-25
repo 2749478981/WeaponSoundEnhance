@@ -80,7 +80,7 @@ nativePC\plugins\
 
 使用步骤：
 1. 把整个 `nativePC\plugins\` 放进游戏根目录（或用**狩技 mod 盒子**把 zip 直接拖进去安装）。
-2. **需要怪猎前置**：请使用 Stracker's Loader（`dinput8.dll` / `loader.dll`）作为公认前置。
+2. **需要怪猎前置**：请使用 Stracker's Loader前置。
 3. 把你想要的音效（**必须是 wav 格式**，标准 PCM 16 位）放进 `sounds\`。
 4. 打开 `WeaponSoundEnhance.ini`，查看**每个派生动作对应的音效文件名**（`[AttackN]` 段的 `Sound=` 值），把你的 wav 改成同名文件即可；详细对应关系见 ini。
 5. 进游戏，拿对应武器做派生攻击即可触发。
