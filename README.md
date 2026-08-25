@@ -5,6 +5,17 @@
 **独立插件**：不依赖任何 Lua 脚本引擎、不依赖游戏音频引擎，也不调用游戏托管音频函数。
 它只需要一个公认的加载前置（如 **Stracker's Loader** / 狩技 mod 盒子）被注入即可运行。
 
+## 📥 下载 / Release
+
+[![GitHub release](https://img.shields.io/github/release/2749478981/WeaponSoundEnhance.svg?style=flat-square)](https://github.com/2749478981/WeaponSoundEnhance/releases)
+[![GitHub stars](https://img.shields.io/github/stars/2749478981/WeaponSoundEnhance.svg?style=flat-square)](https://github.com/2749478981/WeaponSoundEnhance)
+[![License](https://img.shields.io/github/license/2749478981/WeaponSoundEnhance.svg?style=flat-square)](LICENSE)
+
+- 最新发布：<https://github.com/2749478981/WeaponSoundEnhance/releases/latest>
+- 直接下载 zip：<https://github.com/2749478981/WeaponSoundEnhance/releases/latest/download/WeaponSoundEnhance_v1.0.zip>
+
+> zip 解压后为 `nativePC\plugins\` 结构（dll + ini + 空的 sounds\），拖进狩技 mod 盒子或放入游戏目录即可。
+
 ---
 
 ## ✨ 功能
