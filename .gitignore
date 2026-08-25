@@ -1,0 +1,30 @@
+# 构建产物
+/out/
+/build/
+build/
+*.obj
+*.o
+*.pdb
+*.ilk
+
+# Release 打包中间文件
+_release_stage/
+WeaponSoundEnhance_v*.zip
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+
+# CMake
+CMakeCache.txt
+cmake_install.cmake
+CMakeFiles/
+
+# 音效素材（播放器自带示例；实际音效由使用者放置）
+sounds/*.wav
+!sounds/.gitkeep
+
+# 其他
+*.log
+*.tmp
