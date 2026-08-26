@@ -1,0 +1,2 @@
+#define IDI_APP 100
+IDI_APP ICON DISCARDABLE "WeaponSoundEnhanceGUI.ico"

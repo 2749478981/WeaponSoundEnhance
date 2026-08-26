@@ -41,6 +41,7 @@
 #include <cstdlib>
 #include <algorithm>
 #include <memory>
+#include <mutex>
 #include <random>
 #include <string>
 #include <vector>
@@ -307,7 +308,8 @@ public:
     }
 
     // 播放：复制 PCM 并按 volume(0..1) 施加软件增益，然后异步用 waveOut 播出。
-    bool Play(const Wav& w, float volume)
+    // delayMs > 0 时，交由工作线程先延时再播放（不阻塞本线程/轮询线程）。
+    bool Play(const Wav& w, float volume, unsigned delayMs = 0)
     {
         if (!w.valid || w.data.empty()) { mLastHr = E_INVALIDARG; return false; }
         if (w.bitsPer != 16) { mLastHr = E_INVALIDARG; return false; }   // 仅支持16位PCM
@@ -323,6 +325,7 @@ public:
         ctx->channels = w.channels;
         ctx->rate = w.sampleRate;
         ctx->bits = w.bitsPer;
+        ctx->delayMs = delayMs;
 
         HANDLE th = ::CreateThread(nullptr, 0, &PlayWorker_Host, ctx, 0, nullptr);
         if (!th) { delete ctx; mLastHr = E_OUTOFMEMORY; return false; }
@@ -340,6 +343,7 @@ private:
         WORD  channels = 2;
         DWORD rate = 44100;
         WORD  bits = 16;
+        unsigned delayMs = 0;
     };
 
     static DWORD WINAPI PlayWorker_Host(LPVOID param)
@@ -352,6 +356,8 @@ private:
     static void PlayWorker(PlayCtx& ctx)
     {
         if (ctx.samples.empty()) return;
+        // 每条音效可设置播放延时（默认 0 = 立即），在开播前等 delayMs。
+        if (ctx.delayMs > 0) ::Sleep(ctx.delayMs);
         WAVEFORMATEX wfx = {};
         wfx.wFormatTag = WAVE_FORMAT_PCM;
         wfx.nChannels = ctx.channels;
@@ -452,11 +458,15 @@ struct AttackEntry
     std::int32_t actionLmt  = -1;
     std::int32_t fsmId      = -1;
     std::vector<std::string> sounds;
+    std::vector<int> delays;   // 每条音效的播放延时(ms)，与 sounds 一一对应；缺省/越界按 0 处理
+    std::vector<int> vols;     // 每条音效音量(0..100)，100 = 相对主音量无额外调整(默认)，与 sounds 一一对应
     // 每个动作条目独立地“是否已触发过”的锁存，防止同一次攻击重复触发。
     bool inMatch = false;
 };
 std::vector<AttackEntry> attacks;
 std::vector<std::pair<std::string, audio::Wav> > cache;
+// 缓存访问互斥锁：重载(清缓存) 与 播放线程(取缓存) 共用，防止重载导致悬空指针。
+std::mutex gCacheMutex;
 // 同一音效文件在最近 N 毫秒内不重复播放（防止同一次攻击经由不同条目触发两次）。
 std::vector<std::pair<std::string, std::uint64_t> > soundCooldown;
 const int kSoundCooldownMs = 400;
@@ -654,11 +664,45 @@ void OnIniValue(const std::string& section, const std::string& key, const std::s
             }
         }
     }
+    else if (key == "SoundDelay") {
+        // 与 Sound 对应的每音效延时(ms)，分号/逗号分隔；缺省 0
+        std::string cur;
+        for (std::size_t i = 0; i <= value.size(); ++i) {
+            char cc = (i < value.size()) ? value[i] : '\0';
+            if (cc == '\0' || cc == ';' || cc == ',') {
+                std::string tok = Trim(cur);
+                e.delays.push_back(tok.empty() ? 0 : std::atoi(tok.c_str()));
+                cur.clear();
+                if (cc == '\0') break;
+            } else {
+                cur += cc;
+            }
+        }
+    }
+    else if (key == "SoundVol") {
+        // 与 Sound 对应的每音效音量(0..100)，分号/逗号分隔；缺省 100 = 相对主音量无额外调整
+        std::string cur;
+        for (std::size_t i = 0; i <= value.size(); ++i) {
+            char cc = (i < value.size()) ? value[i] : '\0';
+            if (cc == '\0' || cc == ';' || cc == ',') {
+                std::string tok = Trim(cur);
+                e.vols.push_back(tok.empty() ? 100 : std::atoi(tok.c_str()));
+                cur.clear();
+                if (cc == '\0') break;
+            } else {
+                cur += cc;
+            }
+        }
+    }
 }
 
 void LoadConfig()
 {
     std::string txt;
+    // 重载时清音效内存缓存：下一次播放会从磁盘重新读取 wav（改 wav 立即生效，无需重开游戏）
+    { std::lock_guard<std::mutex> cLock(gCacheMutex); cache.clear(); }
+    Log("reload: sound cache cleared");
+
     if (!ReadFileUtf8(gIniPath, txt) || txt.empty()) {
         // 没有配置文件时用内置默认
         player::gRoot = gPlayerRoot;
@@ -742,7 +786,7 @@ inline bool HandleWseCommand(const std::string& rest, bool& used)
     } else if (rest == "one" || rest == "single") {
         gMoreSounds = 0; ShowMessage("wse extra sounds OFF (single)", true);
     } else if (rest == "help" || rest == "h") {
-        ShowMessage("/wse reload | on | off | more | one | vol N | vol+ | vol- | v");
+        ShowMessage("/wse reload(重载ini+音效) | on | off | more | one | vol N | vol+ | vol-");
     } else if (rest == "vol+" || rest == "up") {
         gVolumePct += 5; if (gVolumePct > 100) gVolumePct = 100;
         ApplyVolume();
@@ -866,6 +910,8 @@ const std::wstring AbsFor(const std::string& rel)
     return out;
 }
 
+// 注意：本函数不自带锁，调用方须在持有 gCacheMutex 的前提下调用/使用返回值
+// （触发路径已在外层加锁），以免重载清缓存时缓存被清空导致指针悬空。
 const audio::Wav* GetCached(const std::wstring& absPath)
 {
     std::string key = strconv::ToUtf8(absPath);
@@ -1000,20 +1046,39 @@ DWORD WINAPI WorkerProc(LPVOID)
                         continue;
                     }
 
-                    const audio::Wav* w = GetCached(abs);
-                    if (w) {
-                        bool ok = false;
-                        // 主路径：winmm waveOut 多缓冲 + 软件增益（并发+每音效独立音量）。
-                        ok = audio::g_audio.Play(*w, gVolumePct / 100.0f);
+                    bool ok = false, hasWav = false;
+                    unsigned wch = 0, wrate = 0, wbits = 0;
+                    std::size_t wsz = 0;
+                    {
+                        // 加锁取缓存，保证重载清缓存时本处指针不会被释放
+                        std::lock_guard<std::mutex> cLock(gCacheMutex);
+                        const audio::Wav* w = GetCached(abs);
+                        if (w) {
+                            hasWav = true;
+                            wch = w->channels; wrate = w->sampleRate;
+                            wbits = w->bitsPer; wsz = w->data.size();
+                            // 主路径：winmm waveOut 多缓冲 + 软件增益（并发+每音效独立音量）。
+                            // Play 把 PCM 拷贝到独立缓冲再播，锁内拷贝完成后即可解锁。
+                            unsigned dly = 0;
+                            if (idx < (int)e.delays.size() && e.delays[idx] > 0)
+                                dly = (unsigned)e.delays[idx];
+                            // 每音效音量(0..100,100=无额外调整)：实际增益 = 主音量 × 该音效倍率
+                            float perVol = 100.0f;
+                            if (idx < (int)e.vols.size() && e.vols[idx] >= 0 && e.vols[idx] <= 100)
+                                perVol = (float)e.vols[idx];
+                            float volF = ((float)gVolumePct / 100.0f) * (perVol / 100.0f);
+                            ok = audio::g_audio.Play(*w, volF, dly);
+                        }
+                    }   // 释放锁，之后不再访问 w
+                    if (hasWav) {
                         if (ok) {
                             Log("PLAY: fsm=%d lmt=%d weapon=%d -> %s | fmt ch=%u rate=%u bits=%u bytes=%zu vol=%d",
                                 fsm, lmt, weapon, strconv::ToUtf8(abs).c_str(),
-                                w->channels, w->sampleRate, w->bitsPer, w->data.size(), (int)gVolumePct);
+                                wch, wrate, wbits, wsz, (int)gVolumePct);
                         } else {
                             // 兜底：PlaySound（单路，但一定能响）。
-                            Log("waveOut Play rejected: valid=%d bits=%u ch=%u rate=%u bytes=%zu hr=0x%08X",
-                                (int)w->valid, (unsigned)w->bitsPer, (unsigned)w->channels,
-                                (unsigned)w->sampleRate, w->data.size(), (unsigned)audio::g_audio.LastHr());
+                            Log("waveOut Play rejected: valid=1 bits=%u ch=%u rate=%u bytes=%zu hr=0x%08X",
+                                wbits, wch, wrate, wsz, (unsigned)audio::g_audio.LastHr());
                             ok = ::PlaySoundW(abs.c_str(), nullptr,
                                               SND_FILENAME | SND_ASYNC | SND_NODEFAULT) != FALSE;
                             Log(ok ? "PLAY(PlaySound-fallback): %s" : "PLAYFAIL: %s",
