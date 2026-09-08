@@ -30,6 +30,27 @@ std::string Trim(const std::string& s) {
     return s.substr(b, e - b);
 }
 
+// LMT 列表的显示文本；空列表 = -1（任意）
+std::string LmtText(const SoundEntry& e) {
+    if (e.lmt.empty()) return "-1";
+    std::string s;
+    for (size_t k = 0; k < e.lmt.size(); ++k) {
+        if (k) s += ",";
+        s += std::to_string(e.lmt[k]);
+    }
+    return s;
+}
+
+// 把 LMT 列表写入编辑框文本
+void FillLmtBuf(char* buf, size_t n, const std::vector<int>& lmt) {
+    std::string s;
+    for (size_t k = 0; k < lmt.size(); ++k) {
+        if (k) s += ",";
+        s += std::to_string(lmt[k]);
+    }
+    snprintf(buf, n, "%s", s.c_str());
+}
+
 std::string ExeDir() {
     wchar_t buf[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, buf, MAX_PATH);
@@ -274,8 +295,18 @@ std::string App::BaseDir() const {
 
 int App::CountFor(int w) const {
     int c = 0;
-    for (const auto& e : cfg.entries) if (e.weaponType == w) ++c;
+    for (const auto& e : cfg.entries) if (e.weaponType == w && EntryActive(e)) ++c;
     return c;
+}
+
+std::string App::ActiveCombo(int w) const {
+    auto it = cfg.active.find(w);
+    return (it != cfg.active.end()) ? it->second : std::string();
+}
+
+bool App::EntryActive(const SoundEntry& e) const {
+    if (e.weaponType < 0) return e.combo.empty();       // 任意武器：仅默认组合
+    return e.combo == ActiveCombo(e.weaponType);
 }
 
 void App::PollGame() {
@@ -364,22 +395,22 @@ void App::DrawToolbar() {
     ImGui::SameLine(0, 16);
     bool more = cfg.global.moreSounds != 0;
     if (ImGui::Checkbox("更多音效", &more)) { cfg.global.moreSounds = more ? 1 : 0; mDirty = true; }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("仅对无固定(F)音效的纯旧条目生效");
     ImGui::SameLine(0, 16);
     ImGui::AlignTextToFramePadding();
     ImGui::Text("音量");
     ImGui::SameLine();
     if (MacSlider("##vol", cfg.global.volume, 0, 100, 100 * dpiScale, "", dpiScale)) mDirty = true;
     ImGui::SameLine(0, 16);
-    ImGui::AlignTextToFramePadding();
-    ImGui::Text("播放");
-    ImGui::SameLine();
-    int pb = (cfg.global.playback == "playsound") ? 1 : 0;
-    const char* pbItems[] = { "dsound (并发)", "playsound (单路)" };
-    ImGui::SetNextItemWidth(140 * dpiScale);
-    if (ImGui::Combo("##play", &pb, pbItems, 2)) {
-        cfg.global.playback = pb ? "playsound" : "dsound";
-        mDirty = true;
-    }
+    bool dbg = cfg.global.debug != 0;
+    if (ImGui::Checkbox("调试日志", &dbg)) { cfg.global.debug = dbg ? 1 : 0; mDirty = true; }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("插件侧 Debug=1：把每次播放/心跳写入 WeaponSoundEnhance.log");
+    ImGui::SameLine(0, 16);
+    bool hk = cfg.global.hotkeysEnabled != 0;
+    if (ImGui::Checkbox("启用热键", &hk)) { cfg.global.hotkeysEnabled = hk ? 1 : 0; mDirty = true; }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("插件侧 Hotkeys=1：关闭后游戏内 Ctrl 组合热键全部失效（聊天框 /wse 指令不受影响）");
     ImGui::SameLine(0, 16);
     if (ImGui::Button("FSM 查询")) fsmWinOpen = !fsmWinOpen;
     ImGui::SameLine();
@@ -406,12 +437,70 @@ void App::DrawWeaponTree() {
         if (sel) ImGui::PopStyleColor(3);
         if (clicked) weaponFilter = filter;
     };
-    item("全部条目", -1, (int)cfg.entries.size());
+    int totalActive = 0;
+    for (const auto& e : cfg.entries) if (EntryActive(e)) ++totalActive;
+    item("全部条目", -1, totalActive);
     for (int w = 0; w <= 13; ++w)
         item(WeaponName(w), w, CountFor(w));
     int any = 0;
-    for (const auto& e : cfg.entries) if (e.weaponType < 0) ++any;
+    for (const auto& e : cfg.entries) if (e.weaponType < 0 && e.combo.empty()) ++any;
     if (any > 0) item("通用(任意)", -2, any);
+
+    // ---- 组合切换（仅对具体武器；不影响其它武器）----
+    if (weaponFilter >= 0 && weaponFilter <= 13) {
+        const int w = weaponFilter;
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::TextDisabled("组合(当前激活)");
+        std::vector<std::string> cbs;
+        cbs.push_back("");   // 默认
+        for (const auto& e : cfg.entries)
+            if (e.weaponType == w && !e.combo.empty()) {
+                bool has = false;
+                for (const auto& c : cbs) if (c == e.combo) { has = true; break; }
+                if (!has) cbs.push_back(e.combo);
+            }
+        int cur = 0;
+        for (size_t i = 0; i < cbs.size(); ++i) if (cbs[i] == ActiveCombo(w)) { cur = (int)i; break; }
+        ImGui::SetNextItemWidth(150 * dpiScale);
+        if (ImGui::BeginCombo("##combo", cbs[cur].empty() ? "默认" : cbs[cur].c_str())) {
+            for (size_t i = 0; i < cbs.size(); ++i) {
+                const char* lbl = cbs[i].empty() ? "默认" : cbs[i].c_str();
+                if (ImGui::Selectable(lbl, (int)i == cur)) {
+                    cfg.active[w] = cbs[i];
+                    mDirty = true;
+                }
+            }
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered() && cbs.size() > 1)
+            ImGui::SetTooltip("切换该武器的配置组合；其它武器的配置不受影响");
+
+        // 新增组合：复制当前激活组合的条目到一个新命名组合并切换过去
+        static char newCombo[64] = {};
+        ImGui::SetNextItemWidth(150 * dpiScale);
+        ImGui::InputTextWithHint("##ncombo", "新组合名", newCombo, sizeof(newCombo));
+        ImGui::SameLine();
+        if (ImGui::Button("新增组合")) {
+            std::string nm = Trim(newCombo);
+            if (!nm.empty()) {
+                // 复制当前激活条目（该武器）到新组合
+                bool has = false;
+                for (const auto& e : cfg.entries) if (e.weaponType == w && e.combo == nm) has = true;
+                if (!has) {
+                    std::vector<SoundEntry> copy;
+                    for (const auto& e : cfg.entries) if (e.weaponType == w && EntryActive(e)) { SoundEntry c = e; c.combo = nm; copy.push_back(c); }
+                    for (auto& c : copy) cfg.entries.push_back(std::move(c));
+                    cfg.active[w] = nm;
+                    newCombo[0] = 0;
+                    mDirty = true;
+                    status = "已新增组合并切换： " + nm;
+                } else {
+                    status = "组合已存在: " + nm;
+                }
+            }
+        }
+    }
 }
 
 void App::DrawCapturePanel() {
@@ -489,9 +578,10 @@ void App::DrawCapturePanel() {
                         // 已添加：打开匹配的既有条目进行修改
                         for (int k = 0; k < (int)cfg.entries.size(); ++k) {
                             const SoundEntry& e = cfg.entries[k];
-                            if (e.fsmId == h.fsm &&
+                            if (EntryActive(e) &&
+                                e.fsmId == h.fsm &&
                                 (e.weaponType < 0 || e.weaponType == h.weapon) &&
-                                (e.actionLmt < 0 || e.actionLmt == h.lmt)) {
+                                e.MatchesLmt(h.lmt)) {
                                 OpenEditorEdit(k);
                                 break;
                             }
@@ -541,19 +631,32 @@ void App::DrawEntries() {
         const SoundEntry& e = cfg.entries[i];
         if (weaponFilter == -2 && e.weaponType >= 0) continue;
         if (weaponFilter >= 0 && e.weaponType != weaponFilter) continue;
+        if (!EntryActive(e)) continue;   // 只显示当前激活组合的条目
         if (!q.empty()) {
             bool hit = false;
             std::string nm = e.name;
-            if (nm.empty()) nm = LookupFsmName(e.weaponType, e.fsmId, e.actionLmt);
+            if (nm.empty()) nm = LookupFsmName(e.weaponType, e.fsmId, e.LmtAny());
             std::string lower = nm, ql = q;
             for (auto& c : lower) if (c >= 'A' && c <= 'Z') c += 32;
             for (auto& c : ql) if (c >= 'A' && c <= 'Z') c += 32;
             if (lower.find(ql) != std::string::npos) hit = true;
+            if (!hit && !e.group.empty()) {
+                std::string gl = e.group;
+                for (auto& c : gl) if (c >= 'A' && c <= 'Z') c += 32;
+                if (gl.find(ql) != std::string::npos) hit = true;
+            }
             if (!hit && std::to_string(e.fsmId).find(q) != std::string::npos) hit = true;
-            if (!hit && std::to_string(e.actionLmt).find(q) != std::string::npos) hit = true;
+            if (!hit && LmtText(e).find(q) != std::string::npos) hit = true;
             if (!hit) {
-                for (const auto& s : e.sounds) {
-                    std::string sl = s;
+                for (const auto& s : e.def.specs) {
+                    std::string sl = s.path;
+                    for (auto& c : sl) if (c >= 'A' && c <= 'Z') c += 32;
+                    if (sl.find(ql) != std::string::npos) { hit = true; break; }
+                }
+            }
+            for (int gi = 0; gi < 4 && !hit; ++gi) {
+                for (const auto& s : e.gauge[gi].specs) {
+                    std::string sl = s.path;
                     for (auto& c : sl) if (c >= 'A' && c <= 'Z') c += 32;
                     if (sl.find(ql) != std::string::npos) { hit = true; break; }
                 }
@@ -572,7 +675,7 @@ void App::DrawEntries() {
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableSetupColumn("名称", ImGuiTableColumnFlags_WidthStretch, 0.0f, 0);
         ImGui::TableSetupColumn("武器", ImGuiTableColumnFlags_WidthFixed, 64 * dpiScale, 1);
-        ImGui::TableSetupColumn("ActionLMT", ImGuiTableColumnFlags_WidthFixed, 86 * dpiScale, 2);
+        ImGui::TableSetupColumn("LMT", ImGuiTableColumnFlags_WidthFixed, 108 * dpiScale, 2);
         ImGui::TableSetupColumn("FSMId", ImGuiTableColumnFlags_WidthFixed, 70 * dpiScale, 3);
         ImGui::TableSetupColumn("音效", ImGuiTableColumnFlags_WidthStretch, 0.0f, 4);
         ImGui::TableSetupColumn("操作", ImGuiTableColumnFlags_WidthFixed, 180 * dpiScale, 5);
@@ -584,7 +687,7 @@ void App::DrawEntries() {
 
             ImGui::TableSetColumnIndex(0);
             std::string nm = e.name;
-            if (nm.empty()) nm = LookupFsmName(e.weaponType, e.fsmId, e.actionLmt);
+            if (nm.empty()) nm = LookupFsmName(e.weaponType, e.fsmId, e.LmtAny());
             if (nm.empty()) nm = "条目";
             ImGui::Text("%s", nm.c_str());
 
@@ -592,17 +695,33 @@ void App::DrawEntries() {
             ImGui::TextColored(C_GREEN, "%s", WeaponName(e.weaponType));
 
             ImGui::TableSetColumnIndex(2);
-            ImGui::TextColored(C_ACCENT, "%d", e.actionLmt);
+            ImGui::TextColored(C_ACCENT, "%s", LmtText(e).c_str());
 
             ImGui::TableSetColumnIndex(3);
             ImGui::TextColored(C_ACCENT, "%d", e.fsmId);
 
             ImGui::TableSetColumnIndex(4);
-            for (size_t k = 0; k < e.sounds.size(); ++k) {
-                ImGui::TextColored(C_AMBER, "%s", e.sounds[k].c_str());
-                if (k + 1 < e.sounds.size()) ImGui::SameLine();
+            size_t total = e.def.specs.size();
+            for (int gi = 0; gi < 4; ++gi) total += e.gauge[gi].specs.size();
+            bool firstLine = true;
+            for (size_t k = 0; k < e.def.specs.size(); ++k) {
+                std::string label = e.def.specs[k].path + (e.def.specs[k].fixed ? " [F]" : "");
+                if (!firstLine) ImGui::SameLine();
+                ImGui::TextColored(C_AMBER, "%s", label.c_str());
+                firstLine = false;
             }
-            if (e.sounds.empty()) ImGui::TextDisabled("(无音效)");
+            std::string gaugeSummary;
+            if (e.weaponType == 3) {   // 刃时音效仅太刀
+                for (int gi = 0; gi < 4; ++gi) {
+                    if (e.gauge[gi].empty()) continue;
+                    if (!gaugeSummary.empty()) gaugeSummary += " ";
+                    gaugeSummary += std::string(GaugeUiName(gi)) + "时×" + std::to_string(e.gauge[gi].specs.size());
+                }
+            }
+            if (!gaugeSummary.empty()) {
+                ImGui::TextDisabled("[%s]", gaugeSummary.c_str());
+            }
+            if (total == 0) ImGui::TextDisabled("(无音效)");
 
             ImGui::TableSetColumnIndex(5);
             ImGui::PushID(row);
@@ -654,7 +773,8 @@ void App::OpenEditorNew(int weapon, int fsm, int lmt, const std::string& name) {
     editor.index = -1;
     editor.weaponType = weapon;
     editor.fsmId = fsm;
-    editor.actionLmt = lmt;
+    if (lmt >= 0) editor.lmt.push_back(lmt);
+    FillLmtBuf(editor.lmtBuf, sizeof(editor.lmtBuf), editor.lmt);
     snprintf(editor.name, sizeof(editor.name), "%s", name.c_str());
 }
 
@@ -668,58 +788,103 @@ void App::OpenEditorEdit(int index) {
     const SoundEntry& e = cfg.entries[index];
     editor.weaponType = e.weaponType;
     editor.fsmId = e.fsmId;
-    editor.actionLmt = e.actionLmt;
+    editor.lmt = e.lmt;
+    FillLmtBuf(editor.lmtBuf, sizeof(editor.lmtBuf), editor.lmt);
     snprintf(editor.name, sizeof(editor.name), "%s", e.name.c_str());
-    editor.sounds = e.sounds;
-    // 对齐延时/音量列表（延时缺省补 0，音量缺省补 -1=全局）
-    editor.delays = e.delays;
-    while (editor.delays.size() < editor.sounds.size()) editor.delays.push_back(0);
-    if (editor.delays.size() > editor.sounds.size()) editor.delays.resize(editor.sounds.size());
-    editor.vols = e.vols;
-    while (editor.vols.size() < editor.sounds.size()) editor.vols.push_back(100);
-    if (editor.vols.size() > editor.sounds.size()) editor.vols.resize(editor.sounds.size());
+    snprintf(editor.groupBuf, sizeof(editor.groupBuf), "%s", e.group.c_str());
+    editor.pool[0] = e.def.specs;
+    for (int i = 0; i < 4; ++i) editor.pool[i + 1] = e.gauge[i].specs;
 }
 
 void App::ApplyEditor() {
     SoundEntry e;
     e.weaponType = editor.weaponType;
-    e.actionLmt = editor.actionLmt;
     e.fsmId = editor.fsmId;
     e.name = Trim(editor.name);
-    e.sounds = editor.sounds;
-    e.delays = editor.delays;
-    e.vols = editor.vols;
-    // 对齐
-    while (e.delays.size() < e.sounds.size()) e.delays.push_back(0);
-    if (e.delays.size() > e.sounds.size()) e.delays.resize(e.sounds.size());
-    while (e.vols.size() < e.sounds.size()) e.vols.push_back(100);
-    if (e.vols.size() > e.sounds.size()) e.vols.resize(e.sounds.size());
+    e.group = Trim(editor.groupBuf);
+    // 组合归属：新条目加入当前武器的激活组合；编辑已有条目保持其原组合
+    e.combo = editor.isNew
+                  ? ((editor.weaponType >= 0) ? ActiveCombo(editor.weaponType) : std::string())
+                  : ((editor.index >= 0 && editor.index < (int)cfg.entries.size())
+                         ? cfg.entries[editor.index].combo
+                         : std::string());
+    // 解析 LMT 文本框：逗号/分号/空格分隔；-1 或空 = 不限
+    std::string s = Trim(editor.lmtBuf);
+    std::string cur;
+    for (size_t i = 0; i <= s.size(); ++i) {
+        char c = (i < s.size()) ? s[i] : '\0';
+        if (c == '\0' || c == ',' || c == ';' || c == ' ' || c == '\t') {
+            std::string t = Trim(cur);
+            if (!t.empty()) {
+                int v = std::atoi(t.c_str());
+                if (v != -1) {
+                    bool dup = false;
+                    for (int x : e.lmt) if (x == v) { dup = true; break; }
+                    if (!dup) e.lmt.push_back(v);
+                }
+            }
+            cur.clear();
+            if (c == '\0') break;
+        } else {
+            cur += c;
+        }
+    }
+    e.def.specs = editor.pool[0];
+    for (int i = 0; i < 4; ++i) e.gauge[i].specs = editor.pool[i + 1];
     if (editor.isNew) {
-        cfg.entries.push_back(e);
+        cfg.entries.push_back(std::move(e));
     } else if (editor.index >= 0 && editor.index < (int)cfg.entries.size()) {
-        cfg.entries[editor.index] = e;
+        cfg.entries[editor.index] = std::move(e);
     }
     mDirty = true;
     status = "已修改（记得保存）";
 }
 
-void App::DrawEditorModal() {
+void App::DrawEditorDetached() {
     if (!editor.open) return;
-    ImGui::SetNextWindowSize(ImVec2(600 * dpiScale, 0), ImGuiCond_Appearing);
-    // 让浮动编辑窗有边框+标题条，和主界面区分开
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
-    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.72f, 0.72f, 0.75f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_TitleBg, ImVec4(0.93f, 0.93f, 0.95f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.93f, 0.93f, 0.95f, 1.0f));
-    if (!ImGui::Begin("编辑条目", &editor.open, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::End();
-        ImGui::PopStyleVar();
-        ImGui::PopStyleColor(3);
-        return;
+    // 延迟添加/移除：在控件提交前先应用"上一帧请求"的变更，避免在 ImGui 提交
+    // 控件的同帧内扩容/收缩 pool（会弄脏 ImGui 状态/堆，导致 SameLine 等访问违例）。
+    static std::vector<std::pair<int, std::string>> pendingAdd;
+    static int pendingRmPool = -1, pendingRmIndex = -1;
+    if (pendingRmPool >= 0 && pendingRmPool < 5 &&
+        pendingRmIndex >= 0 && pendingRmIndex < (int)editor.pool[pendingRmPool].size()) {
+        editor.pool[pendingRmPool].erase(editor.pool[pendingRmPool].begin() + pendingRmIndex);
     }
+    pendingRmPool = pendingRmIndex = -1;
+    for (const auto& pa : pendingAdd) {
+        const int p = pa.first;
+        const std::string& s = pa.second;
+        if (p < 0 || p >= 5 || s.empty()) continue;
+        bool dup = false;
+        for (const auto& ex : editor.pool[p]) if (ex.path == s) { dup = true; break; }
+        if (!dup) {
+            editor.pool[p].push_back(SoundSpec());
+            editor.pool[p].back().path = s;
+        }
+    }
+    pendingAdd.clear();
+
+    // 独立编辑窗口（第二个原生窗口+独立 ImGui 上下文）。
+    // 用普通窗口（自带滚动）+ 内容直接绘制，避免复杂子区/横向滚动/嵌套 group
+    // 组合造成 ImGui 内部状态失衡而破坏堆。
+    ImGui::SetNextWindowPos(ImVec2(0, 0));
+    ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
+    ImGui::Begin("##edithost", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoResize |
+                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                 ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+    const float btnH = ImGui::GetTextLineHeightWithSpacing() +
+                       ImGui::GetStyle().FramePadding.y * 2.0f + 10.0f * dpiScale;
+    ImGui::BeginChild("##edit", ImVec2(0, -btnH), false);
 
     ImGui::SetNextItemWidth(420 * dpiScale);
     ImGui::InputText("名称", editor.name, sizeof(editor.name));
+    ImGui::SetNextItemWidth(340 * dpiScale);
+    ImGui::InputTextWithHint("动作组(可空)", "如：气刃4（同一招多帧填同组，只响一次）", editor.groupBuf, sizeof(editor.groupBuf));
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("动作组：把同一招的多个触发条目（判定帧、升刃前后的帧等）填相同组名，"
+                          "整招只响一次；刃色以首个触发瞬间为准，命中升刃不会重复播放。");
 
     static const char* wItems[] = {
         "任意 (-1)", "0 大剑", "1 片手", "2 双刀", "3 太刀", "4 大锤", "5 笛子",
@@ -732,78 +897,107 @@ void App::DrawEditorModal() {
     ImGui::Combo("武器", &wi, wItems, 15);
     editor.weaponType = wi - 1;
 
-    ImGui::SetNextItemWidth(200 * dpiScale);
+    ImGui::SetNextItemWidth(190 * dpiScale);
     ImGui::InputInt("FSMId (-1=不限)", &editor.fsmId, 1, 100);
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(200 * dpiScale);
-    ImGui::InputInt("ActionLMT (-1=不限)", &editor.actionLmt, 1, 100);
+    ImGui::SetNextItemWidth(280 * dpiScale);
+    ImGui::InputTextWithHint("##lmt", "LMT（逗号分隔；空/-1=不限）", editor.lmtBuf, sizeof(editor.lmtBuf));
 
     ImGui::Separator();
-    ImGui::Text("音效 (触发时随机抽一条播放)");
+    ImGui::TextDisabled("命中动作时：固定(F)音效全部播放 + 未固定中随机一条，同时叠播；");
+    const bool ls = (editor.weaponType == 3);
+    if (ls)
+        ImGui::TextDisabled("无刃时/白刃时/黄刃时/红刃时 未配置时，回退默认音效。");
+    else
+        ImGui::TextDisabled("刃时音效(无/白/黄/红)仅对太刀可用，当前武器只有默认音效。");
+    ImGui::Spacing();
 
-    // 对齐延时/音量列表，保证下标安全
-    while (editor.delays.size() < editor.sounds.size()) editor.delays.push_back(0);
-    if (editor.delays.size() > editor.sounds.size()) editor.delays.resize(editor.sounds.size());
-    while (editor.vols.size() < editor.sounds.size()) editor.vols.push_back(100);
-    if (editor.vols.size() > editor.sounds.size()) editor.vols.resize(editor.sounds.size());
+    static char newPath[5][512] = {};
+    for (int p = 0; p < 5; ++p) {
+        if (p > 0 && !ls) continue;   // 非太刀：不显示刃时池
+        std::vector<SoundSpec>& pool = editor.pool[p];
+        char head[160];
+        if (p == 0)
+            snprintf(head, sizeof(head), ls ? "默认音效(任意刃时)  %d 条" : "默认音效  %d 条",
+                     (int)pool.size());
+        else
+            snprintf(head, sizeof(head), "%s时(Sound:%s)  %d 条",
+                     GaugeUiName(p - 1), GaugeTagName(p - 1), (int)pool.size());
 
-    for (size_t i = 0; i < editor.sounds.size(); ++i) {
-        ImGui::PushID((int)i);
-        ImGui::BeginGroup();
-        // 第一行：路径 + 移除
-        ImGui::TextColored(C_AMBER, "%s", editor.sounds[i].c_str());
-        ImGui::SameLine(0, 10);
-        if (ImGui::Button("移除")) {
-            editor.sounds.erase(editor.sounds.begin() + i);
-            editor.delays.erase(editor.delays.begin() + i);
-            editor.vols.erase(editor.vols.begin() + i);
-            ImGui::EndGroup();
+        bool openByDefault = (p == 0) || !pool.empty();
+        if (ImGui::CollapsingHeader(head, openByDefault ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
+            ImGui::PushID(p);
+
+            for (size_t i = 0; i < pool.size(); ++i) {
+                ImGui::PushID((int)i);
+                SoundSpec& sp = pool[i];
+
+                ImGui::TextColored(C_AMBER, "%s", sp.path.c_str());
+                if (sp.fixed) { ImGui::SameLine(0, 4); ImGui::TextColored(C_RED, "F"); }
+                ImGui::SameLine(0, 10);
+                if (ImGui::Checkbox("固定##fx", &sp.fixed)) {}
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("固定：命中该动作时总是播放这条；同文件 400ms 内不重复");
+                ImGui::SameLine(0, 10);
+                if (ImGui::Button("移除")) {
+                    pendingRmPool = p;
+                    pendingRmIndex = (int)i;
+                    ImGui::PopID();
+                    break;
+                }
+
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextDisabled("延时");
+                ImGui::SameLine();
+                MacSlider("##delay", sp.delay, 0, 2000, 120 * dpiScale, " ms", dpiScale);
+                ImGui::SameLine(0, 12);
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextDisabled("音量");
+                ImGui::SameLine();
+                MacSlider("##vol", sp.vol, 0, 100, 90 * dpiScale, "", dpiScale);
+                ImGui::SameLine(0, 14);
+                if (ImGui::Button("试听")) PlaySoundPreview(sp.path, sp.vol, sp.delay);
+
+                ImGui::PopID();
+            }
+            if (pool.empty())
+                ImGui::TextDisabled(ls ? "(空：命中时无音效，未配置的刃时回退默认音效)"
+                                       : "(空：命中时无音效)");
+
+            char addId[32], b1[32], b2[32];
+            snprintf(addId, sizeof(addId), "##add%d", p);
+            snprintf(b1, sizeof(b1), "添加##p%d", p);
+            snprintf(b2, sizeof(b2), "浏览...##p%d", p);
+            ImGui::SetNextItemWidth(300 * dpiScale);
+            ImGui::InputTextWithHint(addId, "路径，如 sounds/xxx.wav", newPath[p], sizeof(newPath[p]));
+            ImGui::SameLine();
+            if (ImGui::Button(b1)) {
+                std::string s = Trim(newPath[p]);
+                if (!s.empty()) {
+                    pendingAdd.emplace_back(p, s);
+                    newPath[p][0] = 0;
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button(b2)) BrowseSounds(pool);
+            ImGui::SameLine();
+            ImGui::TextDisabled("(wav 放在 sounds\\ 下)");
             ImGui::PopID();
-            break;
         }
-        // 第二行：延时 + 音量 + 试听
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextDisabled("延时");
-        ImGui::SameLine();
-        MacSlider("##delay", editor.delays[i], 0, 2000, 130 * dpiScale, " ms", dpiScale);
-        ImGui::SameLine(0, 14);
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextDisabled("音量");
-        ImGui::SameLine();
-        if (MacSlider("##vol", editor.vols[i], 0, 100, 100 * dpiScale, "", dpiScale)) {}
-        ImGui::SameLine(0, 16);
-        if (ImGui::Button("试听")) PlaySoundPreview(editor.sounds[i], editor.vols[i], editor.delays[i]);
-        ImGui::EndGroup();
-        ImGui::Dummy(ImVec2(0, 2 * dpiScale));
-        ImGui::PopID();
     }
-    if (editor.sounds.empty()) ImGui::TextDisabled("(暂无音效，点下方添加)");
 
-    static char newSound[512] = {};
-    ImGui::SetNextItemWidth(280 * dpiScale);
-    ImGui::InputText("##newsound", newSound, sizeof(newSound));
-    ImGui::SameLine();
-    if (ImGui::Button("添加路径")) {
-        std::string s = Trim(newSound);
-        if (!s.empty()) { editor.sounds.push_back(s); editor.delays.push_back(0); editor.vols.push_back(100); newSound[0] = 0; }
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("浏览...")) BrowseSounds(editor.sounds);
-    ImGui::SameLine();
-    ImGui::TextDisabled("(wav 放在 sounds\\ 下)");
+    ImGui::EndChild();
 
     ImGui::Separator();
     if (PrimaryButton("确定")) {
         ApplyEditor();
-        editor.open = false;
+        editor.open = false;   // 主循环据此隐藏/关闭独立编辑窗口
     }
     ImGui::SameLine();
     if (ImGui::Button("取消", ImVec2(120 * dpiScale, 0))) {
         editor.open = false;
     }
-    ImGui::End();
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor(3);
+    ImGui::End();   // 宿主窗口（##edithost）
 }
 
 void App::DrawFsmWindow() {
@@ -875,7 +1069,7 @@ std::string App::OpenFileDialogIni() {
     return Utf8FromWide(buf);
 }
 
-int App::BrowseSounds(std::vector<std::string>& out) {
+int App::BrowseSounds(std::vector<SoundSpec>& out) {
     std::string sdir = BaseDir() + "sounds";
     std::wstring target = Utf8ToWide(sdir);
     CreateDirectoryW(target.c_str(), nullptr);
@@ -885,13 +1079,23 @@ int App::BrowseSounds(std::vector<std::string>& out) {
     wchar_t buf[16384] = {};
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = (HWND)hwnd;
+    // 以编辑窗口为对话框所有者：对话框在编辑窗口上居中，关闭后激活自动回到编辑窗口，
+    // 避免模态对话框结束后编辑窗口被主窗口遮挡（层级跑到主 GUI 后面）。
+    ofn.hwndOwner = (editHwnd && IsWindow((HWND)editHwnd)) ? (HWND)editHwnd : (HWND)hwnd;
     ofn.lpstrFilter = L"WAV 音效 (*.wav)\0*.wav\0所有文件 (*.*)\0*.*\0";
     ofn.lpstrFile = buf;
     ofn.nMaxFile = 16384;
     ofn.lpstrInitialDir = target.c_str();
     ofn.Flags = OFN_EXPLORER | OFN_ALLOWMULTISELECT | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-    if (!GetOpenFileNameW(&ofn)) return 0;
+    if (!GetOpenFileNameW(&ofn)) {
+        // 取消选择：同样把编辑窗口带回最前（对话框期间它可能被主窗口盖住）
+        if (editHwnd && IsWindow((HWND)editHwnd))
+            SetWindowPos((HWND)editHwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        return 0;
+    }
+    // 对话框正常返回：把编辑窗口带回 z-order 顶部
+    if (editHwnd && IsWindow((HWND)editHwnd))
+        SetWindowPos((HWND)editHwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 
     std::vector<std::wstring> files;
     wchar_t* p = buf;
@@ -919,8 +1123,12 @@ int App::BrowseSounds(std::vector<std::string>& out) {
 
         std::string rel = "sounds/" + Utf8FromWide(fn);
         bool dup = false;
-        for (const auto& s : out) if (s == rel) { dup = true; break; }
-        if (!dup) { out.push_back(rel); ++added; }
+        for (const auto& s : out) if (s.path == rel) { dup = true; break; }
+        if (!dup) {
+            out.push_back(SoundSpec());
+            out.back().path = rel;
+            ++added;
+        }
     }
     return added;
 }
@@ -973,7 +1181,7 @@ void App::Load(const std::string& path) {
 void App::EnrichNames() {
     for (auto& e : cfg.entries) {
         if (e.name.empty())
-            e.name = LookupFsmName(e.weaponType, e.fsmId, e.actionLmt);
+            e.name = LookupFsmName(e.weaponType, e.fsmId, e.LmtAny());
     }
 }
 
@@ -983,9 +1191,10 @@ std::string App::ResolveName(int weapon, int fsm, int lmt) const {
     if (!n.empty()) return n;
     // 再查用户已配置的条目（武器/fsm/lmt 匹配，-1 视为不限）
     for (const auto& e : cfg.entries) {
+        if (!EntryActive(e)) continue;
         if (e.fsmId != fsm) continue;
         if (e.weaponType >= 0 && e.weaponType != weapon) continue;
-        if (e.actionLmt >= 0 && e.actionLmt != lmt) continue;
+        if (!e.MatchesLmt(lmt)) continue;
         if (!e.name.empty()) return e.name;
     }
     return std::string();
@@ -993,9 +1202,10 @@ std::string App::ResolveName(int weapon, int fsm, int lmt) const {
 
 bool App::IsCapturedAdded(int weapon, int fsm, int lmt) const {
     for (const auto& e : cfg.entries) {
+        if (!EntryActive(e)) continue;
         if (e.fsmId != fsm) continue;
         if (e.weaponType >= 0 && e.weaponType != weapon) continue;
-        if (e.actionLmt >= 0 && e.actionLmt != lmt) continue;
+        if (!e.MatchesLmt(lmt)) continue;
         return true;
     }
     return false;
@@ -1042,6 +1252,7 @@ void App::Draw() {
     DrawStatus();
     ImGui::End();
 
-    DrawEditorModal();
+    // 编辑内容改由独立原生窗口（main.cpp 的第二个 ImGui 上下文）绘制，
+    // 不再作为主窗内弹窗。DrawEditorDetached 由编辑窗渲染循环调用。
     if (fsmWinOpen) DrawFsmWindow();
 }

@@ -8,6 +8,10 @@ gui/build/
 *.o
 *.pdb
 *.ilk
+*.map
+
+# dist 产物（dll/exe/ini；发布二进制如需入库可自行取舍）
+/dist/
 
 # Release 打包中间文件
 _release_stage/
@@ -24,9 +28,12 @@ cmake_install.cmake
 CMakeFiles/
 
 # 音效素材（播放器自带示例；实际音效由使用者放置）
-sounds/*.wav
+sounds/
 !sounds/.gitkeep
 
-# 其他
+# 备份 / 临时
 *.log
 *.tmp
+*.v1backup
+*.bak
+*.bak_*

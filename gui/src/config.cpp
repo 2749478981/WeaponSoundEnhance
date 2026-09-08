@@ -12,8 +12,13 @@ std::string Trim(const std::string& s) {
     return s.substr(b, e - b);
 }
 
-// 插件按 ; 或 , 分隔音效
-std::vector<std::string> SplitSounds(const std::string& v) {
+std::string ToLower(std::string s) {
+    for (auto& c : s) if (c >= 'A' && c <= 'Z') c += 32;
+    return s;
+}
+
+// 以 ; , 分隔
+std::vector<std::string> SplitList(const std::string& v) {
     std::vector<std::string> out;
     std::string cur;
     for (size_t i = 0; i <= v.size(); ++i) {
@@ -30,38 +35,56 @@ std::vector<std::string> SplitSounds(const std::string& v) {
     return out;
 }
 
-std::vector<int> SplitDelays(const std::string& v) {
-    std::vector<int> out;
+// path [ | delay | vol | flags ]，flags 含 F 表示固定
+void ParseSpec(const std::string& token, SoundSpec& sp) {
+    sp = SoundSpec{};
+    std::vector<std::string> parts;
     std::string cur;
-    for (size_t i = 0; i <= v.size(); ++i) {
-        char c = (i < v.size()) ? v[i] : '\0';
-        if (c == '\0' || c == ';' || c == ',') {
-            std::string t = Trim(cur);
-            out.push_back(t.empty() ? 0 : std::atoi(t.c_str()));
+    for (size_t i = 0; i <= token.size(); ++i) {
+        char c = (i < token.size()) ? token[i] : '\0';
+        if (c == '\0' || c == '|') {
+            parts.push_back(Trim(cur));
             cur.clear();
             if (c == '\0') break;
         } else {
             cur += c;
         }
     }
-    return out;
+    sp.path = parts.empty() ? "" : parts[0];
+    if (parts.size() >= 4) {
+        sp.delay = parts[1].empty() ? 0 : std::atoi(parts[1].c_str());
+        if (sp.delay < 0) sp.delay = 0;
+        int v = parts[2].empty() ? 100 : std::atoi(parts[2].c_str());
+        sp.vol = v < 0 ? 0 : (v > 100 ? 100 : v);
+        std::string fl = ToLower(parts[3]);
+        sp.fixed = fl.find('f') != std::string::npos;
+    } else if (parts.size() == 3) {
+        sp.delay = parts[1].empty() ? 0 : std::atoi(parts[1].c_str());
+        if (sp.delay < 0) sp.delay = 0;
+        int v = parts[2].empty() ? 100 : std::atoi(parts[2].c_str());
+        sp.vol = v < 0 ? 0 : (v > 100 ? 100 : v);
+    } else if (parts.size() == 2) {
+        sp.delay = parts[1].empty() ? 0 : std::atoi(parts[1].c_str());
+        if (sp.delay < 0) sp.delay = 0;
+    }
 }
 
-std::vector<int> SplitVols(const std::string& v) {
-    std::vector<int> out;
-    std::string cur;
-    for (size_t i = 0; i <= v.size(); ++i) {
-        char c = (i < v.size()) ? v[i] : '\0';
-        if (c == '\0' || c == ';' || c == ',') {
-            std::string t = Trim(cur);
-            out.push_back(t.empty() ? 100 : std::atoi(t.c_str()));   // 100 = 相对主音量无额外调整
-            cur.clear();
-            if (c == '\0') break;
-        } else {
-            cur += c;
-        }
+// 追加解析一行的音效到池；纯旧式 token 登记进 plainOrder 供 SoundDelay/SoundVol 覆盖
+void AppendSpecs(PoolSpec& pool, const std::string& value,
+                 std::vector<std::pair<PoolSpec*, int>>& plainOrder) {
+    for (const auto& tok : SplitList(value)) {
+        SoundSpec sp;
+        ParseSpec(tok, sp);
+        if (sp.path.empty()) continue;
+        bool dup = false;
+        for (const auto& ex : pool.specs)
+            if (ex.path == sp.path) { dup = true; break; }
+        if (dup) continue;
+        const bool wasPlain = (tok.find('|') == std::string::npos);
+        const int idx = (int)pool.specs.size();
+        pool.specs.push_back(sp);
+        if (wasPlain) plainOrder.emplace_back(&pool, idx);
     }
-    return out;
 }
 
 } // namespace
@@ -86,6 +109,25 @@ const char* WeaponName(int t) {
     }
 }
 
+int GaugeTagIndex(const std::string& tag) {
+    if (tag.empty()) return -1;
+    if (tag.size() == 1 && tag[0] >= '0' && tag[0] <= '3') return tag[0] - '0';
+    const char* names[4] = {"none", "white", "yellow", "red"};
+    for (int i = 0; i < 4; ++i)
+        if (ToLower(tag) == names[i]) return i;
+    return -1;
+}
+
+const char* GaugeTagName(int level) {
+    static const char* names[4] = {"none", "white", "yellow", "red"};
+    return (level >= 0 && level <= 3) ? names[level] : "?";
+}
+
+const char* GaugeUiName(int level) {
+    static const char* names[4] = {"无刃", "白刃", "黄刃", "红刃"};
+    return (level >= 0 && level <= 3) ? names[level] : "?";
+}
+
 std::uint64_t ParsePlayerRoot(const std::string& s, std::uint64_t defval) {
     std::string v = Trim(s);
     if (v.empty()) return defval;
@@ -99,22 +141,43 @@ std::uint64_t ParsePlayerRoot(const std::string& s, std::uint64_t defval) {
     return static_cast<std::uint64_t>(hv);
 }
 
+static int ClampInt(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
 bool LoadConfig(const std::string& path, Config& cfg) {
     std::ifstream in(path, std::ios::binary);
     if (!in) return false;
     std::string txt((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     in.close();
 
-    // 去掉 UTF-8 BOM
     if (txt.size() >= 3 && (unsigned char)txt[0] == 0xEF &&
         (unsigned char)txt[1] == 0xBB && (unsigned char)txt[2] == 0xBF)
         txt = txt.substr(3);
 
     cfg.entries.clear();
+    cfg.active.clear();
+    std::map<int, std::string> activeMap;
     std::string section;
-    int curIdx = -1;
-    auto ensure = [&](int idx) {
-        while ((int)cfg.entries.size() < idx) cfg.entries.push_back(SoundEntry());
+    bool inAttack = false, inCombo = false;
+    int curComboW = -1;
+    std::string curComboName;
+    SoundEntry cur;
+    std::vector<int> rawDelay, rawVol;
+    std::vector<std::pair<PoolSpec*, int>> plainOrder;
+
+    auto finishEntry = [&]() {
+        if (!inAttack) return;
+        for (size_t i = 0; i < plainOrder.size(); ++i) {
+            SoundSpec& sp = plainOrder[i].first->specs[plainOrder[i].second];
+            if (i < rawDelay.size() && rawDelay[i] > 0) sp.delay = rawDelay[i];
+            if (i < rawVol.size()) sp.vol = ClampInt(rawVol[i], 0, 100);
+        }
+        cur.combo = (inCombo && curComboW >= 0) ? curComboName : "";
+        cfg.entries.push_back(std::move(cur));
+        inAttack = false;
+        cur = SoundEntry();
+        rawDelay.clear();
+        rawVol.clear();
+        plainOrder.clear();
     };
 
     size_t pos = 0;
@@ -124,53 +187,149 @@ bool LoadConfig(const std::string& path, Config& cfg) {
         std::string line = Trim(txt.substr(pos, eol - pos));
         pos = eol + 1;
         if (line.empty() || line[0] == ';' || line[0] == '#') continue;
+
         if (line[0] == '[' && line.back() == ']') {
+            finishEntry();
             section = Trim(line.substr(1, line.size() - 2));
-            curIdx = -1;
-            if (section.size() > 6 && section.compare(0, 6, "Attack") == 0)
-                curIdx = std::atoi(section.c_str() + 6);
+            if (section.size() >= 6 && section.compare(0, 6, "Attack") == 0) {
+                inAttack = true;
+                cur = SoundEntry();
+            } else if (section == "Active") {
+                inAttack = false; inCombo = false; curComboW = -1; curComboName.clear();
+            } else if (section.size() > 6 && section.compare(0, 6, "Weapon") == 0) {
+                std::string rest = section.substr(6);
+                std::size_t c = rest.find(':');
+                if (c != std::string::npos) {
+                    curComboW = std::atoi(rest.substr(0, c).c_str());
+                    curComboName = rest.substr(c + 1);
+                    inCombo = true; inAttack = false;
+                } else {
+                    inCombo = false; curComboW = -1; curComboName.clear(); inAttack = false;
+                }
+            } else {
+                inCombo = false; curComboW = -1; curComboName.clear(); inAttack = false;
+            }
             continue;
         }
+
         size_t eq = line.find('=');
         if (eq == std::string::npos) continue;
         std::string key = Trim(line.substr(0, eq));
         std::string val = Trim(line.substr(eq + 1));
 
-        if (section == "WeaponSoundEnhance") {
-            if (key == "PlayerRoot") cfg.global.playerRoot = val;
-            else if (key == "PollMs") cfg.global.pollMs = std::atoi(val.c_str());
-            else if (key == "DebounceMs") cfg.global.debounceMs = std::atoi(val.c_str());
-            else if (key == "Volume") cfg.global.volume = std::atoi(val.c_str());
-            else if (key == "Enabled") cfg.global.enabled = std::atoi(val.c_str());
-            else if (key == "MoreSounds") cfg.global.moreSounds = std::atoi(val.c_str());
-            else if (key == "Playback") cfg.global.playback = val;
-            else if (key == "ChatEcho") cfg.global.chatEcho = std::atoi(val.c_str());
-            else if (key == "ChatCommands") cfg.global.chatCommands = std::atoi(val.c_str());
-        } else if (section == "Hotkeys") {
-            if (key == "ModifierKey") cfg.hotkeys.modifierKey = std::atoi(val.c_str());
-            else if (key == "ReloadKey") cfg.hotkeys.reloadKey = std::atoi(val.c_str());
-            else if (key == "VolUpKey") cfg.hotkeys.volUpKey = std::atoi(val.c_str());
-            else if (key == "VolDownKey") cfg.hotkeys.volDownKey = std::atoi(val.c_str());
-            else if (key == "SetVolKey") cfg.hotkeys.setVolKey = std::atoi(val.c_str());
-            else if (key == "SetVolValue") cfg.hotkeys.setVolValue = std::atoi(val.c_str());
-            else if (key == "ToggleKey") cfg.hotkeys.toggleKey = std::atoi(val.c_str());
-            else if (key == "MoreKey") cfg.hotkeys.moreKey = std::atoi(val.c_str());
-        } else if (curIdx >= 1) {
-            ensure(curIdx);
-            SoundEntry& e = cfg.entries[curIdx - 1];
-            if (key == "WeaponType") e.weaponType = std::atoi(val.c_str());
-            else if (key == "ActionLMT") e.actionLmt = std::atoi(val.c_str());
-            else if (key == "FSMId") e.fsmId = std::atoi(val.c_str());
-            else if (key == "Sound") e.sounds = SplitSounds(val);
-            else if (key == "SoundDelay") e.delays = SplitDelays(val);
-            else if (key == "SoundVol") e.vols = SplitVols(val);
-            else if (key == "Name") e.name = val;
+        if (!inAttack) {
+            if (section == "WeaponSoundEnhance") {
+                if (key == "PlayerRoot") cfg.global.playerRoot = val;
+                else if (key == "PollMs") cfg.global.pollMs = std::atoi(val.c_str());
+                else if (key == "DebounceMs") cfg.global.debounceMs = std::atoi(val.c_str());
+                else if (key == "Volume") cfg.global.volume = std::atoi(val.c_str());
+                else if (key == "Enabled") cfg.global.enabled = std::atoi(val.c_str());
+                else if (key == "MoreSounds") cfg.global.moreSounds = std::atoi(val.c_str());
+                else if (key == "Debug") cfg.global.debug = std::atoi(val.c_str());
+                else if (key == "GaugePtrOff") cfg.global.gaugePtrOff = val;
+                else if (key == "GaugeValOff") cfg.global.gaugeValOff = val;
+                else if (key == "ChatEcho") cfg.global.chatEcho = std::atoi(val.c_str());
+                else if (key == "ChatCommands") cfg.global.chatCommands = std::atoi(val.c_str());
+                else if (key == "Hotkeys") cfg.global.hotkeysEnabled = std::atoi(val.c_str());
+            } else if (section == "Hotkeys") {
+                if (key == "ModifierKey") cfg.hotkeys.modifierKey = std::atoi(val.c_str());
+                else if (key == "ReloadKey") cfg.hotkeys.reloadKey = std::atoi(val.c_str());
+                else if (key == "VolUpKey") cfg.hotkeys.volUpKey = std::atoi(val.c_str());
+                else if (key == "VolDownKey") cfg.hotkeys.volDownKey = std::atoi(val.c_str());
+                else if (key == "SetVolKey") cfg.hotkeys.setVolKey = std::atoi(val.c_str());
+                else if (key == "SetVolValue") cfg.hotkeys.setVolValue = std::atoi(val.c_str());
+                else if (key == "ToggleKey") cfg.hotkeys.toggleKey = std::atoi(val.c_str());
+                else if (key == "MoreKey") cfg.hotkeys.moreKey = std::atoi(val.c_str());
+                else if (key == "ComboKey") cfg.hotkeys.comboKey = std::atoi(val.c_str());
+            } else if (section == "Active") {
+                if (key.size() > 1 && (key[0] == 'W' || key[0] == 'w')) {
+                    int w = std::atoi(key.c_str() + 1);
+                    if (w >= -1) activeMap[w] = val;
+                }
+            }
+            continue;
+        }
+
+        if (key == "WeaponType") {
+            cur.weaponType = std::atoi(val.c_str());
+        } else if (key == "FSMId") {
+            cur.fsmId = std::atoi(val.c_str());
+        } else if (key == "ActionLMT" || key == "LMT") {
+            for (const auto& t : SplitList(val)) {
+                int v = std::atoi(t.c_str());
+                if (v == -1) continue;   // 不限（空列表表达）
+                bool dup = false;
+                for (int x : cur.lmt) if (x == v) { dup = true; break; }
+                if (!dup) cur.lmt.push_back(v);
+            }
+        } else if (key == "Name") {
+            cur.name = val;
+        } else if (key == "Group") {
+            cur.group = val;
+        } else if (key == "Sound") {
+            AppendSpecs(cur.def, val, plainOrder);
+        } else if (key.size() > 6 && key.compare(0, 6, "Sound:") == 0) {
+            int lvl = GaugeTagIndex(ToLower(key.substr(6)));
+            if (lvl >= 0 && lvl < 4)
+                AppendSpecs(cur.gauge[lvl], val, plainOrder);
+        } else if (key == "SoundDelay") {
+            for (const auto& t : SplitList(val))
+                rawDelay.push_back(std::atoi(t.c_str()));
+        } else if (key == "SoundVol") {
+            for (const auto& t : SplitList(val))
+                rawVol.push_back(std::atoi(t.c_str()));
         }
     }
+    finishEntry();
 
+    cfg.active = activeMap;
     cfg.path = path;
     cfg.loaded = true;
     return true;
+}
+
+// 一条音效的规范写法：默认属性且未固定 → 纯路径；否则 path|delay|vol[|F]
+static std::string SpecToken(const SoundSpec& s) {
+    if (!s.fixed && s.delay == 0 && s.vol == 100) return s.path;
+    std::string t = s.path + "|" + std::to_string(s.delay) + "|" + std::to_string(s.vol);
+    if (s.fixed) t += "|F";
+    return t;
+}
+
+static std::string LmtLine(const SoundEntry& e) {
+    if (e.lmt.empty()) return "ActionLMT=-1";          // v1 兼容写法
+    if (e.lmt.size() == 1) return "ActionLMT=" + std::to_string(e.lmt[0]);
+    std::string s = "LMT=";
+    for (size_t k = 0; k < e.lmt.size(); ++k) {
+        if (k) s += ",";
+        s += std::to_string(e.lmt[k]);
+    }
+    return s;
+}
+
+static void WritePool(const PoolSpec& pool, const char* key, std::string& o) {
+    if (pool.empty()) return;
+    std::string s;
+    for (size_t k = 0; k < pool.specs.size(); ++k) {
+        if (k) s += "; ";
+        s += SpecToken(pool.specs[k]);
+    }
+    o += std::string(key) + "=" + s + "\r\n";
+}
+
+static void WriteEntry(const SoundEntry& e, int n, std::string& o) {
+    o += "[Attack" + std::to_string(n) + "]\r\n";
+    if (!e.name.empty()) o += "Name=" + e.name + "\r\n";
+    if (!e.group.empty()) o += "Group=" + e.group + "\r\n";
+    o += "WeaponType=" + std::to_string(e.weaponType) + "\r\n";
+    o += LmtLine(e) + "\r\n";
+    o += "FSMId=" + std::to_string(e.fsmId) + "\r\n";
+    WritePool(e.def, "Sound", o);
+    for (int i = 0; i < 4; ++i) {
+        std::string k = std::string("Sound:") + GaugeTagName(i);
+        WritePool(e.gauge[i], k.c_str(), o);
+    }
+    o += "\r\n";
 }
 
 bool SaveConfig(const std::string& path, const Config& cfg) {
@@ -185,11 +344,15 @@ bool SaveConfig(const std::string& path, const Config& cfg) {
     o += ";    6=长枪  7=铳枪  8=斩斧  9=盾斧 10=虫棍 11=弓箭 12=轻弩 13=重弩\r\n";
     o += ";  每条 [AttackN] 代表一种派生攻击：\r\n";
     o += ";    WeaponType  ：武器类型（0..13）。-1 = 任意武器。\r\n";
-    o += ";    ActionLMT   ：动作 LMT（派生动作号）。-1 = 不限。\r\n";
+    o += ";    ActionLMT/LMT：动作 LMT。-1 = 不限；多值用逗号分隔（LMT=）。\r\n";
     o += ";    FSMId       ：动作状态机 ID。-1 = 不限。\r\n";
-    o += ";    三者 AND 关系；满足即从 Sound 里随机播放一条 wav。\r\n";
-    o += ";    SoundDelay  ：与 Sound 一一对应的每条音效播放延时(ms)，分号(;)分隔；缺省 0 = 立即。\r\n";
-    o += ";    SoundVol    ：与 Sound 一一对应的每条音效音量(0..100)，分号(;)分隔；100/缺省 = 相对主音量无额外调整。\r\n";
+    o += ";    三者 AND 关系；命中后从匹配的音效里选音效。\r\n";
+    o += ";    Group=              动作组（可选）：同一招的多个触发条目填相同组名\r\n";
+    o += ";                        时整招只响一次，刃色以首个触发瞬间为准。\r\n";
+    o += ";    Sound=               默认音效；Sound:none/white/yellow/red= 太刀无刃时/白刃时/\r\n";
+    o += ";                        黄刃时/红刃时 的音效（未配的刃时回退默认音效）。\r\n";
+    o += ";    音效写法 path|延时ms|音量0..100|F ，末尾 F = 固定音效：命中时恒播，\r\n";
+    o += ";                        同池其余未固定音效仍随机抽一条同时播放。\r\n";
     o += ";  游戏内聊天框指令：/wse reload | on | off | more | one | vol N | vol+ | vol- | help\r\n";
     o += "; ============================================================================\r\n\r\n";
 
@@ -200,9 +363,12 @@ bool SaveConfig(const std::string& path, const Config& cfg) {
     o += "Volume=" + std::to_string(cfg.global.volume) + "\r\n";
     o += "Enabled=" + std::to_string(cfg.global.enabled) + "\r\n";
     o += "MoreSounds=" + std::to_string(cfg.global.moreSounds) + "\r\n";
-    o += "Playback=" + cfg.global.playback + "\r\n";
+    o += "Debug=" + std::to_string(cfg.global.debug) + "\r\n";
+    o += "GaugePtrOff=" + cfg.global.gaugePtrOff + "\r\n";
+    o += "GaugeValOff=" + cfg.global.gaugeValOff + "\r\n";
     o += "ChatEcho=" + std::to_string(cfg.global.chatEcho) + "\r\n";
-    o += "ChatCommands=" + std::to_string(cfg.global.chatCommands) + "\r\n\r\n";
+    o += "ChatCommands=" + std::to_string(cfg.global.chatCommands) + "\r\n";
+    o += "Hotkeys=" + std::to_string(cfg.global.hotkeysEnabled) + "\r\n\r\n";
 
     o += "[Hotkeys]\r\n";
     o += "ModifierKey=" + std::to_string(cfg.hotkeys.modifierKey) + "\r\n";
@@ -213,113 +379,68 @@ bool SaveConfig(const std::string& path, const Config& cfg) {
     o += "SetVolValue=" + std::to_string(cfg.hotkeys.setVolValue) + "\r\n";
     o += "ToggleKey=" + std::to_string(cfg.hotkeys.toggleKey) + "\r\n";
     o += "MoreKey=" + std::to_string(cfg.hotkeys.moreKey) + "\r\n";
+    o += "ComboKey=" + std::to_string(cfg.hotkeys.comboKey) + "\r\n";
 
-    // 按武器分组写出（段名 AttackN 全局递增，保证唯一）
+    // [Active]：记录每武器当前用的组合（仅对有组合的武器写出）
+    {
+        std::string act;
+        for (int w = 0; w <= 13; ++w) {
+            bool any = false, hasNamed = false;
+            for (const auto& e : cfg.entries) if (e.weaponType == w) { any = true; if (!e.combo.empty()) hasNamed = true; }
+            if (!any) continue;
+            std::string a;
+            auto it = cfg.active.find(w);
+            if (it != cfg.active.end()) a = it->second;
+            if (hasNamed || !a.empty())
+                act += std::string("W") + std::to_string(w) + "=" + a + "\r\n";
+        }
+        if (!act.empty()) o += "\r\n[Active]\r\n" + act + "\r\n";
+    }
+
+    // 按武器 + 组合分组写出（段名 AttackN 全局递增）
     int n = 0;
+    auto Banner = [&](const std::string& wname, int w, bool& header) {
+        if (!header) {
+            o += "\r\n; ----------------------------------------------------------------------------\r\n";
+            o += std::string("; ") + wname + " (weaponType=" + std::to_string(w) + ")\r\n";
+            o += "; ----------------------------------------------------------------------------\r\n";
+            header = true;
+        }
+    };
+    auto Has = [&](const std::vector<std::string>& v, const std::string& e) {
+        for (const auto& x : v) if (x == e) return true;
+        return false;
+    };
+
     for (int w = 0; w <= 13; ++w) {
         bool header = false;
-        for (const auto& e : cfg.entries) {
-            if (e.weaponType != w) continue;
-            if (!header) {
-                o += "\r\n; ----------------------------------------------------------------------------\r\n";
-                o += std::string("; ") + WeaponName(w) + " (weaponType=" + std::to_string(w) + ")\r\n";
-                o += "; ----------------------------------------------------------------------------\r\n";
-                header = true;
-            }
-            ++n;
-            o += "[Attack" + std::to_string(n) + "]\r\n";
-            if (!e.name.empty()) o += "Name=" + e.name + "\r\n";
-            o += "WeaponType=" + std::to_string(e.weaponType) + "\r\n";
-            o += "ActionLMT=" + std::to_string(e.actionLmt) + "\r\n";
-            o += "FSMId=" + std::to_string(e.fsmId) + "\r\n";
-            if (!e.sounds.empty()) {
-                std::string s;
-                for (size_t k = 0; k < e.sounds.size(); ++k) {
-                    if (k) s += "; ";
-                    s += e.sounds[k];
-                }
-                o += "Sound=" + s + "\r\n";
-                // 存在非 0 延时才写 SoundDelay（保持默认 0 的条目干净）
-                bool anyDelay = false;
-                for (int d : e.delays) if (d > 0) { anyDelay = true; break; }
-                if (anyDelay) {
-                    std::string sd;
-                    for (size_t k = 0; k < e.sounds.size(); ++k) {
-                        if (k) sd += "; ";
-                        int d = (k < e.delays.size()) ? e.delays[k] : 0;
-                        sd += std::to_string(d);
-                    }
-                    o += "SoundDelay=" + sd + "\r\n";
-                }
-                // 存在非 100 音量才写 SoundVol（100 = 相对主音量无额外调整）
-                bool anyVol = false;
-                for (int v : e.vols) if (v >= 0 && v != 100) { anyVol = true; break; }
-                if (anyVol) {
-                    std::string sv;
-                    for (size_t k = 0; k < e.sounds.size(); ++k) {
-                        if (k) sv += "; ";
-                        int v = (k < e.vols.size()) ? e.vols[k] : 100;
-                        if (v < 0) v = 100;
-                        sv += std::to_string(v);
-                    }
-                    o += "SoundVol=" + sv + "\r\n";
-                }
-            }
-            o += "\r\n";
+        // 默认组合（""）
+        for (const auto& e : cfg.entries)
+            if (e.weaponType == w && e.combo.empty()) { Banner(WeaponName(w), w, header); WriteEntry(e, ++n, o); }
+        // 命名组合（按条目中出现顺序）
+        std::vector<std::string> cbOrder;
+        for (const auto& e : cfg.entries)
+            if (e.weaponType == w && !e.combo.empty() && !Has(cbOrder, e.combo)) cbOrder.push_back(e.combo);
+        for (const auto& cb : cbOrder) {
+            Banner(WeaponName(w), w, header);
+            o += "\r\n[Weapon" + std::to_string(w) + ":" + cb + "]\r\n";
+            for (const auto& e : cfg.entries)
+                if (e.weaponType == w && e.combo == cb) WriteEntry(e, ++n, o);
         }
     }
-    // 任意武器（weaponType<0）放到最后
+    // 任意武器（weaponType<0）默认组合放到最后
     {
         bool header = false;
-        for (const auto& e : cfg.entries) {
-            if (e.weaponType >= 0) continue;
-            if (!header) {
-                o += "\r\n; ----------------------------------------------------------------------------\r\n";
-                o += "; 通用 / 任意武器\r\n";
-                o += "; ----------------------------------------------------------------------------\r\n";
-                header = true;
+        for (const auto& e : cfg.entries)
+            if (e.weaponType < 0 && e.combo.empty()) {
+                if (!header) {
+                    o += "\r\n; ----------------------------------------------------------------------------\r\n";
+                    o += "; 通用 / 任意武器\r\n";
+                    o += "; ----------------------------------------------------------------------------\r\n";
+                    header = true;
+                }
+                WriteEntry(e, ++n, o);
             }
-            ++n;
-            o += "[Attack" + std::to_string(n) + "]\r\n";
-            if (!e.name.empty()) o += "Name=" + e.name + "\r\n";
-            o += "WeaponType=" + std::to_string(e.weaponType) + "\r\n";
-            o += "ActionLMT=" + std::to_string(e.actionLmt) + "\r\n";
-            o += "FSMId=" + std::to_string(e.fsmId) + "\r\n";
-            if (!e.sounds.empty()) {
-                std::string s;
-                for (size_t k = 0; k < e.sounds.size(); ++k) {
-                    if (k) s += "; ";
-                    s += e.sounds[k];
-                }
-                o += "Sound=" + s + "\r\n";
-                // 存在非 0 延时才写 SoundDelay（保持默认 0 的条目干净）
-                bool anyDelay = false;
-                for (int d : e.delays) if (d > 0) { anyDelay = true; break; }
-                if (anyDelay) {
-                    std::string sd;
-                    for (size_t k = 0; k < e.sounds.size(); ++k) {
-                        if (k) sd += "; ";
-                        int d = (k < e.delays.size()) ? e.delays[k] : 0;
-                        sd += std::to_string(d);
-                    }
-                    o += "SoundDelay=" + sd + "\r\n";
-                }
-                // 存在非 100 音量才写 SoundVol（100 = 相对主音量无额外调整）
-                bool anyVol = false;
-                for (int v : e.vols) if (v >= 0 && v != 100) { anyVol = true; break; }
-                if (anyVol) {
-                    std::string sv;
-                    for (size_t k = 0; k < e.sounds.size(); ++k) {
-                        if (k) sv += "; ";
-                        int v = (k < e.vols.size()) ? e.vols[k] : 100;
-                        if (v < 0) v = 100;
-                        sv += std::to_string(v);
-                    }
-                    o += "SoundVol=" + sv + "\r\n";
-                }
-            }
-            o += "\r\n";
-        }
     }
 
     std::ofstream out(path, std::ios::binary);

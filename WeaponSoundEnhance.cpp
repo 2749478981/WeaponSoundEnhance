@@ -1,27 +1,30 @@
 // ============================================================================
-//  WeaponSoundEnhance.cpp
-//  ----------------------------------------------------------------------------
-//  Monster Hunter: World / Iceborne (15.23.00) native weapon-sound plugin.
+//  WeaponSoundEnhance.cpp  (v2)
+//  Monster Hunter: World / Iceborne (15.23.00) weapon-sound plugin.
 //
-//  FEATURES:
-//    - When the player performs a "derived attack" (chain/combo melee move),
-//      the plugin matches the configured action and plays a wav.
-//    - Each attack entry can list MULTIPLE wav files; a random one is played.
+//  Standalone: no game audio engine calls, no code hooks. Player actions are
+//  detected by a background polling thread; wav playback uses winmm waveOut
+//  (one handle per voice -> true multi-sound overlap).
 //
-//  STANDALONE (no Lua script engine / loader / game-audio prereqs):
-//    - Does not hook the game's audio engine or call any game audio function.
-//    - wav decode + playback is done in-process via winmm waveOut (built-in).
-//    - Player action detection is a background polling thread, no code hook.
+//  Memory layout (15.23.00, PlayerRoot overridable in ini):
+//    manager = *(PlayerRoot)                       [PlayerRoot = 0x1450139A0]
+//    entity  = *(manager + 0x50)
+//    fsm     = *(*(entity + 0x468) + 0xE9C4)
+//    weapon  = *(*(*(entity + 0xC0) + 0x8) + 0x78) ; +0x2E8 = type, +0x2EC = id
+//    LS gauge = *(*(entity + GaugePtrOff) + GaugeValOff)   (default 0x76B0/0x2370)
 //
-//  DETECTION (build 15.23.00; PlayerRoot is ini override-able):
-//    global player pointer base   = 0x1450139A0 (default)
-//    Entity (Player)   = *( *(base) + 0x50 )      [GetAddress(base, {0x50})]
-//    action LMT        = *( *(Entity + 0x468) ) + 0xE9C4
-//    fsmID             = *(Entity + 0x6278)
-//    weapon data       = *( *( *(Entity+0xC0) + 0x8 ) + 0x78)
-//    weapon type / id  = *(data + 0x2E8) / *(data + 0x2EC)
-//
-//  All memory reads are guarded; invalid addresses are skipped safely.
+//  Config: one [Attack...] section per trigger entry. Legacy keys
+//  (WeaponType/ActionLMT/FSMId/Sound/SoundDelay/SoundVol) behave exactly as v1.
+//  v2 additions:
+//    LMT=...            trigger on any of several LMTs (comma list)
+//    Sound:<tag>=...    per-LS-gauge sound set (tag 0..3 or none/white/yellow/red);
+//                       missing tag falls back to the default Sound= set
+//    Group=...          logical-action id: shared by the trigger entries of one
+//                       attack, the group fires once per action occurrence and
+//                       freezes the gauge at the first trigger instant
+//    path|delay|vol|F   per-sound spec; trailing F marks the sound "fixed"
+//                       (always plays; same file is 400ms-cooldowned to avoid
+//                       stacking); non-fixed sounds still pick one at random
 // ============================================================================
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -39,9 +42,11 @@
 #include <cstdarg>
 #include <cstring>
 #include <cstdlib>
+#include <atomic>
 #include <algorithm>
 #include <memory>
 #include <mutex>
+#include <map>
 #include <random>
 #include <string>
 #include <vector>
@@ -51,7 +56,7 @@
 #pragma comment(lib, "winmm.lib")
 
 // ===========================================================================
-//  Memory-safe read utilities
+//  Memory-safe read helpers (every access guarded)
 // ===========================================================================
 namespace mem {
 
@@ -99,9 +104,7 @@ inline bool ReadVal(std::uintptr_t a, T& out)
     return true;
 }
 
-// GetAddress semantics (multilevel pointer deref: addr=*(addr+off) for each off):
-//   addr = base ; for each off: addr = *(uintptr*)(addr + off)
-//   i.e. NO deref of base itself (base is the manager, first off is added to it).
+// addr = base ; for each offset: addr = *(addr + off). No deref of base itself.
 inline std::uintptr_t Walk(std::uintptr_t base, const std::uint32_t* offs, int count)
 {
     if (base == 0) return 0;
@@ -125,9 +128,10 @@ inline std::int32_t ReadI32(std::uintptr_t a, std::int32_t dflt)
 } // namespace mem
 
 // ===========================================================================
-//  Text conversion helpers
+//  Text conversion (UTF-8 <-> wide)
 // ===========================================================================
 namespace strconv {
+
 inline std::wstring ToWide(const std::string& s)
 {
     int n = ::MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
@@ -136,6 +140,7 @@ inline std::wstring ToWide(const std::string& s)
     ::MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, &w[0], n);
     return w;
 }
+
 inline std::string ToUtf8(const std::wstring& w)
 {
     int n = ::WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
@@ -144,6 +149,7 @@ inline std::string ToUtf8(const std::wstring& w)
     ::WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, &s[0], n, nullptr, nullptr);
     return s;
 }
+
 } // namespace strconv
 
 // ===========================================================================
@@ -151,29 +157,26 @@ inline std::string ToUtf8(const std::wstring& w)
 // ===========================================================================
 namespace player {
 
-std::uintptr_t gRoot = 0x1450139A0ULL;   // default player base (ini override-able)
-std::uintptr_t gManager = 0;             // debug: *(Root)
-std::uintptr_t gEntity = 0;              // debug: *(Manager + 0x50)
+std::uintptr_t gRoot = 0x1450139A0ULL;   // ini override-able
 std::int32_t   gLmt = -1;
 std::int32_t   gFsm = -1;
 std::int32_t   gWeapon = -1;
 std::int32_t   gWeaponId = -1;
+std::int32_t   gGauge = -1;              // long-sword spirit gauge level 0..3, -1 unknown
+
+std::uint32_t gGaugePtrOff = 0x76B0;     // LS spirit object: *(entity + off)
+std::uint32_t gGaugeValOff = 0x2370;     // gauge level value: *(obj + off)
 
 void Refresh()
 {
-    gLmt = -1; gFsm = -1; gWeapon = -1; gWeaponId = -1;
-    gManager = 0; gEntity = 0;
+    gLmt = -1; gFsm = -1; gWeapon = -1; gWeaponId = -1; gGauge = -1;
 
-    // Root deref once first (matches native aob.h: P0 = *(PlayerBasePool)).
     std::uintptr_t manager = 0;
     if (!mem::ReadVal(gRoot, manager) || manager == 0) return;
-    gManager = manager;
 
-    // Entity = *(Manager + 0x50)  --- GetAddress(base, {0x50}) semantics.
     const std::uint32_t c0[1] = {0x50};
     const std::uintptr_t entity = mem::Walk(manager, c0, 1);
     if (!entity) return;
-    gEntity = entity;
 
     gFsm = mem::ReadI32(entity + 0x6278, -1);
 
@@ -181,16 +184,24 @@ void Refresh()
     if (mem::ReadVal(entity + 0x468, act) && act)
         gLmt = mem::ReadI32(act + 0xE9C4, -1);
 
-    // Weapon data object: GetAddress(root, {0x50, 0xC0, 0x8, 0x78})
     static const std::uint32_t wd[3] = {0xC0, 0x8, 0x78};
     const std::uintptr_t data = mem::Walk(entity, wd, 3);
     if (data) {
         gWeapon   = mem::ReadI32(data + 0x2E8, -1);
         gWeaponId = mem::ReadI32(data + 0x2EC, -1);
     }
+
+    // LS gauge level is only meaningful (and only read) for the long sword.
+    if (gWeapon == 3) {
+        std::uintptr_t sp = 0;
+        if (mem::ReadVal(entity + gGaugePtrOff, sp) && sp) {
+            const int v = mem::ReadI32(sp + gGaugeValOff, -1);
+            if (v >= 0 && v <= 3) gGauge = v;
+        }
+    }
 }
 
-// 玩家是否处于场景中（实体指针非空，等同 mhw-toolkit 的 is_player_in_scene）。
+// true when the player entity exists (in-scene; used before touching chat memory)
 bool RefreshIsInScene()
 {
     std::uintptr_t manager = 0;
@@ -204,13 +215,66 @@ bool RefreshIsInScene()
 } // namespace player
 
 // ===========================================================================
-//  Standalone WAV player (XAudio2)
+//  Module paths + logging
 // ===========================================================================
-namespace audio
+namespace plugin {
+
+HMODULE gModule = nullptr;
+volatile LONG gStop = 0;
+std::wstring gModuleDir;   // ends with '\'
+std::wstring gIniPath;
+std::wstring gLogPath;
+volatile int gDebug = 0;   // ini Debug=1 enables per-play / heartbeat logging
+
+void Log(const char* fmt, ...);
+
+void LogInit()
 {
+    gLogPath = gModuleDir + L"WeaponSoundEnhance.log";
+    ::DeleteFileW(gLogPath.c_str());
+    Log("WeaponSoundEnhance 2.0 starting");
+}
+
+void LogV(const char* fmt, va_list ap)
+{
+    char buf[2048] = {};
+    vsnprintf_s(buf, _TRUNCATE, fmt, ap);
+    ::OutputDebugStringA(buf);
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, gLogPath.c_str(), L"ab") == 0 && f) {
+        SYSTEMTIME st{}; ::GetLocalTime(&st);
+        fprintf(f, "[%02u:%02u:%02u.%03u] %s\n",
+                st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, buf);
+        fclose(f);
+    }
+}
+
+void Log(const char* fmt, ...)
+{
+    va_list ap; va_start(ap, fmt);
+    LogV(fmt, ap);
+    va_end(ap);
+}
+
+// verbose logging, only active when Debug=1
+void LogD(const char* fmt, ...)
+{
+    if (!gDebug) return;
+    va_list ap; va_start(ap, fmt);
+    LogV(fmt, ap);
+    va_end(ap);
+}
+
+} // namespace plugin
+
+// ===========================================================================
+//  Standalone WAV player: winmm waveOut, one handle per voice, concurrency cap
+// ===========================================================================
+namespace audio {
+
 struct Wav
 {
-    std::vector<std::uint8_t> data;
+    std::vector<std::uint8_t> data;   // PCM payload only (RIFF header stripped)
     std::uint16_t channels = 0;
     std::uint32_t sampleRate = 0;
     std::uint16_t bitsPer = 0;
@@ -262,14 +326,14 @@ bool ParseWav(const std::uint8_t* buf, std::size_t size, Wav& out)
     return true;
 }
 
-// 把 PCM 16 位 wav 重采样到给定目标采样率(默认44100)。DirectSound 对非常规采样率
-// (如 28000Hz)会拒绝，重采样到标准值后即可被接受，从而支持音量与并发。
+// Linear-interpolation resample of 16-bit PCM to a standard rate (waveOut
+// rejects exotic rates such as 28000 Hz; 44100 is the playback standard).
 void ResampleTo(Wav& w, std::uint32_t targetRate = 44100)
 {
     if (!w.valid || w.sampleRate == targetRate) return;
-    if (w.bitsPer != 16) return;   // 仅处理 16 位 PCM
+    if (w.bitsPer != 16) return;
 
-    const std::size_t inSamples = (std::size_t)(w.data.size() / 2);   // 每样本2字节
+    const std::size_t inSamples = w.data.size() / 2;
     if (inSamples == 0) return;
     const std::size_t outSamples = (std::size_t)((double)inSamples * targetRate / w.sampleRate);
     if (outSamples == 0) return;
@@ -280,9 +344,10 @@ void ResampleTo(Wav& w, std::uint32_t targetRate = 44100)
     for (std::size_t i = 0; i < outSamples; ++i) {
         double pos = (double)i * step;
         std::size_t idx = (std::size_t)pos;
-        if (idx >= inSamples - 1) idx = inSamples - 1 == 0 ? 0 : inSamples - 1;
+        if (idx >= inSamples - 1) idx = inSamples - 1;
         double frac = pos - (double)idx;
-        double v = in[idx] * (1.0 - frac) + (in[idx + 1 > inSamples - 1 ? inSamples - 1 : idx + 1]) * frac;
+        const std::size_t nxt = (idx + 1 < inSamples) ? idx + 1 : idx;
+        double v = in[idx] * (1.0 - frac) + in[nxt] * frac;
         out[i] = (std::int16_t)v;
     }
     w.data.resize(out.size() * 2);
@@ -290,31 +355,24 @@ void ResampleTo(Wav& w, std::uint32_t targetRate = 44100)
     w.sampleRate = targetRate;
 }
 
-// DirectSound 并发播放器：每个 .wav 都作为独立的二次缓冲区播放，由系统混音，
-// 因此可以同时叠播多条音效；且不依赖游戏的音频引擎，独立出声。
-// ---- winmm waveOut 多缓冲播放器 ----
-// 每条音效：新开一个独立 waveOut 句柄 → 软件增益(按音量缩放 PCM) → 写入 → 播完释放。
-// 由于每条音效独立句柄 + 独立线程，可**并发叠播**；且音量是**逐音效**的(软件增益)。
-// 与 PlaySound 同源(winmm)，所以在能出声的机器上必定能响；不依赖游戏音频引擎/Lua。
-class Engine
+const int kMaxVoices = 6;   // simultaneous waveOut voices; excess is dropped
+std::atomic<int> gVoices{0};
+
+struct Engine
 {
-public:
     bool Init()
     {
-        // waveOut 无需初始化 DSOUND；此函数仅用于验证 waveOut 可用。
         ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-        mOk = true;
         return true;
     }
 
-    // 播放：复制 PCM 并按 volume(0..1) 施加软件增益，然后异步用 waveOut 播出。
-    // delayMs > 0 时，交由工作线程先延时再播放（不阻塞本线程/轮询线程）。
+    // Copy PCM with per-sound gain, then hand to a worker thread. Returns true
+    // once the copy was accepted; the voice cap is enforced inside the worker.
     bool Play(const Wav& w, float volume, unsigned delayMs = 0)
     {
         if (!w.valid || w.data.empty()) { mLastHr = E_INVALIDARG; return false; }
-        if (w.bitsPer != 16) { mLastHr = E_INVALIDARG; return false; }   // 仅支持16位PCM
+        if (w.bitsPer != 16) { mLastHr = E_INVALIDARG; return false; }
 
-        // 把样本 + 格式打包，交给工作线程，避免静态竞态。
         PlayCtx* ctx = new PlayCtx();
         const std::size_t n = w.data.size() / 2;
         ctx->samples.resize(n);
@@ -333,8 +391,6 @@ public:
         return true;
     }
 
-    void Cleanup() {}
-
     HRESULT LastHr() const { return mLastHr; }
 
 private:
@@ -346,9 +402,19 @@ private:
         unsigned delayMs = 0;
     };
 
+    struct VoiceGuard {
+        VoiceGuard() { ++gVoices; }
+        ~VoiceGuard() { --gVoices; }
+    };
+
     static DWORD WINAPI PlayWorker_Host(LPVOID param)
     {
         std::unique_ptr<PlayCtx> ctx(static_cast<PlayCtx*>(param));
+        if (gVoices.load() >= kMaxVoices) {
+            plugin::LogD("[voice] cap %d reached, voice dropped", kMaxVoices);
+            return 0;
+        }
+        VoiceGuard vg;
         PlayWorker(*ctx);
         return 0;
     }
@@ -356,8 +422,8 @@ private:
     static void PlayWorker(PlayCtx& ctx)
     {
         if (ctx.samples.empty()) return;
-        // 每条音效可设置播放延时（默认 0 = 立即），在开播前等 delayMs。
         if (ctx.delayMs > 0) ::Sleep(ctx.delayMs);
+
         WAVEFORMATEX wfx = {};
         wfx.wFormatTag = WAVE_FORMAT_PCM;
         wfx.nChannels = ctx.channels;
@@ -380,15 +446,12 @@ private:
             waveOutClose(hwo); return;
         }
         waveOutWrite(hwo, &hdr, sizeof(hdr));
-        // 等待播放完
         while ((hdr.dwFlags & WHDR_DONE) == 0)
-            Sleep(10);
+            ::Sleep(10);
         waveOutUnprepareHeader(hwo, &hdr, sizeof(hdr));
         waveOutClose(hwo);
     }
 
-private:
-    bool mOk = false;
     HRESULT mLastHr = S_OK;
 };
 
@@ -397,102 +460,179 @@ Engine g_audio;
 } // namespace audio
 
 // ===========================================================================
-//  Plugin logic
+//  Config model + ini parsing
 // ===========================================================================
-namespace plugin
-{
-HMODULE gModule = nullptr;
-volatile LONG gStop = 0;
+namespace plugin {
 
-std::wstring gModuleDir;
-std::wstring gIniPath;
-std::wstring gLogPath;
-
-// 游戏模块基址（用于 RVA -> 绝对地址）。
-std::uintptr_t gGameBase = 0;
-
-// --- 15.23.00 游戏内“蓝色系统消息框”函数（沿用 QuickEquipmentLoadout 确认的地址） ---
-// 这是最初“能实现聊天框回显”的版本用的地址与调用约定。
-const std::uintptr_t kSystemMessageRva = 0x1A540D0;
-const std::uintptr_t kSystemMessageMgrRva = 0x500CE70;   // 系统消息管理器指针
-typedef void (*SystemMessageFn)(void* manager, const char* utf8Buffer,
-                                float duration, std::int32_t messageId, bool emphasized);
-SystemMessageFn g_systemMessage = nullptr;
-
-// --- 15.23.00 游戏聊天消息缓冲（MESSAGE_BASE，收到/发送的消息文本都在这里） ---
-// 绝对 0x144F87FF0，RVA = 0x4F87FF0。正文 = *(base)+0xC0，长度 = *(base)+0xBC。
-const std::uintptr_t kMessageBaseRva = 0x4F87FF0;
-const std::uintptr_t kMessageLenOff  = 0xBC;
-const std::uintptr_t kMessageBodyOff = 0xC0;
-
-// --- 游戏内聊天输入挂钩地址（0 = 尚未提供，需用 CE 定位后填入） ---
-
+// --- global switches (also toggled by hotkeys / chat commands) ---
 std::uintptr_t gPlayerRoot = 0x1450139A0ULL;
 int gPollMs = 60;
 int gDebounceMs = 120;
 volatile int gVolumePct = 100;
 volatile int gEnabled = 1;
-// 播放方式：1 = 用 winmm PlaySound（绝大多数情况都能响，单路）；
-//            0 = 用 DirectSound（可并发叠播，但部分机器/驱动会失败）。
-volatile int g_usePlaySound = 1;
-// 游戏内聊天栏回显：1 = 用 QuickEquipmentLoadout 确认过的聊天函数显示结果（可用）。
+volatile int gMoreSounds = 1;   // legacy: only affects pools without any fixed sound
+std::uint32_t gGaugePtrOff = 0x76B0;
+std::uint32_t gGaugeValOff = 0x2370;
+
 volatile int g_useChatEcho = 1;
-// 游戏聊天框 /wse 指令：读取游戏聊天消息缓冲。
 volatile int g_useChatCommands = 1;
+volatile int g_hotkeysEnabled = 1;   // 启用/关闭热键（ini [WeaponSoundEnhance] Hotkeys=0）
 
-// --- 热键（默认 Ctrl 组合，可在 ini [Hotkeys] 覆盖） ---
-int gModifierKey = VK_CONTROL;   // 0 = 不要求修饰键
-int gReloadKey   = VK_F5;        // 重载 ini
-int gVolUpKey    = VK_UP;        // 音量 +
-int gVolDownKey  = VK_DOWN;      // 音量 -
-int gSetVolKey   = VK_F8;        // 设定具体音量为 gSetVolValue
-int gToggleKey   = VK_F9;        // 开关（启用/停用音效）
-int gMoreKey     = VK_F10;       // 切换“更多备选音效”
-int gMoreSounds  = 1;            // 是否使用每条目里的额外音效（0=只取第一条）
-int gSetVolValue = 50;           // gSetVolKey 被按时设定的音量
-bool gHotkeyInit = false;
+// --- hotkeys (defaults; ini [Hotkeys] overrides) ---
+int gModifierKey = VK_CONTROL;
+int gReloadKey   = VK_F5;
+int gVolUpKey    = VK_UP;
+int gVolDownKey  = VK_DOWN;
+int gSetVolKey   = VK_F8;
+int gToggleKey   = VK_F9;
+int gMoreKey     = VK_F10;
+int gComboKey    = VK_F11;   // 切换当前武器配置组合
+int gSetVolValue = 50;
 
-struct AttackEntry
+// --- game module addresses (15.23.00) ---
+std::uintptr_t gGameBase = 0;
+const std::uintptr_t kSystemMessageRva = 0x1A540D0;
+const std::uintptr_t kSystemMessageMgrRva = 0x500CE70;
+typedef void (*SystemMessageFn)(void* manager, const char* utf8Buffer,
+                                float duration, std::int32_t messageId, bool emphasized);
+SystemMessageFn g_systemMessage = nullptr;
+
+const std::uintptr_t kMessageBaseRva = 0x4F87FF0;
+const std::uintptr_t kMessageLenOff  = 0xBC;
+const std::uintptr_t kMessageBodyOff = 0xC0;
+
+// ===========================================================================
+//  Data model
+// ===========================================================================
+
+// One selectable sound. path is relative to the module dir (usually "sounds/x.wav").
+struct SoundSpec
 {
-    std::int32_t weaponType = -1;
-    std::int32_t actionLmt  = -1;
-    std::int32_t fsmId      = -1;
-    std::vector<std::string> sounds;
-    std::vector<int> delays;   // 每条音效的播放延时(ms)，与 sounds 一一对应；缺省/越界按 0 处理
-    std::vector<int> vols;     // 每条音效音量(0..100)，100 = 相对主音量无额外调整(默认)，与 sounds 一一对应
-    // 每个动作条目独立地“是否已触发过”的锁存，防止同一次攻击重复触发。
-    bool inMatch = false;
+    std::string path;
+    int delay = 0;    // ms to wait before playback
+    int vol = 100;    // 0..100, 100 = no extra gain beyond master volume
+    bool fixed = false; // F flag: always plays when its pool is hit
+    bool plain = true;  // pure legacy token (no |d|v|F) -> SoundDelay/SoundVol apply
 };
-std::vector<AttackEntry> attacks;
-std::vector<std::pair<std::string, audio::Wav> > cache;
-// 缓存访问互斥锁：重载(清缓存) 与 播放线程(取缓存) 共用，防止重载导致悬空指针。
+
+struct Pool
+{
+    std::vector<SoundSpec> specs;
+
+    bool empty() const { return specs.empty(); }
+    bool HasAnyFixed() const
+    {
+        for (const auto& s : specs) if (s.fixed) return true;
+        return false;
+    }
+};
+
+// One ini [Attack...] section: trigger conditions + sound pools.
+struct Attack
+{
+    int weaponType = -1;          // -1 = any weapon
+    int fsmId = -1;               // -1 = any FSM
+    std::vector<int> lmt;         // empty = any LMT
+    std::string name;             // Name= display label (ignored by matching)
+    std::string group;            // Group= logical action: all members fire at most
+                                  // once per action occurrence (first trigger wins)
+    Pool defPool;                 // default pool (tag = "any")
+    Pool gaugePool[4];            // LS gauge pools, keyed by level 0..3
+    bool inMatch = false;         // edge latch: fire once per action (ungrouped entries)
+
+    bool HasSounds() const
+    {
+        if (!defPool.empty()) return true;
+        for (int i = 0; i < 4; ++i) if (!gaugePool[i].empty()) return true;
+        return false;
+    }
+};
+
+// 0..3 -> names used by Sound:<tag> keys
+const char* const kGaugeNames[4] = {"none", "white", "yellow", "red"};
+
+int GaugeTagToLevel(const std::string& tag)
+{
+    if (tag.empty()) return -1;
+    if (tag.size() == 1 && tag[0] >= '0' && tag[0] <= '3') return tag[0] - '0';
+    for (int i = 0; i < 4; ++i) {
+        std::string n = kGaugeNames[i];
+        if (n == tag) return i;
+    }
+    return -1;
+}
+
+std::vector<Attack> gAttacks;
+std::mutex gCfgMutex;
+
+std::vector<Attack> SnapshotAttacks()
+{
+    std::lock_guard<std::mutex> lk(gCfgMutex);
+    return gAttacks;
+}
+
+// --- wav cache: guarded by gCacheMutex, populated by preload ---
 std::mutex gCacheMutex;
-// 同一音效文件在最近 N 毫秒内不重复播放（防止同一次攻击经由不同条目触发两次）。
-std::vector<std::pair<std::string, std::uint64_t> > soundCooldown;
+std::vector<std::pair<std::string, audio::Wav>> gCache;
+
+// Per-file replay cooldown (random AND fixed layer), ms: stops the same sound
+// file from stacking on itself across duplicate trigger instants/entries.
+std::vector<std::pair<std::string, std::uint64_t>> soundCooldown;
 const int kSoundCooldownMs = 400;
 
-void Log(const char* fmt, ...);
-void ApplyVolume();
+// Action-group state: entries sharing one Group= name belong to a single
+// logical attack; the group fires at most once per action occurrence, with the
+// gauge level frozen at the first trigger instant (mid-action level-ups like
+// the LS spirit finisher no longer fire the attack twice).
+struct GroupRt { std::uint64_t lastSeen = 0; bool fired = false; };
+std::vector<std::pair<std::string, GroupRt>> g_groups;
+const std::uint64_t kGroupResetMs = 450;   // quiet time before the group re-arms
 
-void LogInit()
+GroupRt& GroupState(const std::string& g)
 {
-    gLogPath = gModuleDir + L"WeaponSoundEnhance.log";
-    ::DeleteFileW(gLogPath.c_str());
-    Log("WeaponSoundEnhance 1.0.0 starting");
+    for (auto& p : g_groups)
+        if (p.first == g) return p.second;
+    g_groups.emplace_back(g, GroupRt());
+    return g_groups.back().second;
 }
-void Log(const char* fmt, ...)
+
+// ---- per-weapon config combos ----
+// 每个武器可有多个命名"组合"(combo)，每个组合是一组该武器的 [Attack] 条目；
+// [Active] 表决定每武器当前用哪个组合。切换某武器组合只影响该武器，其它武器不动。
+std::map<int, std::map<std::string, std::vector<Attack>>> g_combos;  // weapon -> comboName -> attacks
+std::map<int, std::string>  g_activeCombo;                            // weapon -> active comboName (""=默认)
+std::map<int, std::vector<std::string>> g_comboOrder;                 // weapon -> combo names (默认""在前)
+
+// 依据 g_combos + g_activeCombo 重建"当前激活"的攻击条目表（运行线程只遍历 gAttacks）。
+void RebuildActiveAttacks()
 {
-    char buf[2048] = {};
-    va_list ap; va_start(ap, fmt); vsnprintf_s(buf, _TRUNCATE, fmt, ap); va_end(ap);
-    ::OutputDebugStringA(buf);
-    FILE* f = nullptr;
-    if (_wfopen_s(&f, gLogPath.c_str(), L"ab") == 0 && f) {
-        SYSTEMTIME st{}; ::GetLocalTime(&st);
-        fprintf(f, "[%02u:%02u:%02u.%03u] %s\n",
-                st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, buf);
-        fclose(f);
+    std::vector<Attack> acts;
+    for (const auto& wc : g_combos) {
+        const int w = wc.first;
+        if (w == -1) {   // 任意武器：仅其"默认"组合常驻
+            auto it = wc.second.find("");
+            if (it != wc.second.end()) acts.insert(acts.end(), it->second.begin(), it->second.end());
+            continue;
+        }
+        std::string active = "";
+        auto a = g_activeCombo.find(w);
+        if (a != g_activeCombo.end()) active = a->second;
+        if (!wc.second.count(active)) active = "";   // 选中的组合不存在 → 回退默认
+        auto it = wc.second.find(active);
+        if (it != wc.second.end()) acts.insert(acts.end(), it->second.begin(), it->second.end());
+    }
+    {
+        std::lock_guard<std::mutex> lk(gCfgMutex);
+        gAttacks = std::move(acts);
+        g_groups.clear();   // 组合切换后旧组状态作废
     }
 }
+
+std::uint64_t gLastTrigger = 0;
+
+// ===========================================================================
+//  Text helpers
+// ===========================================================================
 
 std::wstring ReplaceExt(const std::wstring& path, const wchar_t* newExt)
 {
@@ -504,27 +644,81 @@ std::wstring ReplaceExt(const std::wstring& path, const wchar_t* newExt)
     return p.substr(0, dot) + newExt;
 }
 
-// 列出 sounds\ 目录下的 .wav 文件并打印，用于判断音效文件是否存在。
-void ScanSoundsFolder()
+inline std::string Trim(const std::string& s)
 {
-    std::wstring dir = gModuleDir + L"sounds";
-    std::wstring pattern = dir + L"\\*.wav";
-    WIN32_FIND_DATAW fd{};
-    HANDLE h = ::FindFirstFileW(pattern.c_str(), &fd);
-    int count = 0;
-    if (h != INVALID_HANDLE_VALUE) {
-        do {
-            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-                Log("  found wav: %s", strconv::ToUtf8(fd.cFileName).c_str());
-                ++count;
-            }
-        } while (::FindNextFileW(h, &fd));
-        ::FindClose(h);
-    }
-    Log("sounds dir '%s' has %d .wav file(s)", strconv::ToUtf8(dir).c_str(), count);
+    std::size_t a = s.find_first_not_of(" \t\r\n");
+    if (a == std::string::npos) return std::string();
+    std::size_t b = s.find_last_not_of(" \t\r\n");
+    return s.substr(a, b - a + 1);
 }
 
-// 以 UTF-8 读取整个文本文件（用于配置文件），自动跳过 UTF-8 BOM。
+inline std::string ToLower(std::string s)
+{
+    for (auto& c : s) if (c >= 'A' && c <= 'Z') c += 32;
+    return s;
+}
+
+// Split on ';' ',' (values may be UTF-8)
+void SplitList(const std::string& value, std::vector<std::string>& out)
+{
+    std::string cur;
+    for (std::size_t i = 0; i <= value.size(); ++i) {
+        char cc = (i < value.size()) ? value[i] : '\0';
+        if (cc == '\0' || cc == ';' || cc == ',') {
+            std::string tok = Trim(cur);
+            if (!tok.empty()) out.push_back(tok);
+            cur.clear();
+            if (cc == '\0') break;
+        } else {
+            cur += cc;
+        }
+    }
+}
+
+// Split one sound token on '|':  path [ | delay | vol | flags ]
+// flags may contain 'F' -> fixed.
+void ParseSoundSpec(const std::string& token, SoundSpec& sp)
+{
+    sp = SoundSpec{};
+    std::vector<std::string> parts;
+    std::string cur;
+    for (std::size_t i = 0; i <= token.size(); ++i) {
+        char cc = (i < token.size()) ? token[i] : '\0';
+        if (cc == '\0' || cc == '|') {
+            parts.push_back(Trim(cur));
+            cur.clear();
+            if (cc == '\0') break;
+        } else {
+            cur += cc;
+        }
+    }
+
+    sp.path = parts.empty() ? "" : parts[0];
+    if (parts.size() >= 4) {
+        // explicit form: path|delay|vol|flags
+        sp.plain = false;
+        sp.delay = parts[1].empty() ? 0 : std::atoi(parts[1].c_str());
+        if (sp.delay < 0) sp.delay = 0;
+        int v = parts[2].empty() ? 100 : std::atoi(parts[2].c_str());
+        sp.vol = v < 0 ? 0 : (v > 100 ? 100 : v);
+        std::string flags = ToLower(parts[3]);
+        sp.fixed = flags.find('f') != std::string::npos;
+    }
+    // parts.size() == 2 / 3 without flags: accept path|delay|vol too
+    else if (parts.size() == 3) {
+        sp.plain = false;
+        sp.delay = parts[1].empty() ? 0 : std::atoi(parts[1].c_str());
+        if (sp.delay < 0) sp.delay = 0;
+        int v = parts[2].empty() ? 100 : std::atoi(parts[2].c_str());
+        sp.vol = v < 0 ? 0 : (v > 100 ? 100 : v);
+    } else if (parts.size() == 2) {
+        sp.plain = false;
+        sp.delay = parts[1].empty() ? 0 : std::atoi(parts[1].c_str());
+        if (sp.delay < 0) sp.delay = 0;
+    }
+}
+
+// Read a whole ini file as UTF-8, skipping a BOM if present.
 bool ReadFileUtf8(const std::wstring& path, std::string& out)
 {
     HANDLE h = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
@@ -547,21 +741,104 @@ bool ReadFileUtf8(const std::wstring& path, std::string& out)
     return true;
 }
 
-inline std::string Trim(const std::string& s)
+std::uintptr_t ParseHex(const std::string& s0)
 {
-    std::size_t a = s.find_first_not_of(" \t\r\n");
-    if (a == std::string::npos) return std::string();
-    std::size_t b = s.find_last_not_of(" \t\r\n");
-    return s.substr(a, b - a + 1);
+    std::string s = Trim(s0);
+    const char* p = s.c_str();
+    while (*p == ' ' || *p == '\t') ++p;
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+    unsigned long long hv = 0;
+    if (sscanf_s(p, "%llx", &hv) != 1) return 0;
+    return static_cast<std::uintptr_t>(hv);
 }
 
-// 逐行解析 INI。允许 UTF-8 中文值。sections 用 name 匹配。
-// onValue(name, key, valueUtf8, ctx) 在遇到 key=value 时回调。
-typedef void (*IniValueCb)(const std::string& name, const std::string& key, const std::string& value, void* ctx);
+int ClampInt(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
-void WalkIni(const std::string& txt, IniValueCb cb, void* ctx)
+// ===========================================================================
+//  Config loading
+// ===========================================================================
+
+// Append parsed specs to a pool. plainOrder records (pool, index) of plain
+// legacy tokens so SoundDelay/SoundVol can be applied later without dangling
+// pointers across vector growth.
+void AppendSpecs(Pool& pool, const std::string& value,
+                 std::vector<std::pair<Pool*, int>>& plainOrder)
 {
-    std::string section;   // 当前段名（不含方括号）
+    std::vector<std::string> toks;
+    SplitList(value, toks);
+    for (const auto& tok : toks) {
+        if (tok.empty()) continue;
+        SoundSpec sp;
+        ParseSoundSpec(tok, sp);
+        if (sp.path.empty()) continue;
+        // dedupe by path within the pool (F and random sets stay disjoint)
+        bool dup = false;
+        for (const auto& ex : pool.specs) {
+            if (ex.path == sp.path) { dup = true; break; }
+        }
+        if (dup) {
+            LogD("config: duplicate sound '%s' ignored", sp.path.c_str());
+            continue;
+        }
+        const int idx = (int)pool.specs.size();
+        const bool wasPlain = sp.plain;
+        pool.specs.push_back(std::move(sp));
+        if (wasPlain) plainOrder.emplace_back(&pool, idx);
+    }
+}
+
+std::wstring AbsFor(const std::string& rel);
+
+void LoadConfig()
+{
+    // drop decoded wavs so edited files are re-read from disk
+    { std::lock_guard<std::mutex> lk(gCacheMutex); gCache.clear(); }
+
+    std::string txt;
+    if (!ReadFileUtf8(gIniPath, txt) || txt.empty()) {
+        player::gRoot = gPlayerRoot;
+        {
+            std::lock_guard<std::mutex> lk(gCfgMutex);
+            gAttacks.clear();
+            g_groups.clear();
+        }
+        g_combos.clear();
+        g_activeCombo.clear();
+        g_comboOrder.clear();
+        Log("no config file; using defaults (PlayerRoot=0x%llX)",
+            (unsigned long long)gPlayerRoot);
+        return;
+    }
+
+    // ---- combo-aware parse ----
+    // key 形式： "cb|<weapon>|<comboName>" 或 "def|<weapon>"(无组合的旧条目/默认组合)
+    std::map<std::string, std::vector<Attack>> comboData;
+    std::map<int, std::string> activeMap;                 // [Active] W<type>=<combo>
+    bool inAttack = false, inCombo = false;
+    int  curComboW = -1;
+    std::string section, curComboName;
+    Attack cur;
+    std::vector<int> rawDelay, rawVol;
+    std::vector<std::pair<Pool*, int>> plainOrder;
+
+    auto finishEntry = [&]() {
+        if (!inAttack) return;
+        for (std::size_t i = 0; i < plainOrder.size(); ++i) {
+            SoundSpec& sp = plainOrder[i].first->specs[plainOrder[i].second];
+            if (i < rawDelay.size() && rawDelay[i] > 0) sp.delay = rawDelay[i];
+            if (i < rawVol.size()) sp.vol = ClampInt(rawVol[i], 0, 100);
+        }
+        std::string key = (inCombo && curComboW >= 0)
+                              ? ("cb|" + std::to_string(curComboW) + "|" + curComboName)
+                              : ("def|" + std::to_string(cur.weaponType));
+        comboData[key].push_back(std::move(cur));
+        inAttack = false;
+        cur = Attack();
+        rawDelay.clear();
+        rawVol.clear();
+        plainOrder.clear();
+    };
+
     std::size_t pos = 0;
     while (pos < txt.size()) {
         std::size_t eol = txt.find('\n', pos);
@@ -571,176 +848,271 @@ void WalkIni(const std::string& txt, IniValueCb cb, void* ctx)
         if (!line.empty() && line.back() == '\r') line.pop_back();
         line = Trim(line);
         if (line.empty() || line[0] == ';' || line[0] == '#') continue;
+
         if (line[0] == '[' && line.back() == ']') {
-            section = line.substr(1, line.size() - 2);
+            finishEntry();
+            section = Trim(line.substr(1, line.size() - 2));
+            if (section.size() >= 6 && section.compare(0, 6, "Attack") == 0) {
+                inAttack = true;          // 组合上下文(若有)延续
+                cur = Attack();
+            } else if (section == "Active") {
+                inAttack = false; inCombo = false; curComboW = -1; curComboName.clear();
+            } else if (section.size() > 6 && section.compare(0, 6, "Weapon") == 0) {
+                // [Weapon<type>:<comboName>]
+                std::string rest = section.substr(6);
+                std::size_t c = rest.find(':');
+                if (c != std::string::npos) {
+                    curComboW = std::atoi(rest.substr(0, c).c_str());
+                    curComboName = rest.substr(c + 1);
+                    inCombo = true; inAttack = false;
+                } else {
+                    inCombo = false; curComboW = -1; curComboName.clear(); inAttack = false;
+                }
+            } else {
+                // 其它段：重置组合上下文
+                inCombo = false; curComboW = -1; curComboName.clear(); inAttack = false;
+            }
             continue;
         }
+
         std::size_t eq = line.find('=');
         if (eq == std::string::npos) continue;
         std::string key = Trim(line.substr(0, eq));
         std::string val = Trim(line.substr(eq + 1));
-        if (!key.empty()) cb(section, key, val, ctx);
-    }
-}
 
-// LoadConfig 的回调上下文
-struct ConfigCtx {
-    int currentAttack = 0;   // 0 = 不在 Attack 段
-};
-
-void OnIniValue(const std::string& section, const std::string& key, const std::string& value, void* ctx)
-{
-    (void)ctx;
-    bool isGlobal  = (section == "WeaponSoundEnhance");
-    bool isHotkeys = (section == "Hotkeys");
-    bool isAttack  = (section.size() > 6 && section.compare(0, 6, "Attack") == 0);
-
-    if (isGlobal) {
-        if (key == "PlayerRoot") {
-            const char* s = value.c_str();
-            while (*s == ' ' || *s == '\t') ++s;
-            if (s[0]=='0' && (s[1]=='x' || s[1]=='X')) s += 2;
-            unsigned long long hv = 0;
-            if (sscanf_s(s, "%llx", &hv) == 1)
-                gPlayerRoot = static_cast<std::uintptr_t>(hv);
-        } else if (key == "PollMs") {
-            int v = atoi(value.c_str()); if (v >= 5) gPollMs = v;
-        } else if (key == "DebounceMs") {
-            int v = atoi(value.c_str()); if (v >= 0) gDebounceMs = v;
-        } else if (key == "Volume") {
-            int v = atoi(value.c_str()); if (v < 0) v = 0; if (v > 100) v = 100; gVolumePct = v;
-        } else if (key == "Enabled") {
-            gEnabled = atoi(value.c_str()) != 0;
-        } else if (key == "MoreSounds") {
-            gMoreSounds = atoi(value.c_str()) != 0;
-        } else if (key == "Playback") {
-            // "playsound"/"ps" => 1 ; "dsound"/"ds" => 0
-            std::string v = value; for (auto& c : v) if (c >= 'A' && c <= 'Z') c += 32;
-            if (v == "dsound" || v == "ds") g_usePlaySound = 0;
-            else g_usePlaySound = 1;
-        } else if (key == "ChatEcho") {
-            g_useChatEcho = atoi(value.c_str()) != 0;
-        } else if (key == "ChatCommands") {
-            g_useChatCommands = atoi(value.c_str()) != 0;
-        }
-        return;
-    }
-
-    if (isHotkeys) {
-        if      (key == "ModifierKey") gModifierKey = atoi(value.c_str());
-        else if (key == "ReloadKey")   gReloadKey   = atoi(value.c_str());
-        else if (key == "VolUpKey")    gVolUpKey    = atoi(value.c_str());
-        else if (key == "VolDownKey")  gVolDownKey  = atoi(value.c_str());
-        else if (key == "SetVolKey")   gSetVolKey   = atoi(value.c_str());
-        else if (key == "ToggleKey")   gToggleKey   = atoi(value.c_str());
-        else if (key == "MoreKey")     gMoreKey     = atoi(value.c_str());
-        else if (key == "SetVolValue") { int v = atoi(value.c_str()); if (v<0)v=0; if(v>100)v=100; gSetVolValue = v; }
-        return;
-    }
-
-    if (!isAttack) return;
-
-    // 段名 Attack<N>
-    int idx = atoi(section.c_str() + 6);
-    if (idx < 1) return;
-    // 保证 attacks 至少到 idx
-    while ((int)attacks.size() < idx) attacks.push_back(AttackEntry());
-    AttackEntry& e = attacks[idx - 1];
-    if (key == "WeaponType")      e.weaponType = atoi(value.c_str());
-    else if (key == "ActionLMT")  e.actionLmt  = atoi(value.c_str());
-    else if (key == "FSMId")      e.fsmId      = atoi(value.c_str());
-    else if (key == "Sound") {
-        // 分号或逗号分隔，保留中文（value 已是 UTF-8 字节）
-        std::string cur;
-        for (std::size_t i = 0; i <= value.size(); ++i) {
-            char cc = (i < value.size()) ? value[i] : '\0';
-            if (cc == '\0' || cc == ';' || cc == ',') {
-                std::string tok = Trim(cur);
-                if (!tok.empty()) e.sounds.push_back(tok);
-                cur.clear();
-                if (cc == '\0') break;
-            } else {
-                cur += cc;
+        if (!inAttack) {
+            if (section == "WeaponSoundEnhance") {
+                if (key == "PlayerRoot")  gPlayerRoot = ParseHex(val);
+                else if (key == "PollMs") { int v = std::atoi(val.c_str()); if (v >= 5) gPollMs = v; }
+                else if (key == "DebounceMs") { int v = std::atoi(val.c_str()); if (v >= 0) gDebounceMs = v; }
+                else if (key == "Volume") gVolumePct = ClampInt(std::atoi(val.c_str()), 0, 100);
+                else if (key == "Enabled") gEnabled = std::atoi(val.c_str()) != 0;
+                else if (key == "MoreSounds") gMoreSounds = std::atoi(val.c_str()) != 0;
+                else if (key == "ChatEcho") g_useChatEcho = std::atoi(val.c_str()) != 0;
+                else if (key == "ChatCommands") g_useChatCommands = std::atoi(val.c_str()) != 0;
+                else if (key == "Hotkeys") g_hotkeysEnabled = std::atoi(val.c_str()) != 0;
+                else if (key == "Debug") gDebug = std::atoi(val.c_str()) != 0;
+                else if (key == "GaugePtrOff") { std::uintptr_t v = ParseHex(val); if (v) gGaugePtrOff = (std::uint32_t)v; }
+                else if (key == "GaugeValOff") { std::uintptr_t v = ParseHex(val); if (v) gGaugeValOff = (std::uint32_t)v; }
+            } else if (section == "Hotkeys") {
+                if (key == "ModifierKey") gModifierKey = std::atoi(val.c_str());
+                else if (key == "ReloadKey")   gReloadKey   = std::atoi(val.c_str());
+                else if (key == "VolUpKey")    gVolUpKey    = std::atoi(val.c_str());
+                else if (key == "VolDownKey")  gVolDownKey  = std::atoi(val.c_str());
+                else if (key == "SetVolKey")   gSetVolKey   = std::atoi(val.c_str());
+                else if (key == "ToggleKey")   gToggleKey   = std::atoi(val.c_str());
+                else if (key == "MoreKey")     gMoreKey     = std::atoi(val.c_str());
+                else if (key == "SetVolValue") gSetVolValue = ClampInt(std::atoi(val.c_str()), 0, 100);
+                else if (key == "ComboKey")    gComboKey    = std::atoi(val.c_str());
+            } else if (section == "Active") {
+                // W<type>=<comboName>
+                if (key.size() > 1 && (key[0] == 'W' || key[0] == 'w')) {
+                    int w = std::atoi(key.c_str() + 1);
+                    if (w >= -1) activeMap[w] = val;
+                }
             }
+            continue;
         }
-    }
-    else if (key == "SoundDelay") {
-        // 与 Sound 对应的每音效延时(ms)，分号/逗号分隔；缺省 0
-        std::string cur;
-        for (std::size_t i = 0; i <= value.size(); ++i) {
-            char cc = (i < value.size()) ? value[i] : '\0';
-            if (cc == '\0' || cc == ';' || cc == ',') {
-                std::string tok = Trim(cur);
-                e.delays.push_back(tok.empty() ? 0 : std::atoi(tok.c_str()));
-                cur.clear();
-                if (cc == '\0') break;
-            } else {
-                cur += cc;
+
+        // ---- attack section keys ----
+        if (key == "WeaponType") {
+            cur.weaponType = std::atoi(val.c_str());
+        } else if (key == "FSMId") {
+            cur.fsmId = std::atoi(val.c_str());
+        } else if (key == "ActionLMT" || key == "LMT") {
+            std::vector<std::string> toks;
+            SplitList(val, toks);
+            for (const auto& t : toks) {
+                int v = std::atoi(t.c_str());
+                if (v == -1) continue;   // wildcard already covered by empty list
+                bool dup = false;
+                for (int x : cur.lmt) if (x == v) { dup = true; break; }
+                if (!dup) cur.lmt.push_back(v);
             }
+        } else if (key == "Name") {
+            cur.name = val;
+        } else if (key == "Group") {
+            cur.group = val;
+        } else if (key == "Sound") {
+            AppendSpecs(cur.defPool, val, plainOrder);
+        } else if (key.size() > 6 && key.compare(0, 6, "Sound:") == 0) {
+            const int lvl = GaugeTagToLevel(ToLower(key.substr(6)));
+            if (lvl >= 0 && lvl < 4)
+                AppendSpecs(cur.gaugePool[lvl], val, plainOrder);
+            else
+                LogD("config: unknown gauge tag '%s' ignored", key.c_str());
+        } else if (key == "SoundDelay") {
+            std::vector<std::string> toks;
+            SplitList(val, toks);
+            for (const auto& t : toks)
+                rawDelay.push_back(t.empty() ? 0 : std::atoi(t.c_str()));
+        } else if (key == "SoundVol") {
+            std::vector<std::string> toks;
+            SplitList(val, toks);
+            for (const auto& t : toks)
+                rawVol.push_back(t.empty() ? 100 : std::atoi(t.c_str()));
         }
     }
-    else if (key == "SoundVol") {
-        // 与 Sound 对应的每音效音量(0..100)，分号/逗号分隔；缺省 100 = 相对主音量无额外调整
-        std::string cur;
-        for (std::size_t i = 0; i <= value.size(); ++i) {
-            char cc = (i < value.size()) ? value[i] : '\0';
-            if (cc == '\0' || cc == ';' || cc == ',') {
-                std::string tok = Trim(cur);
-                e.vols.push_back(tok.empty() ? 100 : std::atoi(tok.c_str()));
-                cur.clear();
-                if (cc == '\0') break;
-            } else {
-                cur += cc;
-            }
-        }
-    }
-}
-
-void LoadConfig()
-{
-    std::string txt;
-    // 重载时清音效内存缓存：下一次播放会从磁盘重新读取 wav（改 wav 立即生效，无需重开游戏）
-    { std::lock_guard<std::mutex> cLock(gCacheMutex); cache.clear(); }
-    Log("reload: sound cache cleared");
-
-    if (!ReadFileUtf8(gIniPath, txt) || txt.empty()) {
-        // 没有配置文件时用内置默认
-        player::gRoot = gPlayerRoot;
-        Log("no config file; using defaults (PlayerRoot=0x%llX)",
-            (unsigned long long)gPlayerRoot);
-        return;
-    }
-
-    attacks.clear();
-    ConfigCtx ctx;
-    WalkIni(txt, &OnIniValue, &ctx);
+    finishEntry();
 
     player::gRoot = gPlayerRoot;
-    Log("config: PlayerRoot=0x%llX PollMs=%d DebounceMs=%d Volume=%d Enabled=%d MoreSounds=%d attacks=%zu",
-        (unsigned long long)gPlayerRoot, gPollMs, gDebounceMs, gVolumePct, gEnabled, gMoreSounds, attacks.size());
-    ApplyVolume();   // 应用音量到 wave 输出
-    Log("hotkeys: Mod=%d Reload=%d VolUp=%d VolDown=%d SetVol=%d Toggle=%d More=%d SetVal=%d",
-        gModifierKey, gReloadKey, gVolUpKey, gVolDownKey, gSetVolKey, gToggleKey, gMoreKey, gSetVolValue);
+    player::gGaugePtrOff = gGaugePtrOff;
+    player::gGaugeValOff = gGaugeValOff;
+
+    // 组装 per-weapon combos 结构（按出现顺序记 order）
+    g_combos.clear();
+    g_comboOrder.clear();
+    for (const auto& kv : comboData) {
+        const std::string& k = kv.first;
+        int w = -1; std::string cname = "";
+        if (k.compare(0, 4, "def|") == 0) {
+            w = std::atoi(k.c_str() + 4);
+            cname = "";
+        } else if (k.compare(0, 3, "cb|") == 0) {
+            std::string rest = k.substr(3);
+            std::size_t p = rest.find('|');
+            if (p != std::string::npos) {
+                w = std::atoi(rest.substr(0, p).c_str());
+                cname = rest.substr(p + 1);
+            }
+        }
+        auto& vec = g_combos[w][cname];
+        vec.insert(vec.end(), kv.second.begin(), kv.second.end());
+        auto& order = g_comboOrder[w];
+        bool has = false;
+        for (const auto& o : order) if (o == cname) { has = true; break; }
+        if (!has) order.push_back(cname);
+    }
+    // 默认组合 "" 放最前（保证热键从默认开始）
+    for (auto& wo : g_comboOrder) {
+        auto& order = wo.second;
+        bool hasDef = false;
+        for (const auto& o : order) if (o.empty()) { hasDef = true; break; }
+        if (hasDef) {
+            std::vector<std::string> sorted;
+            sorted.push_back("");
+            for (const auto& o : order) if (!o.empty()) sorted.push_back(o);
+            order.swap(sorted);
+        }
+    }
+    g_activeCombo = activeMap;
+
+    RebuildActiveAttacks();
+    Log("config: combos=%zu attacks=%zu", g_combos.size(), gAttacks.size());
 }
 
-// 热键重载入口（等价于重新 LoadConfig）
-void ReloadConfig() { LoadConfig(); }
+void PreloadSounds();   // defined below
 
-// 解析游戏模块基址并解析系统消息函数指针。
+void ReloadConfig() { LoadConfig(); PreloadSounds(); }
+
+// ===========================================================================
+//  Wav cache / preload
+// ===========================================================================
+
+// Must be called with gCacheMutex held. Loads+decodes once, then returns ptr.
+const audio::Wav* GetCached(const std::wstring& absPath)
+{
+    const std::string key = strconv::ToUtf8(absPath);
+    for (auto& p : gCache)
+        if (p.first == key) return &p.second;
+
+    HANDLE h = ::CreateFileW(absPath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        Log("wav not found: %s", key.c_str());
+        return nullptr;
+    }
+    LARGE_INTEGER sz{};
+    if (!::GetFileSizeEx(h, &sz) || sz.QuadPart <= 0 || sz.QuadPart > (16LL << 20)) {
+        ::CloseHandle(h);
+        Log("wav size invalid: %s", key.c_str());
+        return nullptr;
+    }
+    std::vector<std::uint8_t> raw(static_cast<std::size_t>(sz.QuadPart));
+    DWORD rd = 0;
+    if (!::ReadFile(h, raw.data(), (DWORD)raw.size(), &rd, nullptr) || rd != (DWORD)raw.size()) {
+        ::CloseHandle(h);
+        return nullptr;
+    }
+    ::CloseHandle(h);
+
+    audio::Wav w;
+    if (!audio::ParseWav(raw.data(), raw.size(), w)) {
+        Log("parse failed: %s", key.c_str());
+        return nullptr;
+    }
+    if (w.sampleRate != 44100) {
+        audio::ResampleTo(w, 44100);
+        LogD("resampled: %s -> 44100", key.c_str());
+    }
+    LogD("loaded: %s | ch=%u rate=%u bits=%u bytes=%zu",
+         key.c_str(), w.channels, w.sampleRate, w.bitsPer, w.data.size());
+    gCache.emplace_back(std::move(key), std::move(w));
+    return &gCache.back().second;
+}
+
+// Decode every configured wav up front so triggering never does file I/O.
+void PreloadSounds()
+{
+    const std::vector<Attack> attacks = SnapshotAttacks();
+    std::vector<std::string> absPaths;   // utf8, unique
+    auto addSpecs = [&](const Pool& p) {
+        for (const auto& sp : p.specs) {
+            if (sp.path.empty()) continue;
+            const std::string key = strconv::ToUtf8(AbsFor(sp.path));
+            bool dup = false;
+            for (const auto& e : absPaths) if (e == key) { dup = true; break; }
+            if (!dup) absPaths.push_back(key);
+        }
+    };
+    for (const auto& a : attacks) {
+        addSpecs(a.defPool);
+        for (int i = 0; i < 4; ++i) addSpecs(a.gaugePool[i]);
+    }
+
+    std::lock_guard<std::mutex> lk(gCacheMutex);
+    for (const auto& p : absPaths) {
+        bool cached = false;
+        for (auto& e : gCache) if (e.first == p) { cached = true; break; }
+        if (!cached) GetCached(strconv::ToWide(p));
+    }
+    Log("preload: %zu unique sound(s), cache=%zu", absPaths.size(), gCache.size());
+}
+
+// Relative "sounds/xxx.wav" -> absolute path below the module dir.
+std::wstring AbsFor(const std::string& rel)
+{
+    std::wstring w = gModuleDir + strconv::ToWide(rel);
+    for (auto& c : w) if (c == L'/') c = L'\\';
+    std::wstring out;
+    out.reserve(w.size());
+    bool prevSlash = false;
+    for (wchar_t c : w) {
+        if (c == L'\\') {
+            if (!prevSlash) out += c;
+            prevSlash = true;
+        } else {
+            out += c;
+            prevSlash = false;
+        }
+    }
+    return out;
+}
+
+// ===========================================================================
+//  In-game chat echo + /wse commands
+// ===========================================================================
+
 void ResolveGameBase()
 {
     HMODULE mod = ::GetModuleHandleW(L"MonsterHunterWorld.exe");
     if (!mod) return;
     gGameBase = reinterpret_cast<std::uintptr_t>(mod);
-    // 用 QuickEquipmentLoadout 确认过的 15.23.00 系统消息函数地址（用于聊天栏回显）。
-    const std::uintptr_t fn = gGameBase + kSystemMessageRva;
-    g_systemMessage = reinterpret_cast<SystemMessageFn>(fn);
+    g_systemMessage = reinterpret_cast<SystemMessageFn>(gGameBase + kSystemMessageRva);
     Log("game base=0x%llX msgFn=0x%llX",
         (unsigned long long)gGameBase, (unsigned long long)g_systemMessage);
 }
 
-// 在游戏内聊天/系统消息框显示文本（emphasized 用紫色(1)，否则蓝色(0)）。
-// 仅当 g_useChatEcho=1 且玩家在场景内时才调用原生函数；否则只写日志，避免崩溃。
 void ShowMessage(const char* utf8, bool emphasized = false)
 {
     if (g_useChatEcho == 0) {
@@ -748,24 +1120,13 @@ void ShowMessage(const char* utf8, bool emphasized = false)
         return;
     }
     if (g_systemMessage == nullptr || gGameBase == 0) return;
-    if (!player::RefreshIsInScene()) return;   // 非场景状态(如标题/加载)不调用
+    if (!player::RefreshIsInScene()) return;
     void* mgr = nullptr;
     if (!mem::ReadVal(gGameBase + kSystemMessageMgrRva, mgr) || mgr == nullptr) return;
-    char msgbuf[0x180] = {};   // 原生函数固定复制 0x17f 字节，给足 0x180
+    char msgbuf[0x180] = {};   // native fn copies 0x17f bytes at most
     _snprintf_s(msgbuf, _TRUNCATE, "%s", utf8);
     g_systemMessage(mgr, msgbuf, 0.0f, -1, emphasized);
 }
-
-// 音量设置(软件增益)在每次 Play 时按 gVolumePct 施加到该条音效样本上。
-// 这里不再调用 waveOutSetVolume(它会改游戏总音量)；仅做日志。
-void ApplyVolume()
-{
-    Log("volume set -> %d (per-sound software gain)", (int)gVolumePct);
-}
-
-// 解析一条 /wse <cmd> 指令并执行。返回 true 表示已识别。
-// 目前由热键线程触发（未来接入游戏聊天输入后，可从聊天框文本调用）。
-bool ParseCommand(const std::string& line);
 
 inline bool HandleWseCommand(const std::string& rest, bool& used)
 {
@@ -789,27 +1150,24 @@ inline bool HandleWseCommand(const std::string& rest, bool& used)
         ShowMessage("/wse reload(重载ini+音效) | on | off | more | one | vol N | vol+ | vol-");
     } else if (rest == "vol+" || rest == "up") {
         gVolumePct += 5; if (gVolumePct > 100) gVolumePct = 100;
-        ApplyVolume();
         char msg[0x180] = {}; _snprintf_s(msg, _TRUNCATE, "wse volume=%d", (int)gVolumePct);
         ShowMessage(msg, true);
     } else if (rest == "vol-" || rest == "down") {
         gVolumePct -= 5; if (gVolumePct < 0) gVolumePct = 0;
-        ApplyVolume();
         char msg[0x180] = {}; _snprintf_s(msg, _TRUNCATE, "wse volume=%d", (int)gVolumePct);
         ShowMessage(msg, true);
     } else if (rest.rfind("vol", 0) == 0 || rest.rfind("v=", 0) == 0 ||
                (rest[0] >= '0' && rest[0] <= '9')) {
-        // 先去掉前缀，再取数字。例如 "vol 5" -> "5"；"v 50" -> "50"；"10" -> "10"。
         std::string num = rest;
         if (num.rfind("vol", 0) == 0) num = num.substr(3);
         else if (num.rfind("v=", 0) == 0) num = num.substr(2);
         else if (num.rfind("v", 0) == 0) num = num.substr(1);
-        num = Trim(num);   // 只 trim 空白，不再按空格截断
-        int vv = atoi(num.c_str());
+        num = Trim(num);
+        int vv = std::atoi(num.c_str());
         if (vv >= 0 && vv <= 100) {
             gVolumePct = vv;
-            ApplyVolume();
-            char msg[0x180] = {}; _snprintf_s(msg, _TRUNCATE, "wse volume=%d", vv);
+            char msg[0x180] = {};
+            _snprintf_s(msg, _TRUNCATE, "wse volume=%d", vv);
             ShowMessage(msg, true);
         } else {
             ShowMessage("wse volume must be 0..100");
@@ -828,7 +1186,7 @@ bool ParseCommand(const std::string& line)
     std::size_t sp = s.find_first_of(" \t");
     std::string cmd = (sp == std::string::npos) ? s.substr(1) : s.substr(1, sp - 1);
     std::string rest = (sp == std::string::npos) ? "" : Trim(s.substr(sp + 1));
-    for (auto& c : cmd) if (c >= 'A' && c <= 'Z') c += 32;
+    cmd = ToLower(cmd);
     if (cmd == "wse" || cmd == "wsesound" || cmd == "sound") {
         bool used = false;
         HandleWseCommand(rest, used);
@@ -837,16 +1195,14 @@ bool ParseCommand(const std::string& line)
     return false;
 }
 
-// 读取游戏聊天消息缓冲（mhw-toolkit ChatMessageReceiver 同款机制），
-// 若内容以 /wse 开头，则执行并把缓冲清空。返回是否有指令被消费。
-// 无需挂钩游戏函数，纯读内存——你在游戏聊天框里发送的消息文本会出现在这里。
+// Read the game's chat message buffer; /wse prefixed messages are executed and
+// the buffer cleared. Pure memory reads, no function hooks.
 bool PollChatCommand()
 {
-    if (g_useChatCommands == 0) return false;   // 默认关闭，避免读游戏内存导致崩溃
+    if (g_useChatCommands == 0) return false;
     if (gGameBase == 0) return false;
-    // 只在玩家场景内读聊天缓冲，避免在标题/加载等状态读取不稳定内存。
     if (!player::RefreshIsInScene()) return false;
-    // 正文指针 = *(MESSAGE_BASE) + 0xC0 ；长度 = *(MESSAGE_BASE) + 0xBC
+
     std::uintptr_t base = 0;
     if (!mem::ReadVal(gGameBase + kMessageBaseRva, base) || base == 0) return false;
 
@@ -860,7 +1216,6 @@ bool PollChatCommand()
     std::string msg;
     if (mem::IsReadable(bodyPtr, (std::size_t)len + 1)) {
         msg.assign(reinterpret_cast<const char*>(bodyPtr), (std::size_t)len);
-        // 去掉尾部可能存在的 NUL/换行
         while (!msg.empty() && (msg.back() == '\0' || msg.back() == '\n' || msg.back() == '\r'))
             msg.pop_back();
     }
@@ -868,17 +1223,14 @@ bool PollChatCommand()
 
     std::string trimmed = Trim(msg);
     if (trimmed.rfind("/wse", 0) == 0 || trimmed.rfind("/wsesound", 0) == 0) {
-        // 时间窗去重（双保险）：1 秒内同文本消息视为重复跳过，避免同一条物理消息反复读。
         static std::string lastHandled;
         static std::uint64_t lastHandledAt = 0;
-        std::uint64_t now = ::GetTickCount64();
+        const std::uint64_t now = ::GetTickCount64();
         if (lastHandled == trimmed && (now - lastHandledAt) < 1000)
             return false;
         lastHandled = trimmed;
         lastHandledAt = now;
-        Log("[chat] '%s'", msg.c_str());
-        // 处理后清空消息缓冲（mhw-toolkit 同款做法），下次读到就是新消息。
-        // 仅在确认“确实可写”时清空，避免写只读页崩溃。
+        LogD("[chat] '%s'", msg.c_str());
         if (mem::IsWritable(bodyPtr, (std::size_t)len + 1))
             std::memset(reinterpret_cast<void*>(bodyPtr), 0, (std::size_t)len + 1);
         if (mem::IsWritable(lenPtr, 4))
@@ -888,69 +1240,136 @@ bool PollChatCommand()
     return false;
 }
 
+// ===========================================================================
+//  Trigger evaluation + playback selection
+// ===========================================================================
 
-const std::wstring AbsFor(const std::string& rel)
+// Per-file cooldown used by the random layer. Returns true when the file must
+// be skipped; refreshes/registers the timestamp exactly like v1 did.
+bool CooldownHit(const std::string& pathKey, std::uint64_t nowMs)
 {
-    // gModuleDir 已以 '\' 结尾；直接拼相对路径并归一化分隔符，避免出现 "\\"。
-    std::wstring w = gModuleDir + strconv::ToWide(rel);
-    for (auto& c : w) if (c == L'/') c = L'\\';
-    // 折行双反斜杠（若有）。
-    std::wstring out;
-    out.reserve(w.size());
-    bool prevSlash = false;
-    for (wchar_t c : w) {
-        if (c == L'\\') {
-            if (!prevSlash) out += c;
-            prevSlash = true;
-        } else {
-            out += c;
-            prevSlash = false;
+    for (auto& sc : soundCooldown) {
+        if (sc.first == pathKey) {
+            const bool cool = (nowMs - sc.second) < (std::uint64_t)kSoundCooldownMs;
+            sc.second = nowMs;
+            return cool;
         }
     }
-    return out;
+    soundCooldown.push_back(std::make_pair(pathKey, nowMs));
+    if (soundCooldown.size() > 64)
+        soundCooldown.erase(soundCooldown.begin());
+    return false;
 }
 
-// 注意：本函数不自带锁，调用方须在持有 gCacheMutex 的前提下调用/使用返回值
-// （触发路径已在外层加锁），以免重载清缓存时缓存被清空导致指针悬空。
-const audio::Wav* GetCached(const std::wstring& absPath)
+// Play one spec. Caller already decided cooldown policy.
+bool PlayOne(const SoundSpec& sp, const std::string& what)
 {
-    std::string key = strconv::ToUtf8(absPath);
-    for (auto& p : cache)
-        if (p.first == key) return &p.second;
-
-    HANDLE h = ::CreateFileW(absPath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-                             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) {
-        Log("wav not found: %s", strconv::ToUtf8(absPath).c_str());
-        return nullptr;
+    if (sp.path.empty()) return false;
+    const std::wstring abs = AbsFor(sp.path);
+    bool ok = false, hasWav = false;
+    unsigned wch = 0, wrate = 0, wbits = 0;
+    std::size_t wsz = 0;
+    {
+        std::lock_guard<std::mutex> lk(gCacheMutex);
+        const audio::Wav* w = GetCached(abs);
+        if (w) {
+            hasWav = true;
+            wch = w->channels; wrate = w->sampleRate; wbits = w->bitsPer;
+            wsz = w->data.size();
+            const float volF = ((float)gVolumePct / 100.0f) * ((float)sp.vol / 100.0f);
+            ok = audio::g_audio.Play(*w, volF, (unsigned)sp.delay);
+        }
     }
-    LARGE_INTEGER sz{};
-    if (!::GetFileSizeEx(h, &sz) || sz.QuadPart <= 0 || sz.QuadPart > (16LL << 20)) {
-        ::CloseHandle(h);
-        return nullptr;
+    if (!hasWav) {
+        LogD("MISS: %s (%s)", what.c_str(), strconv::ToUtf8(abs).c_str());
+        return false;
     }
-    std::vector<std::uint8_t> raw(static_cast<std::size_t>(sz.QuadPart));
-    DWORD rd = 0;
-    if (!::ReadFile(h, raw.data(), (DWORD)raw.size(), &rd, nullptr) || rd != (DWORD)raw.size()) {
-        ::CloseHandle(h);
-        return nullptr;
+    if (ok) {
+        LogD("PLAY: %s -> %s | ch=%u rate=%u bits=%u bytes=%zu vol=%d",
+             what.c_str(), strconv::ToUtf8(abs).c_str(), wch, wrate, wbits, wsz,
+             (int)gVolumePct);
+        return true;
     }
-    ::CloseHandle(h);
-
-    audio::Wav w;
-    if (!audio::ParseWav(raw.data(), raw.size(), w)) {
-        Log("parse failed: %s", strconv::ToUtf8(absPath).c_str());
-        return nullptr;
-    }
-    if (w.sampleRate != 44100) {
-        audio::ResampleTo(w, 44100);
-        Log("resampled: %s -> rate=44100", strconv::ToUtf8(absPath).c_str());
-    }
-    Log("loaded: %s | ch=%u rate=%u bits=%u bytes=%zu",
-        strconv::ToUtf8(absPath).c_str(), w.channels, w.sampleRate, w.bitsPer, w.data.size());
-    cache.emplace_back(std::move(key), std::move(w));
-    return &cache.back().second;
+    LogD("waveOut rejected (hr=0x%08X), PlaySoundW fallback: %s",
+         (unsigned)audio::g_audio.LastHr(), strconv::ToUtf8(abs).c_str());
+    ok = ::PlaySoundW(abs.c_str(), nullptr, SND_FILENAME | SND_ASYNC | SND_NODEFAULT) != FALSE;
+    LogD(ok ? "PLAY(fallback): %s" : "PLAYFAIL: %s", strconv::ToUtf8(abs).c_str());
+    return ok;
 }
+
+// Fire one matched entry. Returns true when at least one sound played.
+bool FireEntry(const Attack& e, int gauge, std::mt19937& rng, std::uint64_t nowMs,
+               const std::string& tag)
+{
+    // choose pool: gauge level pool when present, otherwise default pool
+    const Pool* pool = &e.defPool;
+    bool usedGauge = false;
+    if (gauge >= 0 && gauge <= 3 && !e.gaugePool[gauge].empty()) {
+        pool = &e.gaugePool[gauge];
+        usedGauge = true;
+    }
+    if (pool->empty()) return false;
+
+    std::vector<int> fixedIdx, randomIdx;
+    for (std::size_t i = 0; i < pool->specs.size(); ++i) {
+        if (pool->specs[i].fixed) fixedIdx.push_back((int)i);
+        else                      randomIdx.push_back((int)i);
+    }
+
+    bool any = false;
+    const std::string what = tag + (usedGauge ? std::string(" gauge=") + std::to_string(gauge)
+                                              : std::string(" gauge=default"));
+
+    // fixed layer: always plays per action, but the same file is still subject
+    // to the per-file cooldown so duplicate trigger entries cannot stack it.
+    for (int i : fixedIdx) {
+        const SoundSpec& sp = pool->specs[i];
+        const std::string pathKey = strconv::ToUtf8(AbsFor(sp.path));
+        if (CooldownHit(pathKey, nowMs)) {
+            LogD("COOLDOWN(fixed): skip %s", pathKey.c_str());
+            continue;
+        }
+        if (PlayOne(sp, what)) any = true;
+    }
+
+    // random layer: one pick from the non-fixed set; without any fixed sounds
+    // this degenerates to the legacy whole-pool random (or first-only) mode.
+    const bool hasFixed = !fixedIdx.empty();
+    if (hasFixed && randomIdx.empty()) return any;   // only fixed sounds exist
+
+    if (hasFixed) {
+        const int n = (int)randomIdx.size();
+        const int start = n > 1 ? std::uniform_int_distribution<int>(0, n - 1)(rng) : 0;
+        for (int t = 0; t < n; ++t) {
+            const SoundSpec& sp = pool->specs[randomIdx[(start + t) % n]];
+            const std::string pathKey = strconv::ToUtf8(AbsFor(sp.path));
+            if (CooldownHit(pathKey, nowMs)) continue;
+            if (PlayOne(sp, what)) { any = true; break; }
+        }
+        return any;
+    }
+
+    // legacy mode: whole pool is the random set
+    const int n = (int)pool->specs.size();
+    int start = 0;
+    int count = n;
+    if (gMoreSounds) {
+        if (n > 1) start = std::uniform_int_distribution<int>(0, n - 1)(rng);
+    } else {
+        count = 1;   // legacy: only the first sound
+    }
+    for (int t = 0; t < count; ++t) {
+        const SoundSpec& sp = pool->specs[(start + t) % n];
+        const std::string pathKey = strconv::ToUtf8(AbsFor(sp.path));
+        if (CooldownHit(pathKey, nowMs)) continue;
+        if (PlayOne(sp, what)) { any = true; break; }
+    }
+    return any;
+}
+
+// ===========================================================================
+//  Worker threads
+// ===========================================================================
 
 DWORD WINAPI WorkerProc(LPVOID)
 {
@@ -961,15 +1380,10 @@ DWORD WINAPI WorkerProc(LPVOID)
 
     Log("game module found, init audio");
     ResolveGameBase();
-    if (!audio::g_audio.Init()) {
-        Log("winmm/waveOut init failed");
-    } else {
-        Log("audio ready (waveOut multi-buffer)");
-    }
-    ScanSoundsFolder();
+    audio::g_audio.Init();
+    PreloadSounds();
 
     std::mt19937 rng(static_cast<unsigned>(::GetTickCount64() ^ 0x9E3779B9u));
-    std::uint64_t lastTrigger = 0;
     std::uint64_t lastHeartbeat = 0;
     bool firstState = true;
 
@@ -981,145 +1395,92 @@ DWORD WINAPI WorkerProc(LPVOID)
         const int lmt = player::gLmt;
         const int fsm = player::gFsm;
         const int weapon = player::gWeapon;
+        const int gauge = player::gGauge;
 
-        // 处理游戏聊天框里输入的 /wse 指令（纯读消息缓冲，无需挂钩）。
         PollChatCommand();
 
-        // 心跳日志：大约每 2 秒打印一次当前读到的状态，方便判断内存链是否生效。
         const std::uint64_t nowMs = ::GetTickCount64();
         if (firstState || (nowMs - lastHeartbeat >= 4000)) {
-            Log("state: weapon=%d fsm=%d lmt=%d vol=%d en=%d more=%d manager=0x%llX entity=0x%llX",
-                weapon, fsm, lmt, gVolumePct, gEnabled, gMoreSounds,
-                (unsigned long long)player::gManager,
-                (unsigned long long)player::gEntity);
+            LogD("state: weapon=%d fsm=%d lmt=%d gauge=%d vol=%d en=%d more=%d",
+                 weapon, fsm, lmt, gauge, gVolumePct, gEnabled, gMoreSounds);
             lastHeartbeat = nowMs;
             firstState = false;
         }
 
-        // 定期清理已播放完的 DirectSound 缓冲区。
-        audio::g_audio.Cleanup();
+        if (gEnabled == 0) continue;
 
-        if (gEnabled == 0) { continue; }
+        // Iterate the REAL container under the config lock. Entry latches
+        // (inMatch) must persist across polls or the same action would be
+        // re-fired on every poll once DebounceMs elapses. Reload swaps the
+        // vector under the same lock, so iteration stays safe.
+        {
+            std::lock_guard<std::mutex> lk(gCfgMutex);
 
-        // 每个条目独立判定"是否匹配当前动作"，用锁存保证只在匹配沿触发一次。
-        for (auto& e : attacks) {
-            const bool match =
-                (e.weaponType < 0 || e.weaponType == weapon) &&
-                (e.actionLmt  < 0 || e.actionLmt  == lmt) &&
-                (e.fsmId      < 0 || e.fsmId      == fsm) &&
-                !e.sounds.empty();
+            // Re-arm action groups whose members have been quiet long enough.
+            for (auto& g : g_groups) {
+                if (g.second.fired && nowMs - g.second.lastSeen >= kGroupResetMs)
+                    g.second.fired = false;
+            }
 
-            if (match && !e.inMatch) {
-                e.inMatch = true;
-                if (nowMs - lastTrigger < (std::uint64_t)gDebounceMs)
-                    continue;
+            for (auto& e : gAttacks) {
+                bool lmtOk = e.lmt.empty();
+                if (!lmtOk)
+                    for (int x : e.lmt) if (x == lmt) { lmtOk = true; break; }
 
-                // gMoreSounds=0 时只取第一条，否则随机抽。
-                int useCount = static_cast<int>(e.sounds.size());
-                if (!gMoreSounds) useCount = 1;
-                int start = (gMoreSounds && useCount > 1)
-                            ? std::uniform_int_distribution<int>(0, useCount - 1)(rng)
-                            : 0;
-                bool played = false;
-                for (int t = 0; t < useCount; ++t) {
-                    int idx = (start + t) % useCount;
-                    std::wstring abs = AbsFor(e.sounds[idx]);
-                    std::string pathKey = strconv::ToUtf8(abs);
+                const bool match =
+                    (e.weaponType < 0 || e.weaponType == weapon) &&
+                    (e.fsmId < 0 || e.fsmId == fsm) &&
+                    lmtOk &&
+                    e.HasSounds();
 
-                    // 冷却：同一音效文件在 kSoundCooldownMs 内不重复播放。
-                    bool inCool = false;
-                    for (auto& sc : soundCooldown) {
-                        if (sc.first == pathKey) {
-                            if (nowMs - sc.second < (std::uint64_t)kSoundCooldownMs)
-                                inCool = true;
-                            sc.second = nowMs;   // 刷新时间戳
-                            break;
-                        }
-                    }
-                    if (!inCool) {
-                        soundCooldown.push_back(std::make_pair(pathKey, nowMs));
-                        if (soundCooldown.size() > 64)   // 防止无限增长
-                            soundCooldown.erase(soundCooldown.begin());
-                    }
-                    if (inCool) {
-                        Log("COOLDOWN: skip %s", pathKey.c_str());
+                const std::string tag = "a[" + e.name + "]";
+
+                if (!e.group.empty()) {
+                    // Action-group entry: the whole group fires at most once
+                    // per action occurrence. Gauge is taken at the first
+                    // trigger instant, so a mid-action gauge change cannot
+                    // double-fire.
+                    GroupRt& st = GroupState(e.group);
+                    if (match) st.lastSeen = nowMs;
+                    if (!match || st.fired) continue;
+                    st.fired = true;
+                    if (nowMs - gLastTrigger < (std::uint64_t)gDebounceMs)
                         continue;
-                    }
-
-                    bool ok = false, hasWav = false;
-                    unsigned wch = 0, wrate = 0, wbits = 0;
-                    std::size_t wsz = 0;
-                    {
-                        // 加锁取缓存，保证重载清缓存时本处指针不会被释放
-                        std::lock_guard<std::mutex> cLock(gCacheMutex);
-                        const audio::Wav* w = GetCached(abs);
-                        if (w) {
-                            hasWav = true;
-                            wch = w->channels; wrate = w->sampleRate;
-                            wbits = w->bitsPer; wsz = w->data.size();
-                            // 主路径：winmm waveOut 多缓冲 + 软件增益（并发+每音效独立音量）。
-                            // Play 把 PCM 拷贝到独立缓冲再播，锁内拷贝完成后即可解锁。
-                            unsigned dly = 0;
-                            if (idx < (int)e.delays.size() && e.delays[idx] > 0)
-                                dly = (unsigned)e.delays[idx];
-                            // 每音效音量(0..100,100=无额外调整)：实际增益 = 主音量 × 该音效倍率
-                            float perVol = 100.0f;
-                            if (idx < (int)e.vols.size() && e.vols[idx] >= 0 && e.vols[idx] <= 100)
-                                perVol = (float)e.vols[idx];
-                            float volF = ((float)gVolumePct / 100.0f) * (perVol / 100.0f);
-                            ok = audio::g_audio.Play(*w, volF, dly);
-                        }
-                    }   // 释放锁，之后不再访问 w
-                    if (hasWav) {
-                        if (ok) {
-                            Log("PLAY: fsm=%d lmt=%d weapon=%d -> %s | fmt ch=%u rate=%u bits=%u bytes=%zu vol=%d",
-                                fsm, lmt, weapon, strconv::ToUtf8(abs).c_str(),
-                                wch, wrate, wbits, wsz, (int)gVolumePct);
-                        } else {
-                            // 兜底：PlaySound（单路，但一定能响）。
-                            Log("waveOut Play rejected: valid=1 bits=%u ch=%u rate=%u bytes=%zu hr=0x%08X",
-                                wbits, wch, wrate, wsz, (unsigned)audio::g_audio.LastHr());
-                            ok = ::PlaySoundW(abs.c_str(), nullptr,
-                                              SND_FILENAME | SND_ASYNC | SND_NODEFAULT) != FALSE;
-                            Log(ok ? "PLAY(PlaySound-fallback): %s" : "PLAYFAIL: %s",
-                                strconv::ToUtf8(abs).c_str());
-                        }
-                        if (ok) {
-                            played = true;
-                            break;
-                        }
-                    } else {
-                        Log("MISS: at %s (trying next)", strconv::ToUtf8(abs).c_str());
-                    }
+                    if (FireEntry(e, gauge, rng, nowMs, tag))
+                        gLastTrigger = nowMs;
+                    continue;
                 }
-                if (played) lastTrigger = nowMs;
-            } else if (!match) {
-                e.inMatch = false;
+
+                // Ungrouped entry: legacy per-entry edge-latch behaviour.
+                if (match && !e.inMatch) {
+                    e.inMatch = true;
+                    if (nowMs - gLastTrigger < (std::uint64_t)gDebounceMs)
+                        continue;
+                    if (FireEntry(e, gauge, rng, nowMs, tag))
+                        gLastTrigger = nowMs;
+                } else if (!match) {
+                    e.inMatch = false;
+                }
             }
         }
     }
     return 0;
 }
 
-// ---------------------------------------------------------------------------
-//  热键线程：在游戏里通过 Ctrl+组合键 修改配置 / 重载 / 调音量。
-//  默认：Ctrl+F5 重载 ini；Ctrl+↑ 音量+5；Ctrl+↓ 音量-5；
-//        Ctrl+F8 设定音量为 SetVolValue；Ctrl+F9 开关；Ctrl+F10 切换更多音效。
-//  这些配置项可在 ini 的 [Hotkeys] 段覆盖。
-// ---------------------------------------------------------------------------
 DWORD WINAPI HotkeyProc(LPVOID)
 {
     bool reloadWas=false, upWas=false, downWas=false,
-         setWas=false, togWas=false, moreWas=false;
-    if (gHotkeyInit == false) {
-        gHotkeyInit = true;
-    }
+         setWas=false, togWas=false, moreWas=false, comboWas=false;
     while (::InterlockedCompareExchange(&gStop, 0, 0) == 0) {
         ::Sleep(30);
+        if (g_hotkeysEnabled == 0) {
+            reloadWas = upWas = downWas = setWas = togWas = moreWas = comboWas = false;
+            continue;
+        }
         const bool mod = (gModifierKey == 0) ||
                          ((::GetAsyncKeyState(gModifierKey) & 0x8000) != 0);
         if (!mod) {
-            reloadWas = upWas = downWas = setWas = togWas = moreWas = false;
+            reloadWas = upWas = downWas = setWas = togWas = moreWas = comboWas = false;
             continue;
         }
         const bool reloadDown = (::GetAsyncKeyState(gReloadKey) & 0x8000) != 0;
@@ -1128,65 +1489,86 @@ DWORD WINAPI HotkeyProc(LPVOID)
         const bool setDown    = (::GetAsyncKeyState(gSetVolKey) & 0x8000) != 0;
         const bool togDown    = (::GetAsyncKeyState(gToggleKey) & 0x8000) != 0;
         const bool moreDown   = (::GetAsyncKeyState(gMoreKey)   & 0x8000) != 0;
+        const bool comboDown  = (::GetAsyncKeyState(gComboKey)  & 0x8000) != 0;
 
         if (reloadDown && !reloadWas) {
             ReloadConfig();
-            char m[0x180] = {}; _snprintf_s(m, _TRUNCATE, "wse reloaded (vol=%d)", (int)gVolumePct);
+            char m[0x180] = {};
+            _snprintf_s(m, _TRUNCATE, "wse reloaded (vol=%d)", (int)gVolumePct);
             ShowMessage(m, true);
-            Log("[hotkey] config reloaded (volume=%d enabled=%d more=%d)",
-                gVolumePct, gEnabled, gMoreSounds);
+            LogD("[hotkey] config reloaded (volume=%d enabled=%d more=%d)",
+                 gVolumePct, gEnabled, gMoreSounds);
         }
         reloadWas = reloadDown;
 
         if (upDown && !upWas) {
             gVolumePct += 5; if (gVolumePct > 100) gVolumePct = 100;
-            ApplyVolume();
             char m[0x180] = {}; _snprintf_s(m, _TRUNCATE, "wse volume=%d", (int)gVolumePct);
             ShowMessage(m, true);
-            Log("[hotkey] volume up -> %d", gVolumePct);
+            LogD("[hotkey] volume up -> %d", gVolumePct);
         }
         upWas = upDown;
 
         if (downDown && !downWas) {
             gVolumePct -= 5; if (gVolumePct < 0) gVolumePct = 0;
-            ApplyVolume();
             char m[0x180] = {}; _snprintf_s(m, _TRUNCATE, "wse volume=%d", (int)gVolumePct);
             ShowMessage(m, true);
-            Log("[hotkey] volume down -> %d", gVolumePct);
+            LogD("[hotkey] volume down -> %d", gVolumePct);
         }
         downWas = downDown;
 
         if (setDown && !setWas) {
             gVolumePct = gSetVolValue;
-            ApplyVolume();
             char m[0x180] = {}; _snprintf_s(m, _TRUNCATE, "wse volume=%d", (int)gVolumePct);
             ShowMessage(m, true);
-            Log("[hotkey] volume set -> %d", gVolumePct);
+            LogD("[hotkey] volume set -> %d", gVolumePct);
         }
         setWas = setDown;
 
         if (togDown && !togWas) {
             gEnabled = gEnabled ? 0 : 1;
             ShowMessage(gEnabled ? "wse enabled" : "wse disabled", true);
-            Log("[hotkey] enabled toggled -> %d", gEnabled);
+            LogD("[hotkey] enabled toggled -> %d", gEnabled);
         }
         togWas = togDown;
 
         if (moreDown && !moreWas) {
             gMoreSounds = gMoreSounds ? 0 : 1;
             ShowMessage(gMoreSounds ? "wse extra sounds ON" : "wse extra sounds OFF", true);
-            Log("[hotkey] more-sounds toggled -> %d", gMoreSounds);
+            LogD("[hotkey] more-sounds toggled -> %d", gMoreSounds);
         }
         moreWas = moreDown;
+
+        // 切换当前武器的配置组合（仅影响该武器；其它武器配置不变）
+        if (comboDown && !comboWas) {
+            const int w = player::gWeapon;
+            std::string nxt;
+            {
+                std::lock_guard<std::mutex> lk(gCfgMutex);
+                auto& order = g_comboOrder[w];
+                if (!order.empty()) {
+                    std::string cur = "";
+                    auto a = g_activeCombo.find(w);
+                    if (a != g_activeCombo.end()) cur = a->second;
+                    nxt = order[0];
+                    for (std::size_t k = 0; k < order.size(); ++k)
+                        if (order[k] == cur) { nxt = order[(k + 1) % order.size()]; break; }
+                    g_activeCombo[w] = nxt;
+                    RebuildActiveAttacks();
+                }
+            }
+            if (!nxt.empty()) {
+                char m[0x180] = {};
+                _snprintf_s(m, _TRUNCATE, "wse combo[%d] -> %s", w, nxt.c_str());
+                ShowMessage(m, true);
+                LogD("[hotkey] weapon %d combo -> %s", w, nxt.c_str());
+            }
+        }
+        comboWas = comboDown;
     }
     return 0;
 }
 
-// ---------------------------------------------------------------------------
-//  指令输入线程：按住 Ctrl 时，把打出的字母/数字收进缓冲，回车执行。
-//  例如按住 Ctrl 输入 ` /wse vol 50 ` 然后回车，即可在游戏里改音量。
-//  不挂钩游戏聊天函数，纯读键盘状态（带按键沿检测），稳妥可用。
-// ---------------------------------------------------------------------------
 } // namespace plugin
 
 // ===========================================================================
@@ -1196,23 +1578,24 @@ extern "C" __declspec(dllexport) BOOL WeaponSoundEnhance_IsInstalled() { return 
 
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
 {
+    using namespace plugin;
     if (reason == DLL_PROCESS_ATTACH) {
-        plugin::gModule = module;
+        gModule = module;
         ::DisableThreadLibraryCalls(module);
         wchar_t self[MAX_PATH] = {};
         ::GetModuleFileNameW(module, self, MAX_PATH);
-        std::wstring selfw(self);
+        const std::wstring selfw(self);
         std::size_t sl = selfw.find_last_of(L"\\/");
-        plugin::gModuleDir = (sl == std::wstring::npos) ? std::wstring() : selfw.substr(0, sl + 1);
-        plugin::gIniPath = plugin::ReplaceExt(selfw, L".ini");
-        plugin::LogInit();
-        plugin::LoadConfig();
-        HANDLE t = ::CreateThread(nullptr, 0, &plugin::WorkerProc, nullptr, 0, nullptr);
+        gModuleDir = (sl == std::wstring::npos) ? std::wstring() : selfw.substr(0, sl + 1);
+        gIniPath = ReplaceExt(selfw, L".ini");
+        LogInit();
+        LoadConfig();
+        HANDLE t = ::CreateThread(nullptr, 0, &WorkerProc, nullptr, 0, nullptr);
         if (t) ::CloseHandle(t);
-        HANDLE hk = ::CreateThread(nullptr, 0, &plugin::HotkeyProc, nullptr, 0, nullptr);
+        HANDLE hk = ::CreateThread(nullptr, 0, &HotkeyProc, nullptr, 0, nullptr);
         if (hk) ::CloseHandle(hk);
     } else if (reason == DLL_PROCESS_DETACH) {
-        ::InterlockedExchange(&plugin::gStop, 1);
+        ::InterlockedExchange(&gStop, 1);
         ::Sleep(1000);
     }
     return TRUE;

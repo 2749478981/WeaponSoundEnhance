@@ -10,6 +10,7 @@ struct App {
     void Draw();
 
     void* hwnd = nullptr;      // 主窗口 HWND
+    void* editHwnd = nullptr;  // 独立编辑窗口 HWND（main.cpp 创建编辑窗口后赋值；文件对话框后用于把编辑窗口带回最前）
     float dpiScale = 1.0f;
 
     Config cfg;
@@ -26,12 +27,12 @@ struct App {
         bool isNew = false;
         int index = -1;        // cfg.entries 索引
         char name[128] = {};
+        char groupBuf[96] = {};   // 动作组（Group=）
         int weaponType = -1;
-        int actionLmt = -1;
         int fsmId = -1;
-        std::vector<std::string> sounds;
-        std::vector<int> delays;   // 每条音效的延时(ms)，与 sounds 一一对应
-        std::vector<int> vols;     // 每条音效的音量(0..100)，-1 = 跟随全局，与 sounds 一一对应
+        std::vector<int> lmt;          // 空 = 不限
+        char lmtBuf[128] = {};
+        std::vector<SoundSpec> pool[5]; // 0 = 默认音效；1..4 = 无刃时/白刃时/黄刃时/红刃时
     } editor;
 
     bool fsmWinOpen = false;   // 启动时不弹 FSM 查询窗（点工具栏「FSM 查询」再开）
@@ -50,6 +51,9 @@ struct App {
 
     std::string status;
 
+    // 在独立编辑窗口（第二个 ImGui 上下文）中绘制编辑内容；由 main.cpp 的编辑窗渲染循环调用
+    void DrawEditorDetached();
+
 private:
     unsigned long long mLastPoll = 0;
     float mSaveFlash = 0.0f;   // 保存成功提示的剩余显示时间(秒)
@@ -64,17 +68,20 @@ private:
     void OpenEditorNew(int weapon);
     void OpenEditorEdit(int index);
     void ApplyEditor();
-    void DrawEditorModal();
     void DrawFsmWindow();
     void Save();
     void SaveAs();
     void Load(const std::string& path);
     std::string OpenFileDialogIni();
-    int BrowseSounds(std::vector<std::string>& out);
+    int BrowseSounds(std::vector<SoundSpec>& out);   // 追加选中的 wav 为默认属性音效
     void PlaySoundPreview(const std::string& rel, int vol, int delayMs);
     int CountFor(int w) const;
     void EnrichNames();
     std::string BaseDir() const;
     std::string ResolveName(int weapon, int fsm, int lmt) const;
     bool IsCapturedAdded(int weapon, int fsm, int lmt) const;
+    // 每武器当前激活的组合名（""=默认）
+    std::string ActiveCombo(int w) const;
+    // 该条目是否属于"当前激活组合"（非激活条目不显示/不参与匹配）
+    bool EntryActive(const SoundEntry& e) const;
 };
