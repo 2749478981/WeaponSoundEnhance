@@ -379,11 +379,14 @@ void CleanupEditor() {
     ImGui::SetCurrentContext(g_mainCtx);
 }
 
-// 记录并在弹窗提示一次崩溃，避免程序直接闪退、便于定位
+// 记录并在弹窗提示一次崩溃，避免程序直接闪退、便于定位。
+// 只有 MSVC 的 SEH 路径用得到，非 MSVC 下整块不编译，免得报 unused。
+#ifdef _MSC_VER
 static void ReportCrash(DWORD code, void* addr);
 
 static DWORD  g_crashCode = 0;
 static void*  g_crashAddr = nullptr;
+#endif
 
 // 渲染独立编辑窗口一帧的实际内容。抽成独立函数，便于在 MSVC 下用 SEH 包住。
 static void RenderEditorFrameBody(App& app, const float* clear) {
@@ -422,6 +425,7 @@ static void RenderEditorFrame(App& app, const float* clear) {
     ImGui::SetCurrentContext(g_mainCtx);
 }
 
+#ifdef _MSC_VER
 // 记录并在弹窗提示一次崩溃，避免程序直接闪退、便于定位
 static void ReportCrash(DWORD code, void* addr) {
     HMODULE hm = GetModuleHandleW(nullptr);
@@ -452,6 +456,7 @@ static void ReportCrash(DWORD code, void* addr) {
              (unsigned)code, (unsigned long long)rva, path);
     MessageBoxA(nullptr, msg, "WeaponSoundEnhance GUI", MB_ICONERROR);
 }
+#endif // _MSC_VER
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     ImGui_ImplWin32_EnableDpiAwareness();
