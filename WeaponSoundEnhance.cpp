@@ -167,9 +167,30 @@ std::int32_t   gGauge = -1;              // long-sword spirit gauge level 0..3, 
 std::uint32_t gGaugePtrOff = 0x76B0;     // LS spirit object: *(entity + off)
 std::uint32_t gGaugeValOff = 0x2370;     // gauge level value: *(obj + off)
 
+// FSM 状态是 (target, id) 二元组寻址的：不同 target 层里的 id 会重号
+//（实测 fsmID 102 在通用层是别的动作、在太刀层是大居）。只比 id 会误触发。
+std::int32_t   gFsmTarget = -1;
+
+// 大剑蓄力等级：和太刀刃级在**同一个对象**上，只是值偏移不同
+std::int32_t   gCharge = -1;
+std::uint32_t  gChargeValOff = 0x2358;   // 别用 0x2370：大剑上它只从 2 起跳，分不出 1 蓄和没蓄
+
+// 任务累计伤害。实测**只记你自己打的**，不含队友，所以拿来判命中在联机下也是干净的。
+// （对照：怪物血量是全队共享的，不能用来判"我这一下打中没有"。）
+std::int32_t   gQuestDmg     = -1;
+std::uintptr_t gQuestRoot    = 0x14500ED30ULL;
+std::uint32_t  gQuestDmgOff  = 0x17088;
+
 void Refresh()
 {
     gLmt = -1; gFsm = -1; gWeapon = -1; gWeaponId = -1; gGauge = -1;
+    gFsmTarget = -1; gCharge = -1; gQuestDmg = -1;
+
+    {
+        std::uintptr_t quest = 0;
+        if (mem::ReadVal(gQuestRoot, quest) && quest)
+            gQuestDmg = mem::ReadI32(quest + gQuestDmgOff, -1);
+    }
 
     std::uintptr_t manager = 0;
     if (!mem::ReadVal(gRoot, manager) || manager == 0) return;
@@ -178,7 +199,8 @@ void Refresh()
     const std::uintptr_t entity = mem::Walk(manager, c0, 1);
     if (!entity) return;
 
-    gFsm = mem::ReadI32(entity + 0x6278, -1);
+    gFsm       = mem::ReadI32(entity + 0x6278, -1);
+    gFsmTarget = mem::ReadI32(entity + 0x6274, -1);
 
     std::uintptr_t act = 0;
     if (mem::ReadVal(entity + 0x468, act) && act)
@@ -197,6 +219,15 @@ void Refresh()
         if (mem::ReadVal(entity + gGaugePtrOff, sp) && sp) {
             const int v = mem::ReadI32(sp + gGaugeValOff, -1);
             if (v >= 0 && v <= 3) gGauge = v;
+        }
+    }
+
+    // 大剑蓄力等级，复用同一个对象指针
+    if (gWeapon == 0) {
+        std::uintptr_t sp = 0;
+        if (mem::ReadVal(entity + gGaugePtrOff, sp) && sp) {
+            const int v = mem::ReadI32(sp + gChargeValOff, -1);
+            if (v >= 0 && v <= 3) gCharge = v;
         }
     }
 }
@@ -473,6 +504,9 @@ volatile int gEnabled = 1;
 volatile int gMoreSounds = 1;   // legacy: only affects pools without any fixed sound
 std::uint32_t gGaugePtrOff = 0x76B0;
 std::uint32_t gGaugeValOff = 0x2370;
+std::uint32_t gChargeValOff = 0x2358;          // 大剑蓄力等级（与刃级共用 GaugePtrOff）
+std::uintptr_t gQuestRoot   = 0x14500ED30ULL;  // 任务结构入口
+std::uint32_t gQuestDmgOff  = 0x17088;         // 任务累计伤害（只含你自己）
 
 volatile int g_useChatEcho = 1;
 volatile int g_useChatCommands = 1;
@@ -506,6 +540,159 @@ const std::uintptr_t kMessageBodyOff = 0xC0;
 // ===========================================================================
 
 // One selectable sound. path is relative to the module dir (usually "sounds/x.wav").
+// ===========================================================================
+//  条件表达式  ——  给「动作 + 判定结果」式的触发用
+//
+//    语法:  <变量> <比较符> <数字>，用 & (且) / | (或) 连接，& 优先级更高
+//    例子:  dmg>0                      打出了伤害
+//           dmg>0 & dAura>=0           打出伤害 且 没掉刃
+//           dAura<0 | dmg==0           掉刃 或 完全没打中
+//
+//  不支持括号：两级优先级（若干 AND 组再 OR 起来）已经够覆盖实际需求，
+//  而且解析简单、不容易写错。
+// ===========================================================================
+namespace cond {
+
+enum VarId { V_DMG = 0, V_AURA, V_DAURA, V_CHARGE, V_DCHARGE,
+             V_LMT, V_FSM, V_FSMTGT, V_MS, V_COUNT };
+
+// 注意：查找时按长度从长到短匹配，否则 "dAura" 会被 "d" 之类的前缀吃掉
+const char* const kVarNames[V_COUNT] = {
+    "dmg", "aura", "dAura", "charge", "dCharge", "lmt", "fsm", "fsmTarget", "ms"
+};
+
+// 给 GUI / 文档用的中文名，顺序与 VarId 一致
+const char* const kVarLabels[V_COUNT] = {
+    "打出伤害", "练气/刃级", "练气变化", "蓄力等级", "蓄力变化",
+    "动作ID", "FSM", "FSM层", "已过毫秒"
+};
+
+enum CmpOp { OP_GT = 0, OP_GE, OP_LT, OP_LE, OP_EQ, OP_NE, OP_COUNT };
+const char* const kOpNames[OP_COUNT] = { ">", ">=", "<", "<=", "==", "!=" };
+
+struct Vars { int v[V_COUNT]; };
+
+struct Term {
+    int  var = V_DMG;
+    int  op  = OP_GT;
+    int  rhs = 0;
+    bool orBefore = false;   // 这一项之前的连接符是 |（false 表示 &）
+};
+
+struct Expr {
+    std::vector<Term> terms;
+    bool empty() const { return terms.empty(); }
+};
+
+inline std::string Trim(const std::string& s)
+{
+    std::size_t b = 0, e = s.size();
+    while (b < e && (unsigned char)s[b] <= ' ') ++b;
+    while (e > b && (unsigned char)s[e - 1] <= ' ') --e;
+    return s.substr(b, e - b);
+}
+
+// 含比较符就当成表达式，否则交回旧的刃级 tag 解析（none/white/yellow/red/0..3）
+inline bool LooksLikeExpr(const std::string& s)
+{
+    return s.find_first_of("<>=!&|") != std::string::npos;
+}
+
+inline bool ParseOne(const std::string& raw, Term& t)
+{
+    const std::string x = Trim(raw);
+    if (x.empty()) return false;
+
+    // 先定位比较符
+    std::size_t opPos = x.find_first_of("<>=!");
+    if (opPos == std::string::npos || opPos == 0) return false;
+
+    std::string varName = Trim(x.substr(0, opPos));
+    int varId = -1;
+    for (int i = 0; i < V_COUNT; ++i) {
+        if (varName == kVarNames[i]) { varId = i; break; }
+    }
+    if (varId < 0) return false;
+
+    // 两字符的比较符优先
+    int op = -1; std::size_t opLen = 0;
+    const std::string rest = x.substr(opPos);
+    for (int i = 0; i < OP_COUNT; ++i) {
+        const std::size_t n = std::strlen(kOpNames[i]);
+        if (n == 2 && rest.compare(0, 2, kOpNames[i]) == 0) { op = i; opLen = 2; break; }
+    }
+    if (op < 0) {
+        for (int i = 0; i < OP_COUNT; ++i) {
+            const std::size_t n = std::strlen(kOpNames[i]);
+            if (n == 1 && rest.compare(0, 1, kOpNames[i]) == 0) { op = i; opLen = 1; break; }
+        }
+    }
+    if (op < 0) return false;
+
+    const std::string rhs = Trim(rest.substr(opLen));
+    if (rhs.empty()) return false;
+    for (std::size_t i = 0; i < rhs.size(); ++i) {
+        if (i == 0 && (rhs[i] == '-' || rhs[i] == '+')) continue;
+        if (rhs[i] < '0' || rhs[i] > '9') return false;
+    }
+
+    t.var = varId; t.op = op; t.rhs = std::atoi(rhs.c_str());
+    return true;
+}
+
+// 解析失败返回 false（调用方会退回旧解析并记一条日志）
+inline bool Parse(const std::string& src, Expr& out)
+{
+    out.terms.clear();
+    std::string cur;
+    bool nextIsOr = false;
+    bool pendingOr = false;
+
+    for (std::size_t i = 0; i <= src.size(); ++i) {
+        const char c = (i < src.size()) ? src[i] : '\0';
+        if (c == '&' || c == '|' || c == '\0') {
+            Term t;
+            if (!ParseOne(cur, t)) return false;
+            t.orBefore = nextIsOr;
+            out.terms.push_back(t);
+            cur.clear();
+            nextIsOr = (c == '|');
+            pendingOr = nextIsOr;
+            (void)pendingOr;
+        } else {
+            cur.push_back(c);
+        }
+    }
+    return !out.terms.empty();
+}
+
+// 求值：若干 AND 组再 OR 起来
+inline bool Eval(const Expr& e, const Vars& vars)
+{
+    if (e.terms.empty()) return false;
+    bool result = false;   // 已经闭合的 OR 结果
+    bool group  = true;    // 当前 AND 组
+    for (std::size_t i = 0; i < e.terms.size(); ++i) {
+        const Term& t = e.terms[i];
+        if (i > 0 && t.orBefore) { result = result || group; group = true; }
+        const int lhs = vars.v[t.var];
+        bool ok = false;
+        switch (t.op) {
+            case OP_GT: ok = lhs >  t.rhs; break;
+            case OP_GE: ok = lhs >= t.rhs; break;
+            case OP_LT: ok = lhs <  t.rhs; break;
+            case OP_LE: ok = lhs <= t.rhs; break;
+            case OP_EQ: ok = lhs == t.rhs; break;
+            case OP_NE: ok = lhs != t.rhs; break;
+            default: break;
+        }
+        group = group && ok;
+    }
+    return result || group;
+}
+
+} // namespace cond
+
 struct SoundSpec
 {
     std::string path;
@@ -527,6 +714,22 @@ struct Pool
     }
 };
 
+// 一条「条件 -> 音效池」。按书写顺序求值，第一个成立的那条播。
+struct CondPool
+{
+    std::string text;    // 原始表达式，写回 ini / 日志用
+    cond::Expr  expr;
+    Pool        pool;
+
+    // false (Sound:)    条件一成立就播 —— 适合"已成定局"的条件，比如掉刃
+    // true  (SoundEnd:) 只在窗口结束时评 —— 适合"还可能被推翻"的条件
+    //
+    // 这个区分是必须的：大居"不掉刃且打出伤害"在伤害到账的那一瞬间是成立的，
+    // 但刃是稍后才掉的（实测 dmg=258 在 ms=297 到账，那时 dAura 还是 0）。
+    // 用 Sound: 会在这一瞬间误判成功，必须 SoundEnd: 撑到窗口结束再评。
+    bool atEnd = false;
+};
+
 // One ini [Attack...] section: trigger conditions + sound pools.
 struct Attack
 {
@@ -540,10 +743,55 @@ struct Attack
     Pool gaugePool[4];            // LS gauge pools, keyed by level 0..3
     bool inMatch = false;         // edge latch: fire once per action (ungrouped entries)
 
+    // ---- 延迟判定（CheckTimeoutMs > 0 时启用）----
+    // 动作匹配上只是"开窗"，接着盯一段时间，按条件表达式挑音效池。
+    // 用来做"打中/落空""掉刃/升刃"这类**必须观察一段时间才知道结果**的触发。
+    int checkDelayMs   = 0;       // 从第几毫秒开始计伤害（排除招式前段的伤害）
+    int checkTimeoutMs = 0;       // 窗口长度；0 = 不启用延迟判定，行为与旧版完全一致
+    int checkMode      = 0;       // 0=first 条件一成立立刻播  1=final 窗口结束再评一次
+    // 窗口靠什么结束：0=只看时间(CheckTimeoutMs)  1=动作结束就算(CheckEndOn=action)
+    // action 模式下动作离开本条目的 LMT 集合即视为结束——放完了、被打断、被派生
+    // 掉都算，比拍一个固定时长准得多。CheckTimeoutMs 退居为保险上限。
+    int checkEndOn     = 0;
+    // 判定时刻的安全余量，**只能是正数或 0**（键名 CheckOffsetMs，老名 CheckGraceMs 仍认）。
+    //
+    // 判定时刻 = min(历史最晚出伤时刻 + offset, 动作结束 + offset)，再被 CheckTimeoutMs 封顶。
+    //
+    // "历史最晚出伤时刻"(maxDmgMs)是插件自己量出来的、跨窗口取最大值：过了这个点
+    // 就不可能再有伤害，没必要陪着招式尾部的后摇干等。实测登龙的伤害 ms≈235 到账、
+    // 动作却要跑到 1700~2400ms，靠这条能把判定提前一个数量级。
+    //
+    // 【为什么不要负偏移】早先支持过负数，用来"提前多少毫秒判"——那本质上是
+    // 在不知道最晚出伤时刻的情况下靠动作时长反推。现在既然能直接量到，这个推算
+    // 就多余了，而且有害：它让同一个键对不同招式要填相反的符号（大居要负、
+    // 登龙要正），还出过"offset 比最晚出伤时刻还大 → 算出负数 → 一开窗就判失败"
+    // 的事故。offset 现在只有一个含义：在量到的时刻之上留多少余量。
+    //
+    // 对打断免疫：maxDmgMs 取的是最大值，动作被提前打断只会让这一次不更新它，
+    // 不会把它拉小。（早先按"上次动作时长"推算就没有这个性质。）
+    int checkGraceMs   = 0;
+    std::vector<CondPool> conds;  // 按书写顺序求值，第一个成立的播；都不成立走 defPool
+
+    // ---- 运行时状态（不来自 ini）----
+    bool          winOpen   = false;
+    std::uint64_t winStart  = 0;
+    bool          baseTaken = false;   // 是否已过 checkDelayMs、重取过伤害基准
+    bool          actEnded  = false;   // 动作是否已经离开本条目（EndOn=action 用）
+    std::uint64_t actEndAt  = 0;
+    int           maxDmgMs  = -1;      // 历史上最晚一次出伤的时刻(ms)，跨窗口累积
+    // 调试用：把窗口内每一笔伤害的到账时刻记下来，用来量"这一招分几段、各在第几毫秒"。
+    // 多段攻击（大剑真蓄、太刀大居）必须靠这个才能把 CheckDelayMs 卡在两段中间。
+    int           dmgPrev   = -1;      // 上一轮的窗口内累计伤害
+    int           dmgHits   = 0;       // 已经记了几笔，防刷屏
+    int           winDmg0   = 0;       // 计伤起点
+    int           baseAura  = -1;
+    int           baseCharge= -1;
+
     bool HasSounds() const
     {
         if (!defPool.empty()) return true;
         for (int i = 0; i < 4; ++i) if (!gaugePool[i].empty()) return true;
+        for (const auto& c : conds) if (!c.pool.empty()) return true;
         return false;
     }
 };
@@ -875,7 +1123,20 @@ void LoadConfig()
             continue;
         }
 
-        std::size_t eq = line.find('=');
+        // 找键值分隔用的 '='。不能直接用第一个 —— 条件表达式里的比较符
+        // (>= <= == !=) 也含 '='，比如
+        //     Sound:dmg>0 & dAura>=0 = sounds/a.wav
+        // 按第一个 '=' 切会把键截成 "Sound:dmg>0 & dAura>"，表达式就废了。
+        // 规则：跳过属于比较符的 '=' —— 前一个字符是 > < ! = ，或后一个字符是 = 。
+        std::size_t eq = std::string::npos;
+        for (std::size_t i = 0; i < line.size(); ++i) {
+            if (line[i] != '=') continue;
+            const char prev = (i > 0) ? line[i - 1] : (char)0;
+            const char next = (i + 1 < line.size()) ? line[i + 1] : (char)0;
+            if (prev == '>' || prev == '<' || prev == '!' || prev == '=') continue;
+            if (next == '=') continue;
+            eq = i; break;
+        }
         if (eq == std::string::npos) continue;
         std::string key = Trim(line.substr(0, eq));
         std::string val = Trim(line.substr(eq + 1));
@@ -894,6 +1155,9 @@ void LoadConfig()
                 else if (key == "Debug") gDebug = std::atoi(val.c_str()) != 0;
                 else if (key == "GaugePtrOff") { std::uintptr_t v = ParseHex(val); if (v) gGaugePtrOff = (std::uint32_t)v; }
                 else if (key == "GaugeValOff") { std::uintptr_t v = ParseHex(val); if (v) gGaugeValOff = (std::uint32_t)v; }
+                else if (key == "ChargeValOff") gChargeValOff = (std::uint32_t)ParseHex(val);
+                else if (key == "QuestRoot")    gQuestRoot    = ParseHex(val);
+                else if (key == "QuestDmgOff")  gQuestDmgOff  = (std::uint32_t)ParseHex(val);
             } else if (section == "Hotkeys") {
                 if (key == "ModifierKey") gModifierKey = std::atoi(val.c_str());
                 else if (key == "ReloadKey")   gReloadKey   = std::atoi(val.c_str());
@@ -933,14 +1197,49 @@ void LoadConfig()
             cur.name = val;
         } else if (key == "Group") {
             cur.group = val;
+        } else if (key == "CheckDelayMs") {
+            cur.checkDelayMs = std::atoi(val.c_str());
+        } else if (key == "CheckTimeoutMs") {
+            cur.checkTimeoutMs = std::atoi(val.c_str());
+        } else if (key == "CheckMode") {
+            cur.checkMode = (ToLower(val) == "final") ? 1 : 0;
+        } else if (key == "CheckEndOn") {
+            cur.checkEndOn = (ToLower(val) == "action") ? 1 : 0;
+        } else if (key == "CheckGraceMs" || key == "CheckOffsetMs") {
+            const int off = std::atoi(val.c_str());
+            if (off < 0) {
+                LogD("config: %s=%d 负值已不再支持，按 0 处理（见 checkGraceMs 的注释）",
+                     key.c_str(), off);
+                cur.checkGraceMs = 0;
+            } else {
+                cur.checkGraceMs = off;
+            }
         } else if (key == "Sound") {
             AppendSpecs(cur.defPool, val, plainOrder);
-        } else if (key.size() > 6 && key.compare(0, 6, "Sound:") == 0) {
-            const int lvl = GaugeTagToLevel(ToLower(key.substr(6)));
-            if (lvl >= 0 && lvl < 4)
-                AppendSpecs(cur.gaugePool[lvl], val, plainOrder);
-            else
-                LogD("config: unknown gauge tag '%s' ignored", key.c_str());
+        } else if ((key.size() > 6 && key.compare(0, 6, "Sound:") == 0) ||
+                   (key.size() > 9 && key.compare(0, 9, "SoundEnd:") == 0)) {
+            const bool atEnd = (key.size() > 9 && key.compare(0, 9, "SoundEnd:") == 0);
+            const std::string tag = key.substr(atEnd ? 9 : 6);
+            cond::Expr ex;
+            if (cond::LooksLikeExpr(tag) && cond::Parse(tag, ex)) {
+                // 条件池。注意这里**不登记进 plainOrder** —— plainOrder 存的是
+                // Pool* ，而 conds 是 vector，push_back 扩容会让指针失效。
+                // 代价是旧式的 SoundDelay=/SoundVol= 对条件池不生效，
+                // 用新式的 路径|延时|音量|F 内联写法即可。
+                CondPool cp;
+                cp.text  = cond::Trim(tag);
+                cp.expr  = ex;
+                cp.atEnd = atEnd;
+                std::vector<std::pair<Pool*, int>> scratch;
+                AppendSpecs(cp.pool, val, scratch);
+                cur.conds.push_back(std::move(cp));
+            } else {
+                const int lvl = GaugeTagToLevel(ToLower(tag));
+                if (lvl >= 0 && lvl < 4)
+                    AppendSpecs(cur.gaugePool[lvl], val, plainOrder);
+                else
+                    LogD("config: unknown gauge tag / bad expression '%s' ignored", key.c_str());
+            }
         } else if (key == "SoundDelay") {
             std::vector<std::string> toks;
             SplitList(val, toks);
@@ -958,6 +1257,9 @@ void LoadConfig()
     player::gRoot = gPlayerRoot;
     player::gGaugePtrOff = gGaugePtrOff;
     player::gGaugeValOff = gGaugeValOff;
+    player::gChargeValOff = gChargeValOff;
+    player::gQuestRoot    = gQuestRoot;
+    player::gQuestDmgOff  = gQuestDmgOff;
 
     // 组装 per-weapon combos 结构（按出现顺序记 order）
     g_combos.clear();
@@ -1298,17 +1600,12 @@ bool PlayOne(const SoundSpec& sp, const std::string& what)
 }
 
 // Fire one matched entry. Returns true when at least one sound played.
-bool FireEntry(const Attack& e, int gauge, std::mt19937& rng, std::uint64_t nowMs,
-               const std::string& tag)
+// 播放一个指定的音效池（固定层 + 随机层）。原先这段嵌在 FireEntry 里，
+// 拆出来是为了让条件池也能复用同一套播放逻辑。
+bool FirePool(const Pool* pool, std::mt19937& rng, std::uint64_t nowMs,
+              const std::string& what)
 {
-    // choose pool: gauge level pool when present, otherwise default pool
-    const Pool* pool = &e.defPool;
-    bool usedGauge = false;
-    if (gauge >= 0 && gauge <= 3 && !e.gaugePool[gauge].empty()) {
-        pool = &e.gaugePool[gauge];
-        usedGauge = true;
-    }
-    if (pool->empty()) return false;
+    if (!pool || pool->empty()) return false;
 
     std::vector<int> fixedIdx, randomIdx;
     for (std::size_t i = 0; i < pool->specs.size(); ++i) {
@@ -1317,8 +1614,6 @@ bool FireEntry(const Attack& e, int gauge, std::mt19937& rng, std::uint64_t nowM
     }
 
     bool any = false;
-    const std::string what = tag + (usedGauge ? std::string(" gauge=") + std::to_string(gauge)
-                                              : std::string(" gauge=default"));
 
     // fixed layer: always plays per action, but the same file is still subject
     // to the per-file cooldown so duplicate trigger entries cannot stack it.
@@ -1365,6 +1660,142 @@ bool FireEntry(const Attack& e, int gauge, std::mt19937& rng, std::uint64_t nowM
         if (PlayOne(sp, what)) { any = true; break; }
     }
     return any;
+}
+
+bool FireEntry(const Attack& e, int gauge, std::mt19937& rng, std::uint64_t nowMs,
+               const std::string& tag)
+{
+    // choose pool: gauge level pool when present, otherwise default pool
+    const Pool* pool = &e.defPool;
+    bool usedGauge = false;
+    if (gauge >= 0 && gauge <= 3 && !e.gaugePool[gauge].empty()) {
+        pool = &e.gaugePool[gauge];
+        usedGauge = true;
+    }
+    const std::string what = tag + (usedGauge ? std::string(" gauge=") + std::to_string(gauge)
+                                              : std::string(" gauge=default"));
+    return FirePool(pool, rng, nowMs, what);
+}
+
+// ---------------------------------------------------------------------------
+//  延迟判定条目：动作匹配上只是"开窗"，然后盯一段时间再决定播哪个池。
+//
+//  ★ 窗口**按时间**走完，不因为动作 ID 变了就提前关。
+//    游戏里同一招的后续伤害经常落在另一个动作 ID 上（大剑真蓄第一段 1.1 秒就结束，
+//    大伤害 1.7~2.1 秒才到账），按 ID 关窗会漏判；按时间兜底则即使遇到没登记过的
+//    后续动作 ID 也判得对。
+// ---------------------------------------------------------------------------
+void TickJudgeEntry(Attack& e, bool match, std::uint64_t nowMs,
+                    std::mt19937& rng, const std::string& tag)
+{
+    if (!e.winOpen) {
+        // 只在"不匹配 -> 匹配"的上升沿开窗，否则动作还没放完就会反复开
+        if (match && !e.inMatch) {
+            e.winOpen    = true;
+            e.winStart   = nowMs;
+            e.actEnded   = false;
+            e.actEndAt   = 0;
+            e.dmgPrev    = 0;
+            e.dmgHits    = 0;
+            e.baseTaken  = (e.checkDelayMs <= 0);
+            e.winDmg0    = player::gQuestDmg;
+            e.baseAura   = player::gGauge;
+            e.baseCharge = player::gCharge;
+            LogD("%s judge: window open (dmg0=%d aura=%d charge=%d)",
+                 tag.c_str(), e.winDmg0, e.baseAura, e.baseCharge);
+        }
+        e.inMatch = match;
+        return;
+    }
+    e.inMatch = match;
+
+    const std::uint64_t el = nowMs - e.winStart;
+
+    // 到 CheckDelayMs 重取一次伤害基准，把招式前段的伤害排除在外
+    if (!e.baseTaken && (int)el >= e.checkDelayMs) {
+        e.baseTaken = true;
+        e.winDmg0   = player::gQuestDmg;
+    }
+
+    cond::Vars v{};
+    v.v[cond::V_DMG]     = (e.baseTaken && player::gQuestDmg >= 0 && e.winDmg0 >= 0)
+                             ? (player::gQuestDmg - e.winDmg0) : 0;
+    v.v[cond::V_AURA]    = player::gGauge;
+    v.v[cond::V_DAURA]   = (player::gGauge >= 0 && e.baseAura >= 0)
+                             ? (player::gGauge - e.baseAura) : 0;
+    v.v[cond::V_CHARGE]  = player::gCharge;
+    v.v[cond::V_DCHARGE] = (player::gCharge >= 0 && e.baseCharge >= 0)
+                             ? (player::gCharge - e.baseCharge) : 0;
+    v.v[cond::V_LMT]     = player::gLmt;
+    v.v[cond::V_FSM]     = player::gFsm;
+    v.v[cond::V_FSMTGT]  = player::gFsmTarget;
+    v.v[cond::V_MS]      = (int)el;
+
+    // 窗口结算时机
+    //   EndOn=time  (默认) : 只看 CheckTimeoutMs
+    //   EndOn=action       : 动作一离开本条目就算结束，再等 CheckGraceMs 结算；
+    //                        CheckTimeoutMs 仍作为上限兜底，防止动作一直不变
+    // 调试：窗口里每来一笔伤害就记一行（含时刻和当时的练气变化）。
+    // 多段攻击靠这个才能看出"第一段小伤害在第几毫秒、第二段大伤害在第几毫秒"，
+    // CheckDelayMs 就卡在两段中间的空档里。最多记 8 笔，防刷屏。
+    {
+        const int cur = v.v[cond::V_DMG];
+        if (e.dmgPrev >= 0 && cur > e.dmgPrev) {
+            if ((int)el > e.maxDmgMs) e.maxDmgMs = (int)el;   // 跨窗口累积，只增不减
+            if (e.dmgHits < 8) {
+                ++e.dmgHits;
+                LogD("%s judge: dmg +%d (total %d) at ms=%d  dAura=%d  (最晚出伤 %dms)",
+                     tag.c_str(), cur - e.dmgPrev, cur, (int)el,
+                     v.v[cond::V_DAURA], e.maxDmgMs);
+            }
+        }
+        e.dmgPrev = cur;
+    }
+
+    if (e.checkEndOn == 1 && !match && !e.actEnded) {
+        e.actEnded = true;
+        e.actEndAt = nowMs;
+        LogD("%s judge: action ended at ms=%d (offset %+dms, 最晚出伤 %dms)",
+             tag.c_str(), (int)el, e.checkGraceMs, e.maxDmgMs);
+    }
+
+    // 判定时刻：两条路径谁先到算谁（offset 保证 >= 0，不会算出负数）
+    bool endReached = false;
+    if (e.checkEndOn == 1) {
+        // ① 动作结束（含被打断）+ offset
+        if (e.actEnded && (nowMs - e.actEndAt) >= (std::uint64_t)e.checkGraceMs)
+            endReached = true;
+        // ② 历史最晚出伤时刻 + offset —— 过了它就不可能再有伤害，不必等后摇
+        if (!endReached && e.maxDmgMs >= 0 &&
+            (int)el >= e.maxDmgMs + e.checkGraceMs)
+            endReached = true;
+    }
+    const bool timeUp = ((int)el >= e.checkTimeoutMs) || endReached;
+
+    // Sound:    条件一成立就播（定局型，如"掉刃"）
+    // SoundEnd: 只在窗口结束时评（可能被推翻的，如"没掉刃且有伤害"）
+    // CheckMode=final 等价于把所有条件都标成 SoundEnd。
+    for (std::size_t i = 0; i < e.conds.size(); ++i) {
+        const CondPool& c = e.conds[i];
+        if (c.pool.empty()) continue;
+        const bool waitEnd = c.atEnd || e.checkMode == 1;
+        if (waitEnd && !timeUp) continue;          // 还没到点，这条先不评
+        if (!cond::Eval(c.expr, v)) continue;
+        LogD("%s judge: MATCH [%s]%s dmg=%d dAura=%d ms=%d",
+             tag.c_str(), c.text.c_str(), waitEnd ? " (end)" : "",
+             v.v[cond::V_DMG], v.v[cond::V_DAURA], v.v[cond::V_MS]);
+        FirePool(&c.pool, rng, nowMs, tag + " [" + c.text + "]");
+        e.winOpen = false;
+        return;
+    }
+
+    if (timeUp) {
+        // 都不成立 -> 兜底池（就是这条目的 Sound= ）
+        LogD("%s judge: timeout, fallback (dmg=%d dAura=%d)",
+             tag.c_str(), v.v[cond::V_DMG], v.v[cond::V_DAURA]);
+        FirePool(&e.defPool, rng, nowMs, tag + " [timeout]");
+        e.winOpen = false;
+    }
 }
 
 // ===========================================================================
@@ -1434,6 +1865,13 @@ DWORD WINAPI WorkerProc(LPVOID)
                     e.HasSounds();
 
                 const std::string tag = "a[" + e.name + "]";
+
+                // 延迟判定条目走独立的状态机；没配 CheckTimeoutMs 的条目
+                // 一律走下面的旧逻辑，行为与旧版完全一致。
+                if (e.checkTimeoutMs > 0 && !e.conds.empty()) {
+                    TickJudgeEntry(e, match, nowMs, rng, tag);
+                    continue;
+                }
 
                 if (!e.group.empty()) {
                     // Action-group entry: the whole group fires at most once

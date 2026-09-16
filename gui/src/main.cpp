@@ -379,16 +379,18 @@ void CleanupEditor() {
     ImGui::SetCurrentContext(g_mainCtx);
 }
 
-// 记录并在弹窗提示一次崩溃，避免程序直接闪退、便于定位
+// 记录并在弹窗提示一次崩溃，避免程序直接闪退、便于定位。
+// 只有 MSVC 的 SEH 路径用得到，非 MSVC 下整块不编译，免得报 unused。
+#ifdef _MSC_VER
 static void ReportCrash(DWORD code, void* addr);
 
 static DWORD  g_crashCode = 0;
 static void*  g_crashAddr = nullptr;
+#endif
 
-// 渲染独立编辑窗口一帧。独立函数 + SEH：崩溃时记录并恢复上下文，不闪退。
-static void RenderEditorFrame(App& app, const float* clear) {
-    ImGui::SetCurrentContext(g_edCtx);
-    __try {
+// 渲染独立编辑窗口一帧的实际内容。抽成独立函数，便于在 MSVC 下用 SEH 包住。
+static void RenderEditorFrameBody(App& app, const float* clear) {
+    {
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
@@ -401,14 +403,29 @@ static void RenderEditorFrame(App& app, const float* clear) {
         g_edDeviceCtx->ClearRenderTargetView(g_edRtv, clear);
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
         g_edSwapChain->Present(1, 0);
+    }
+}
+
+// 崩溃时记录并恢复上下文，不闪退。
+// SEH(__try/__except) 是 MSVC 专有语法，GCC/Clang(MinGW) 不支持 ——
+// 非 MSVC 下退化为直接调用，崩溃保护失效，其余行为完全一致。
+static void RenderEditorFrame(App& app, const float* clear) {
+    ImGui::SetCurrentContext(g_edCtx);
+#ifdef _MSC_VER
+    __try {
+        RenderEditorFrameBody(app, clear);
     } __except ((g_crashCode = GetExceptionCode(),
                  g_crashAddr = (void*)GetExceptionInformation()->ExceptionRecord->ExceptionAddress,
                  EXCEPTION_EXECUTE_HANDLER)) {
         ReportCrash(g_crashCode, g_crashAddr);
     }
+#else
+    RenderEditorFrameBody(app, clear);
+#endif
     ImGui::SetCurrentContext(g_mainCtx);
 }
 
+#ifdef _MSC_VER
 // 记录并在弹窗提示一次崩溃，避免程序直接闪退、便于定位
 static void ReportCrash(DWORD code, void* addr) {
     HMODULE hm = GetModuleHandleW(nullptr);
@@ -439,6 +456,7 @@ static void ReportCrash(DWORD code, void* addr) {
              (unsigned)code, (unsigned long long)rva, path);
     MessageBoxA(nullptr, msg, "WeaponSoundEnhance GUI", MB_ICONERROR);
 }
+#endif // _MSC_VER
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     ImGui_ImplWin32_EnableDpiAwareness();

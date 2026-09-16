@@ -4,6 +4,24 @@
 #include <string>
 #include <vector>
 
+// 条件表达式里的一项：<变量> <比较符> <数值>
+struct CondTerm {
+    int  var = 0;          // 下标见 app.cpp 的 kCondVars
+    int  op  = 0;          // 下标见 app.cpp 的 kCondOps
+    int  val = 0;
+    bool orBefore = false; // 与前一项之间是 |（或），false = &（且）
+};
+
+// 编辑器里的一条「条件 -> 音效池」
+struct CondRow {
+    std::vector<CondTerm> terms;
+    std::string rawExpr;    // terms 解析不出来时保留原文，界面转成只读文本框
+    bool parsed = true;
+    bool atEnd = false;     // 只在窗口结束时评（写成 SoundEnd:）
+    std::string label;      // 预设给的友好名，如"成功"/"失败(掉刃)"
+    std::vector<SoundSpec> pool;
+};
+
 struct App {
     App();
 
@@ -33,6 +51,15 @@ struct App {
         std::vector<int> lmt;          // 空 = 不限
         char lmtBuf[128] = {};
         std::vector<SoundSpec> pool[5]; // 0 = 默认音效；1..4 = 无刃时/白刃时/黄刃时/红刃时
+
+        // ---- 判定（延迟判定）----
+        int  judgePreset = 0;        // 0=不判定 1..N=内置预设 N+1=自定义
+        bool advanced = false;       // 展开高级设置
+        int  checkDelayMs = 0;
+        int  checkTimeoutMs = 0;
+        int  checkOffsetMs = 150;
+        bool endOnAction = true;
+        std::vector<CondRow> conds;
     } editor;
 
     bool fsmWinOpen = false;   // 启动时不弹 FSM 查询窗（点工具栏「FSM 查询」再开）
