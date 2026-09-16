@@ -42,6 +42,116 @@ std::string LmtText(const SoundEntry& e) {
 }
 
 // 把 LMT 列表写入编辑框文本
+// ===========================================================================
+//  判定条件：变量表、比较符、表达式 <-> 下拉项的互转，以及内置预设
+//  变量名必须和插件 (WeaponSoundEnhance.cpp 的 cond::kVarNames) 完全一致
+// ===========================================================================
+static const char* const kCondVars[] = {
+    "dmg", "aura", "dAura", "charge", "dCharge", "lmt", "fsm", "fsmTarget", "ms"
+};
+static const char* const kCondVarLabels[] = {
+    "打出伤害", "太刀气刃等级", "气刃等级变化", "大剑蓄力等级", "蓄力等级变化",
+    "动作ID", "FSM", "FSM层", "已过毫秒"
+};
+static const int kCondVarCount = 9;
+
+static const char* const kCondOps[] = { ">", ">=", "<", "<=", "==", "!=" };
+static const char* const kCondOpLabels[] = { "大于", "大于等于", "小于", "小于等于", "等于", "不等于" };
+static const int kCondOpCount = 6;
+
+static std::string CondTrim(const std::string& x) {
+    size_t b = 0, e = x.size();
+    while (b < e && (unsigned char)x[b] <= ' ') ++b;
+    while (e > b && (unsigned char)x[e - 1] <= ' ') --e;
+    return x.substr(b, e - b);
+}
+
+// 一项："dmg>0" -> {var,op,val}
+static bool ParseOneTerm(const std::string& raw, CondTerm& t) {
+    const std::string x = CondTrim(raw);
+    size_t opPos = x.find_first_of("<>=!");
+    if (x.empty() || opPos == std::string::npos || opPos == 0) return false;
+    const std::string vn = CondTrim(x.substr(0, opPos));
+    int vi = -1;
+    for (int i = 0; i < kCondVarCount; ++i) if (vn == kCondVars[i]) { vi = i; break; }
+    if (vi < 0) return false;
+    const std::string rest = x.substr(opPos);
+    int oi = -1; size_t ol = 0;
+    for (int i = 0; i < kCondOpCount; ++i)
+        if (strlen(kCondOps[i]) == 2 && rest.compare(0, 2, kCondOps[i]) == 0) { oi = i; ol = 2; break; }
+    if (oi < 0)
+        for (int i = 0; i < kCondOpCount; ++i)
+            if (strlen(kCondOps[i]) == 1 && rest.compare(0, 1, kCondOps[i]) == 0) { oi = i; ol = 1; break; }
+    if (oi < 0) return false;
+    const std::string rv = CondTrim(rest.substr(ol));
+    if (rv.empty()) return false;
+    for (size_t i = 0; i < rv.size(); ++i) {
+        if (i == 0 && (rv[i] == '-' || rv[i] == '+')) continue;
+        if (rv[i] < '0' || rv[i] > '9') return false;
+    }
+    t.var = vi; t.op = oi; t.val = std::atoi(rv.c_str());
+    return true;
+}
+
+// "dmg>0 & dAura>=0" -> terms
+static bool ParseExprToTerms(const std::string& src, std::vector<CondTerm>& out) {
+    out.clear();
+    std::string cur; bool nextOr = false;
+    for (size_t i = 0; i <= src.size(); ++i) {
+        const char c = (i < src.size()) ? src[i] : (char)0;
+        if (c == '&' || c == '|' || c == (char)0) {
+            CondTerm t;
+            if (!ParseOneTerm(cur, t)) return false;
+            t.orBefore = nextOr;
+            out.push_back(t);
+            cur.clear();
+            nextOr = (c == '|');
+        } else cur += c;
+    }
+    return !out.empty();
+}
+
+static std::string TermsToExpr(const std::vector<CondTerm>& ts) {
+    std::string o;
+    for (size_t i = 0; i < ts.size(); ++i) {
+        if (i) o += ts[i].orBefore ? " | " : " & ";
+        o += kCondVars[ts[i].var];
+        o += kCondOps[ts[i].op];
+        o += std::to_string(ts[i].val);
+    }
+    return o;
+}
+
+// ---- 内置预设：一条就是一整套"成败判定"，用户只要挑两个 wav ----
+struct JudgePreset {
+    const char* name;
+    int  weapon;
+    const char* lmt;          // 逗号分隔
+    int  delayMs, timeoutMs, offsetMs;
+    struct { const char* expr; bool atEnd; const char* label; } conds[3];
+    const char* fallbackLabel;   // 都不成立时（默认音效池）的含义
+    const char* note;
+};
+static const JudgePreset kPresets[] = {
+    { "太刀 · 登龙 命中/落空", 3, "49326", 0, 2500, 150,
+      { { "dmg>0", false, "命中" }, { nullptr, false, nullptr } },
+      "落空",
+      "在登龙命中或落空时分别播放不同的wav文件。" },
+
+    { "太刀 · 大居 成功/失败", 3, "49461,49462,49463", 0, 3000, 150,
+      { { "dAura<0", false, "失败（掉刃）" }, { "dmg>0", true, "成功" }, { nullptr, false, nullptr } },
+      "失败（完全落空）",
+      "大居成功需要打出伤害且不掉刃，所以在判定窗口结束时进行判定，"
+      "因勾选了动作结束也作为判定时机，所以在最晚出伤时间加上余量的时候进行判定" },
+
+    { "大剑 · 真蓄 命中/落空", 0, "49298,49341,49342,49427,49428,49429", 1200, 3500, 150,
+      { { "dmg>0", false, "命中" }, { nullptr, false, nullptr } },
+      "落空",
+      "真蓄两段：第一段约 0.65 秒、伤害小，第二段约 1.7~2.1 秒、伤害大。"
+      "计伤起点设在 1200ms 正好卡在两段中间，只认第二段。" },
+};
+static const int kPresetCount = 3;
+
 void FillLmtBuf(char* buf, size_t n, const std::vector<int>& lmt) {
     std::string s;
     for (size_t k = 0; k < lmt.size(); ++k) {
@@ -794,6 +904,45 @@ void App::OpenEditorEdit(int index) {
     snprintf(editor.groupBuf, sizeof(editor.groupBuf), "%s", e.group.c_str());
     editor.pool[0] = e.def.specs;
     for (int i = 0; i < 4; ++i) editor.pool[i + 1] = e.gauge[i].specs;
+
+    editor.checkDelayMs   = e.checkDelayMs;
+    editor.checkTimeoutMs = e.checkTimeoutMs;
+    editor.checkOffsetMs  = e.checkOffsetMs;
+    editor.endOnAction    = e.endOnAction;
+    editor.conds.clear();
+    for (const auto& c : e.conds) {
+        CondRow r;
+        r.atEnd  = c.atEnd;
+        r.parsed = ParseExprToTerms(c.expr, r.terms);
+        if (!r.parsed) r.rawExpr = c.expr;
+        r.pool = c.pool.specs;
+        editor.conds.push_back(std::move(r));
+    }
+    // 认一下这条目是不是某个内置预设生成的（LMT + 条件表达式都对得上）
+    editor.judgePreset = editor.conds.empty() ? 0 : (kPresetCount + 1);
+    if (!editor.conds.empty()) {
+        for (int pi = 0; pi < kPresetCount; ++pi) {
+            const JudgePreset& ps = kPresets[pi];
+            if (ps.weapon != e.weaponType) continue;
+            int n = 0; while (ps.conds[n].expr) ++n;
+            if ((int)editor.conds.size() != n) continue;
+            bool same = true;
+            for (int i = 0; i < n && same; ++i) {
+                const std::string want = CondTrim(ps.conds[i].expr);
+                std::string got = editor.conds[i].parsed
+                                      ? TermsToExpr(editor.conds[i].terms)
+                                      : editor.conds[i].rawExpr;
+                // 比较时去掉空格，"dmg>0" 和 "dmg > 0" 视为同一条
+                std::string a2, b2;
+                for (char c2 : want) if (c2 != ' ') a2 += c2;
+                for (char c2 : got)  if (c2 != ' ') b2 += c2;
+                if (a2 != b2 || editor.conds[i].atEnd != ps.conds[i].atEnd) same = false;
+            }
+            if (same) { editor.judgePreset = pi + 1; editor.conds[0].label = ps.conds[0].label;
+                        for (int i = 0; i < n; ++i) editor.conds[i].label = ps.conds[i].label;
+                        break; }
+        }
+    }
 }
 
 void App::ApplyEditor() {
@@ -831,6 +980,21 @@ void App::ApplyEditor() {
     }
     e.def.specs = editor.pool[0];
     for (int i = 0; i < 4; ++i) e.gauge[i].specs = editor.pool[i + 1];
+
+    if (editor.judgePreset > 0 && !editor.conds.empty()) {
+        e.checkDelayMs   = editor.checkDelayMs;
+        e.checkTimeoutMs = editor.checkTimeoutMs > 0 ? editor.checkTimeoutMs : 2500;
+        e.checkOffsetMs  = editor.checkOffsetMs < 0 ? 0 : editor.checkOffsetMs;
+        e.endOnAction    = editor.endOnAction;
+        for (const auto& r : editor.conds) {
+            CondSpec c;
+            c.expr  = r.parsed ? TermsToExpr(r.terms) : r.rawExpr;
+            c.atEnd = r.atEnd;
+            c.pool.specs = r.pool;
+            if (c.expr.empty() || c.pool.empty()) continue;
+            e.conds.push_back(std::move(c));
+        }
+    }
     if (editor.isNew) {
         cfg.entries.push_back(std::move(e));
     } else if (editor.index >= 0 && editor.index < (int)cfg.entries.size()) {
@@ -902,6 +1066,197 @@ void App::DrawEditorDetached() {
     ImGui::SameLine();
     ImGui::SetNextItemWidth(280 * dpiScale);
     ImGui::InputTextWithHint("##lmt", "LMT（逗号分隔；空/-1=不限）", editor.lmtBuf, sizeof(editor.lmtBuf));
+
+    // =====================================================================
+    //  判定：动作匹配上只是「开窗」，接着盯一段时间，按条件挑音效池。
+    //  用来做「打中/落空」「掉刃/升刃」这类必须观察一段时间才知道结果的触发。
+    //  两层：预设（挑个现成的，只填 wav）/ 高级（自己配条件）。
+    // =====================================================================
+    static int pendingCondRm = -1;                                  // 待删除的条件行
+    static std::vector<std::pair<int, std::string>> pendingCondAdd; // 待加入的音效
+    if (pendingCondRm >= 0 && pendingCondRm < (int)editor.conds.size())
+        editor.conds.erase(editor.conds.begin() + pendingCondRm);
+    pendingCondRm = -1;
+    for (const auto& pa : pendingCondAdd) {
+        if (pa.first < 0 || pa.first >= (int)editor.conds.size() || pa.second.empty()) continue;
+        auto& pl = editor.conds[pa.first].pool;
+        bool dup = false;
+        for (const auto& ex : pl) if (ex.path == pa.second) { dup = true; break; }
+        if (!dup) { pl.push_back(SoundSpec()); pl.back().path = pa.second; }
+    }
+    pendingCondAdd.clear();
+
+    ImGui::Separator();
+    ImGui::TextColored(C_AMBER, "判定模式");
+
+    std::vector<const char*> jItems;
+    jItems.push_back("不判定");
+    for (int i = 0; i < kPresetCount; ++i) jItems.push_back(kPresets[i].name);
+    jItems.push_back("自定义");
+
+    const int prevPreset = editor.judgePreset;
+    ImGui::SetNextItemWidth(430 * dpiScale);
+    ImGui::Combo("##judgemode", &editor.judgePreset, jItems.data(), (int)jItems.size());
+    if (editor.judgePreset != prevPreset) {
+        // 换预设时保留用户已经挑好的 wav（按行号对应），其余按预设重填
+        std::vector<std::vector<SoundSpec>> keep;
+        for (auto& r : editor.conds) keep.push_back(r.pool);
+        editor.conds.clear();
+        if (editor.judgePreset >= 1 && editor.judgePreset <= kPresetCount) {
+            const JudgePreset& ps = kPresets[editor.judgePreset - 1];
+            editor.weaponType     = ps.weapon;
+            editor.checkDelayMs   = ps.delayMs;
+            editor.checkTimeoutMs = ps.timeoutMs;
+            editor.checkOffsetMs  = ps.offsetMs;
+            editor.endOnAction    = true;
+            snprintf(editor.lmtBuf, sizeof(editor.lmtBuf), "%s", ps.lmt);
+            for (int i = 0; ps.conds[i].expr; ++i) {
+                CondRow r;
+                r.atEnd  = ps.conds[i].atEnd;
+                r.label  = ps.conds[i].label;
+                r.parsed = ParseExprToTerms(ps.conds[i].expr, r.terms);
+                if (!r.parsed) r.rawExpr = ps.conds[i].expr;
+                if (i < (int)keep.size()) r.pool = keep[i];
+                editor.conds.push_back(r);
+            }
+        } else if (editor.judgePreset == kPresetCount + 1) {
+            if (editor.checkTimeoutMs <= 0) editor.checkTimeoutMs = 2500;
+            CondRow r;
+            r.label = "条件";
+            CondTerm t;                       // 默认 dmg > 0
+            r.terms.push_back(t);
+            if (!keep.empty()) r.pool = keep[0];
+            editor.conds.push_back(r);
+        }
+    }
+
+    if (editor.judgePreset > 0) {
+        if (editor.judgePreset <= kPresetCount) {
+            ImGui::TextWrapped("%s", kPresets[editor.judgePreset - 1].note);
+            ImGui::TextDisabled("动作和时间参数已按实测填好，只需要给不同情况选择你想要的wav文件即可。");
+        }
+        ImGui::Checkbox("高级设置", &editor.advanced);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("勾选以修改具体判定时间与条件");
+
+        if (editor.advanced) {
+            ImGui::Indent();
+            ImGui::SetNextItemWidth(150 * dpiScale);
+            ImGui::InputInt("判定起点(ms)", &editor.checkDelayMs, 50, 200);
+            if (editor.checkDelayMs < 0) editor.checkDelayMs = 0;
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("动作开始后的判定时间起点，在此时间前不进行以下判定");
+            ImGui::SameLine(0, 16);
+            ImGui::SetNextItemWidth(150 * dpiScale);
+            ImGui::InputInt("判定终点(ms)", &editor.checkTimeoutMs, 100, 500);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("动作开始后的判定时间终点，超过时间即不进行以下判定");
+
+            ImGui::Checkbox("将动作结束(或打断)作为判定时机", &editor.endOnAction);
+            ImGui::SetNextItemWidth(150 * dpiScale);
+            ImGui::InputInt("余量(ms)", &editor.checkOffsetMs, 50, 200);
+            if (editor.checkOffsetMs < 0) editor.checkOffsetMs = 0;
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("本程序会自动记录并更新某一动作的最晚出伤时间\n"
+                                  "最晚出伤时间加上余量便是动作结束的判定时间。");
+            ImGui::Unindent();
+        }
+
+        ImGui::Spacing();
+        for (int ci = 0; ci < (int)editor.conds.size(); ++ci) {
+            CondRow& r = editor.conds[ci];
+            ImGui::PushID(2000 + ci);
+            const std::string exprTxt = r.parsed ? TermsToExpr(r.terms) : r.rawExpr;
+            char head[240];
+            snprintf(head, sizeof(head), "%s%s   [ %s ]   %d 条音效",
+                     r.label.empty() ? "条件" : r.label.c_str(),
+                     r.atEnd ? "（窗口结束后进行判定）" : "",
+                     exprTxt.c_str(), (int)r.pool.size());
+            if (ImGui::CollapsingHeader(head, ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::Indent();
+                if (editor.advanced) {
+                    if (!r.parsed) {
+                        ImGui::TextDisabled("此表达式无法解析，保持原文：%s", r.rawExpr.c_str());
+                    } else {
+                        for (int ti = 0; ti < (int)r.terms.size(); ++ti) {
+                            CondTerm& t = r.terms[ti];
+                            ImGui::PushID(ti);
+                            if (ti > 0) {
+                                int oi = t.orBefore ? 1 : 0;
+                                static const char* lk[] = { "并且", "或者" };
+                                ImGui::SetNextItemWidth(75 * dpiScale);
+                                ImGui::Combo("##lk", &oi, lk, 2);
+                                t.orBefore = (oi == 1);
+                                ImGui::SameLine();
+                            }
+                            ImGui::SetNextItemWidth(125 * dpiScale);
+                            ImGui::Combo("##var", &t.var, kCondVarLabels, kCondVarCount);
+                            ImGui::SameLine();
+                            ImGui::SetNextItemWidth(110 * dpiScale);
+                            ImGui::Combo("##op", &t.op, kCondOpLabels, kCondOpCount);
+                            ImGui::SameLine();
+                            ImGui::SetNextItemWidth(95 * dpiScale);
+                            ImGui::InputInt("##val", &t.val, 0, 0);
+                            if (r.terms.size() > 1) {
+                                ImGui::SameLine();
+                                if (ImGui::SmallButton("x")) {
+                                    r.terms.erase(r.terms.begin() + ti);
+                                    ImGui::PopID();
+                                    break;
+                                }
+                            }
+                            ImGui::PopID();
+                        }
+                        if (ImGui::SmallButton("+ ")) {
+                            CondTerm t;
+                            r.terms.push_back(t);
+                        }
+                    }
+                    ImGui::Checkbox("在窗口结束后进行判定", &r.atEnd);
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("勾选以在窗口结束后进行所有条件的综合判定");
+                    ImGui::SameLine(0, 20);
+                    if (ImGui::SmallButton("删除")) pendingCondRm = ci;
+                }
+
+                for (size_t i = 0; i < r.pool.size(); ++i) {
+                    ImGui::PushID((int)i);
+                    SoundSpec& sp = r.pool[i];
+                    ImGui::TextColored(C_AMBER, "%s", sp.path.c_str());
+                    ImGui::SameLine(0, 10);
+                    if (ImGui::Button("试听")) PlaySoundPreview(sp.path, sp.vol, sp.delay);
+                    ImGui::SameLine(0, 8);
+                    if (ImGui::Button("移除")) {
+                        r.pool.erase(r.pool.begin() + i);
+                        ImGui::PopID();
+                        break;
+                    }
+                    ImGui::PopID();
+                }
+                if (r.pool.empty()) ImGui::TextDisabled("(未添加音效)");
+                if (ImGui::Button("浏览...")) {
+                    std::vector<SoundSpec> tmp;
+                    if (BrowseSounds(tmp) > 0)
+                        for (size_t k = 0; k < tmp.size(); ++k)
+                            pendingCondAdd.push_back(std::make_pair(ci, tmp[k].path));
+                }
+                ImGui::Unindent();
+            }
+            ImGui::PopID();
+        }
+        if (editor.advanced && ImGui::Button("+ 添加条件")) {
+            CondRow r;
+            r.label = "条件";
+            CondTerm t;
+            r.terms.push_back(t);
+            editor.conds.push_back(r);
+        }
+        if (editor.judgePreset >= 1 && editor.judgePreset <= kPresetCount)
+            ImGui::TextDisabled("以上都不成立时 -> %s，播下面的「默认音效」。",
+                                kPresets[editor.judgePreset - 1].fallbackLabel);
+        else
+            ImGui::TextDisabled("以上都不成立时，播下面的「默认音效」。");
+    }
 
     ImGui::Separator();
     ImGui::TextDisabled("命中动作时：固定(F)音效全部播放 + 未固定中随机一条，同时叠播；");
@@ -1029,12 +1384,13 @@ void App::DrawFsmWindow() {
     auto results = SearchFsmDb(fsmQuery, fsmWeaponFilter);
     ImGui::BeginChild("fsmres", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
     for (const auto& r : results) {
-        char lmtStr[32];
+        char lmtStr[32], fsmStr[32];
         snprintf(lmtStr, sizeof(lmtStr), "%d", r.lmt);
+        snprintf(fsmStr, sizeof(fsmStr), "%d", r.fsm);
         char lbl[256];
-        snprintf(lbl, sizeof(lbl), "%s  ·  fsm %d  ·  lmt %s  ·  %s",
+        snprintf(lbl, sizeof(lbl), "%s  ·  fsm %s  ·  lmt %s  ·  %s",
                  r.weapon >= 0 ? WeaponName(r.weapon) : "通用",
-                 r.fsm, r.lmt >= 0 ? lmtStr : "-", r.name.c_str());
+                 r.fsm >= 0 ? fsmStr : "-", r.lmt >= 0 ? lmtStr : "-", r.name.c_str());
         if (ImGui::Selectable(lbl))
             OpenEditorNew(r.weapon, r.fsm, r.lmt, r.name);
     }

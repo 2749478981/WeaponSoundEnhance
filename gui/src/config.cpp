@@ -212,7 +212,17 @@ bool LoadConfig(const std::string& path, Config& cfg) {
             continue;
         }
 
-        size_t eq = line.find('=');
+        // 找键值分隔的 '='。不能用第一个——条件表达式里的比较符(>= <= == !=)
+        // 也含 '='，比如  Sound:dmg>0 & dAura>=0 = a.wav  按第一个切会把键截断。
+        size_t eq = std::string::npos;
+        for (size_t i2 = 0; i2 < line.size(); ++i2) {
+            if (line[i2] != '=') continue;
+            const char pv = (i2 > 0) ? line[i2 - 1] : (char)0;
+            const char nx = (i2 + 1 < line.size()) ? line[i2 + 1] : (char)0;
+            if (pv == '>' || pv == '<' || pv == '!' || pv == '=') continue;
+            if (nx == '=') continue;
+            eq = i2; break;
+        }
         if (eq == std::string::npos) continue;
         std::string key = Trim(line.substr(0, eq));
         std::string val = Trim(line.substr(eq + 1));
@@ -264,10 +274,33 @@ bool LoadConfig(const std::string& path, Config& cfg) {
             }
         } else if (key == "Name") {
             cur.name = val;
+        } else if (key == "CheckDelayMs") {
+            cur.checkDelayMs = std::atoi(val.c_str());
+        } else if (key == "CheckTimeoutMs") {
+            cur.checkTimeoutMs = std::atoi(val.c_str());
+        } else if (key == "CheckOffsetMs" || key == "CheckGraceMs") {
+            cur.checkOffsetMs = std::atoi(val.c_str());
+            if (cur.checkOffsetMs < 0) cur.checkOffsetMs = 0;
+        } else if (key == "CheckEndOn") {
+            std::string lv;
+            for (char c : val) lv += (char)tolower((unsigned char)c);
+            cur.endOnAction = (lv == "action");
         } else if (key == "Group") {
             cur.group = val;
         } else if (key == "Sound") {
             AppendSpecs(cur.def, val, plainOrder);
+        } else if ((key.size() > 6 && key.compare(0, 6, "Sound:") == 0 &&
+                    key.find_first_of("<>=!&|", 6) != std::string::npos) ||
+                   (key.size() > 9 && key.compare(0, 9, "SoundEnd:") == 0)) {
+            // 条件池：Sound:<表达式>= 或 SoundEnd:<表达式>=
+            // 判据是"标签里含比较符"，不含的仍按旧的刃时 tag 解析，老配置零影响。
+            const bool atEnd = (key.size() > 9 && key.compare(0, 9, "SoundEnd:") == 0);
+            CondSpec cs;
+            cs.expr = Trim(key.substr(atEnd ? 9 : 6));
+            cs.atEnd = atEnd;
+            std::vector<std::pair<PoolSpec*, int>> scratch;
+            AppendSpecs(cs.pool, val, scratch);
+            cur.conds.push_back(cs);
         } else if (key.size() > 6 && key.compare(0, 6, "Sound:") == 0) {
             int lvl = GaugeTagIndex(ToLower(key.substr(6)));
             if (lvl >= 0 && lvl < 4)
@@ -324,6 +357,18 @@ static void WriteEntry(const SoundEntry& e, int n, std::string& o) {
     o += "WeaponType=" + std::to_string(e.weaponType) + "\r\n";
     o += LmtLine(e) + "\r\n";
     o += "FSMId=" + std::to_string(e.fsmId) + "\r\n";
+    if (e.checkTimeoutMs > 0 && !e.conds.empty()) {
+        if (e.checkDelayMs > 0)
+            o += "CheckDelayMs=" + std::to_string(e.checkDelayMs) + "\r\n";
+        o += "CheckTimeoutMs=" + std::to_string(e.checkTimeoutMs) + "\r\n";
+        if (e.endOnAction) o += "CheckEndOn=action\r\n";
+        o += "CheckOffsetMs=" + std::to_string(e.checkOffsetMs) + "\r\n";
+        for (const auto& c : e.conds) {
+            if (c.pool.empty() || c.expr.empty()) continue;
+            const std::string k = (c.atEnd ? "SoundEnd:" : "Sound:") + c.expr;
+            WritePool(c.pool, k.c_str(), o);
+        }
+    }
     WritePool(e.def, "Sound", o);
     for (int i = 0; i < 4; ++i) {
         std::string k = std::string("Sound:") + GaugeTagName(i);
