@@ -1,0 +1,2 @@
+# sh 脚本必须保持 LF；CRLF 会让 sh 把行尾的回车当命令的一部分
+*.sh text eol=lf
