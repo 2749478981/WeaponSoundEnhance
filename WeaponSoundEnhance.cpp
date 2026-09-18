@@ -385,78 +385,66 @@ const std::uint32_t OFF_HPOBJ   = 0x7670;   // *(m+0x7670) -> 血量对象
 const std::uint32_t OFF_HPMAX   = 0x60;     //    +0x60 (float)
 const std::uint32_t OFF_HPCUR   = 0x64;     //    +0x64 (float)
 
-// 认怪物的门槛。玩家血上限撑死 200 出头，怪物动辄上千，拿这个把玩家排掉。
+// 认怪物的门槛。玩家血上限撑死 200 出头，怪物动辄上千。
 float gHpMin = 500.0f;
-float gHpMax = 1000000.0f;
+float gHpMaxCap = 1000000.0f;
+int   gScanBudgetMs = 4000;     // 扫描时间上限，宁可扫不全也不能卡死游戏
+
+struct Snap {
+    float        hpMax = 0.0f, hp = 0.0f, frame = 0.0f, frameEnd = 0.0f;
+    std::int32_t lmt = -1, fsm = -1, fsmTgt = -1;
+};
 
 struct Mon {
     std::uintptr_t ptr = 0;
-    std::int32_t   lmt = -1, fsm = -1, fsmTgt = -1;
-    float          hpMax = 0.0f, hp = 0.0f;
-    std::uint64_t  actStart = 0;      // 当前动作是什么时候开始的
-    float          hpAtStart = 0.0f;  // 当前动作开始时的血量
+    Snap           last;
+    std::uint64_t  actStart = 0;
+    float          hpAtStart = 0.0f;
     int            changes = 0;
     bool           alive = true;
 };
 
-volatile int gEnabled = 0;
-std::vector<Mon> gList;
-std::uint64_t gScanAt = 0;
+volatile int  gEnabled  = 0;
+volatile LONG gScanReq  = 0;        // 热键只置这个标志，真正的扫描在轮询线程做
+std::vector<Mon> gList;             // 只有轮询线程碰它
 
-// 读一遍全部字段，顺便当有效性校验：任何一步读不出来或值不合理就不是怪物。
-bool Read(std::uintptr_t m, float& hpMax, float& hpCur,
-          std::int32_t& lmt, std::int32_t& fsm, std::int32_t& fsmTgt)
+// 读一遍全部字段，顺带当有效性校验。
+bool Read(std::uintptr_t m, Snap& o)
 {
     std::uintptr_t act = 0, hpo = 0;
     if (!mem::ReadVal(m + OFF_ACT,   act) || act < 0x10000) return false;
     if (!mem::ReadVal(m + OFF_HPOBJ, hpo) || hpo < 0x10000) return false;
 
-    float mx = 0.0f, cu = 0.0f;
-    if (!mem::ReadVal(hpo + OFF_HPMAX, mx)) return false;
-    if (!mem::ReadVal(hpo + OFF_HPCUR, cu)) return false;
-    if (!(mx > gHpMin && mx < gHpMax))      return false;
-    if (!(cu >= 0.0f && cu <= mx))          return false;
+    if (!mem::ReadVal(hpo + OFF_HPMAX, o.hpMax)) return false;
+    if (!mem::ReadVal(hpo + OFF_HPCUR, o.hp))    return false;
+    if (!(o.hpMax > gHpMin && o.hpMax < gHpMaxCap)) return false;
+    if (!(o.hp > 0.0f && o.hp <= o.hpMax))          return false;
 
-    std::int32_t l = 0, f1 = 0, f2 = 0;
-    if (!mem::ReadVal(act + OFF_LMT,    l))  return false;
-    if (!mem::ReadVal(m   + OFF_FSMID,  f1)) return false;
-    if (!mem::ReadVal(m   + OFF_FSMTGT, f2)) return false;
-    if (l  < 0 || l  > 200000) return false;
-    if (f1 < 0 || f1 > 100000) return false;
-    if (f2 < 0 || f2 > 100000) return false;
+    if (!mem::ReadVal(act + OFF_LMT,     o.lmt))      return false;
+    if (!mem::ReadVal(act + OFF_FRAME,   o.frame))    return false;
+    if (!mem::ReadVal(act + OFF_FRAMEND, o.frameEnd)) return false;
+    if (!mem::ReadVal(m   + OFF_FSMID,   o.fsm))      return false;
+    if (!mem::ReadVal(m   + OFF_FSMTGT,  o.fsmTgt))   return false;
 
-    hpMax = mx; hpCur = cu; lmt = l; fsm = f1; fsmTgt = f2;
+    if (o.lmt    < 0 || o.lmt    > 200000) return false;
+    if (o.fsm    < 0 || o.fsm    > 100000) return false;
+    if (o.fsmTgt < 0 || o.fsmTgt > 100000) return false;
+    // 动作帧：正在播的动作总帧必然为正，当前帧不会离谱地超出
+    if (!(o.frameEnd > 0.0f && o.frameEnd < 100000.0f)) return false;
+    if (!(o.frame >= 0.0f && o.frame <= o.frameEnd + 1.0f)) return false;
     return true;
 }
 
-// 扫游戏的私有可读写堆，把长得像怪物的对象挑出来。
-void Scan()
+// 扫一段地址范围。返回是否因为超时而中断。
+bool ScanRange(std::uintptr_t lo, std::uintptr_t hi, std::uintptr_t selfEnt,
+               std::vector<unsigned char>& buf, std::uint64_t deadline,
+               int& regions, std::uint64_t& bytes)
 {
-    gList.clear();
-    const std::uint64_t t0 = ::GetTickCount64();
-
-    SYSTEM_INFO si;
-    ::GetSystemInfo(&si);
-    std::uintptr_t addr = reinterpret_cast<std::uintptr_t>(si.lpMinimumApplicationAddress);
-    const std::uintptr_t hi = reinterpret_cast<std::uintptr_t>(si.lpMaximumApplicationAddress);
-
-    // 玩家实体也符合布局，扫之前先拿到它的地址，好排除掉
-    std::uintptr_t selfEnt = 0;
-    {
-        std::uintptr_t mgr = 0;
-        if (mem::ReadVal(player::gRoot, mgr) && mgr != 0) {
-            const std::uint32_t c0[1] = { 0x50 };
-            selfEnt = mem::Walk(mgr, c0, 1);
-        }
-    }
-
-    const std::uintptr_t TAIL = OFF_HPOBJ + 0x10;   // 要读到的最远字段
-    const std::uintptr_t CHUNK = 4u << 20;          // 每次拷 4MB
-    std::vector<unsigned char> buf;
-    std::uint64_t bytes = 0;
-    int regions = 0;
-
+    const std::uintptr_t TAIL  = OFF_HPOBJ + 0x10;
+    const std::uintptr_t CHUNK = 4u << 20;
+    std::uintptr_t addr = lo;
     MEMORY_BASIC_INFORMATION mbi;
+
     while (addr < hi && ::VirtualQuery(reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi)) == sizeof(mbi)) {
         const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress);
         const std::uintptr_t size = static_cast<std::uintptr_t>(mbi.RegionSize);
@@ -471,102 +459,181 @@ void Scan()
         if (usable && size > TAIL) {
             ++regions;
             bytes += size;
-            // 不直接解引用游戏内存：扫的过程中别的线程可能正好把这块释放掉，
-            // 那样一个访问违例就把游戏带走了。先 ReadProcessMemory 拷到自己的
-            // 缓冲区里再扫 —— 读不到只是返回 false，不会炸。
             std::uintptr_t off = 0;
             while (off + TAIL < size) {
+                if (::GetTickCount64() > deadline) return true;
+
                 const std::uintptr_t left = size - off;
                 const std::size_t want = static_cast<std::size_t>(left < CHUNK ? left : CHUNK);
                 if (buf.size() < want) buf.resize(want);
 
                 SIZE_T got = 0;
+                // 不直接解引用：扫的时候别的线程可能正好释放这块内存。
                 if (!::ReadProcessMemory(::GetCurrentProcess(),
                                          reinterpret_cast<LPCVOID>(base + off),
-                                         buf.data(), want, &got) || got <= TAIL) {
-                    break;   // 这块读不了，整个区域剩下的也不管了
-                }
+                                         buf.data(), want, &got) || got <= TAIL)
+                    break;
 
                 const std::size_t lim = static_cast<std::size_t>(got) - TAIL;
-                for (std::size_t k = 0; k < lim; k += 8) {
+                // 实体对象至少 16 字节对齐，按 16 步进，省一半时间
+                for (std::size_t k = 0; k < lim; k += 16) {
                     std::uintptr_t a = 0, h = 0;
-                    std::memcpy(&a, buf.data() + k + OFF_ACT,   sizeof(a));
-                    if (a < 0x10000 || a > 0x7FFFFFFFFFFFULL || (a & 7)) continue;
+                    std::memcpy(&a, buf.data() + k + OFF_ACT, sizeof(a));
+                    if (a < 0x10000 || a > 0x7FFFFFFFFFFFULL || (a & 15)) continue;
                     std::memcpy(&h, buf.data() + k + OFF_HPOBJ, sizeof(h));
-                    if (h < 0x10000 || h > 0x7FFFFFFFFFFFULL || (h & 7)) continue;
+                    if (h < 0x10000 || h > 0x7FFFFFFFFFFFULL || (h & 15)) continue;
 
                     const std::uintptr_t m = base + off + k;
                     if (m == selfEnt) continue;
 
-                    float mx = 0.0f, cu = 0.0f;
-                    std::int32_t l = 0, f1 = 0, f2 = 0;
-                    if (!Read(m, mx, cu, l, f1, f2)) continue;
+                    Snap sp;
+                    if (!Read(m, sp)) continue;
+
+                    bool dup = false;
+                    for (std::size_t q = 0; q < gList.size(); ++q)
+                        if (gList[q].ptr == m) { dup = true; break; }
+                    if (dup) continue;
 
                     Mon mo;
-                    mo.ptr = m; mo.hpMax = mx; mo.hp = cu;
-                    mo.lmt = l; mo.fsm = f1; mo.fsmTgt = f2;
+                    mo.ptr = m; mo.last = sp;
                     mo.actStart = ::GetTickCount64();
-                    mo.hpAtStart = cu;
+                    mo.hpAtStart = sp.hp;
                     gList.push_back(mo);
-                    if (gList.size() >= 32) break;
+                    if (gList.size() >= 16) return false;
                 }
-                if (gList.size() >= 32) break;
                 if (left <= CHUNK) break;
-                off += CHUNK - TAIL;   // 重叠 TAIL 字节，免得跨块的对象被漏掉
+                off += CHUNK - TAIL;      // 重叠，免得跨块对象被漏掉
             }
         }
         addr = base + size;
-        if (gList.size() >= 32) break;
     }
-
-    gScanAt = ::GetTickCount64();
-    plugin::Log("[怪物扫描] 扫了 %d 个区域 / %llu MB, 用时 %llums, 找到 %d 个候选",
-        regions, (unsigned long long)(bytes >> 20),
-        (unsigned long long)(gScanAt - t0), (int)gList.size());
-    for (std::size_t i = 0; i < gList.size(); ++i) {
-        const Mon& mo = gList[i];
-        plugin::Log("[怪物扫描]   #%d ptr=%p  HP %.0f/%.0f  动作 %d  fsm %d/%d",
-            (int)i, reinterpret_cast<void*>(mo.ptr), mo.hp, mo.hpMax,
-            mo.lmt, mo.fsmTgt, mo.fsm);
-    }
-    if (gList.empty())
-        plugin::Log("[怪物扫描] 没找到。确认已经进任务、怪物已出现再按一次。");
+    return false;
 }
 
-// 每轮轮询调一次：只记「动作变了」这一件事。
+void Scan()
+{
+    gList.clear();
+    const std::uint64_t t0 = ::GetTickCount64();
+    const std::uint64_t deadline = t0 + (std::uint64_t)gScanBudgetMs;
+
+    // 玩家实体也符合布局，先拿到好排除掉；顺便拿它当锚点
+    std::uintptr_t selfEnt = 0;
+    {
+        std::uintptr_t mgr = 0;
+        if (mem::ReadVal(player::gRoot, mgr) && mgr != 0) {
+            const std::uint32_t c0[1] = { 0x50 };
+            selfEnt = mem::Walk(mgr, c0, 1);
+        }
+    }
+
+    std::vector<unsigned char> buf;
+    int regions = 0;
+    std::uint64_t bytes = 0;
+    bool timedOut = false;
+    const char* how = "全量";
+
+    // 第一轮：只扫玩家实体所在的那一整块分配。怪物和玩家都是"实体"，
+    // 绝大多数情况在同一个堆里，这样能把几个 GB 缩到几十 MB。
+    if (selfEnt != 0) {
+        MEMORY_BASIC_INFORMATION mbi;
+        if (::VirtualQuery(reinterpret_cast<LPCVOID>(selfEnt), &mbi, sizeof(mbi)) == sizeof(mbi) &&
+            mbi.AllocationBase != nullptr) {
+            const std::uintptr_t ab = reinterpret_cast<std::uintptr_t>(mbi.AllocationBase);
+            // 把这块分配的范围量出来
+            std::uintptr_t cur = ab, endOfAlloc = ab;
+            MEMORY_BASIC_INFORMATION m2;
+            while (::VirtualQuery(reinterpret_cast<LPCVOID>(cur), &m2, sizeof(m2)) == sizeof(m2) &&
+                   reinterpret_cast<std::uintptr_t>(m2.AllocationBase) == ab) {
+                endOfAlloc = reinterpret_cast<std::uintptr_t>(m2.BaseAddress) +
+                             static_cast<std::uintptr_t>(m2.RegionSize);
+                cur = endOfAlloc;
+                if (m2.RegionSize == 0) break;
+            }
+            timedOut = ScanRange(ab, endOfAlloc, selfEnt, buf, deadline, regions, bytes);
+            how = "玩家堆";
+        }
+    }
+
+    // 第一轮没结果才全量扫，且一样有时间上限
+    if (gList.empty() && !timedOut) {
+        SYSTEM_INFO si;
+        ::GetSystemInfo(&si);
+        regions = 0; bytes = 0;
+        timedOut = ScanRange(reinterpret_cast<std::uintptr_t>(si.lpMinimumApplicationAddress),
+                             reinterpret_cast<std::uintptr_t>(si.lpMaximumApplicationAddress),
+                             selfEnt, buf, deadline, regions, bytes);
+        how = "全量";
+    }
+
+    plugin::Log("[怪物扫描] %s: %d 个区域 / %.0f MB, 用时 %.0fms%s, 找到 %d 个候选",
+                how, regions, (double)(bytes >> 20),
+                (double)(::GetTickCount64() - t0),
+                timedOut ? "(超时中断)" : "", (int)gList.size());
+
+    // 复核：等一小会儿再读一遍。真怪物的动作帧一定在走，纯属撞上布局的
+    // 垃圾数据基本是死的 —— 这一步把误报标出来。
+    if (!gList.empty()) {
+        ::Sleep(300);
+        for (std::size_t i = 0; i < gList.size(); ++i) {
+            Mon& mo = gList[i];
+            Snap sp;
+            if (!Read(mo.ptr, sp)) {
+                mo.alive = false;
+                plugin::Log("[怪物扫描]   #%d ptr=%p  复核失败，已丢弃",
+                            (int)i, reinterpret_cast<void*>(mo.ptr));
+                continue;
+            }
+            const bool moving = (sp.frame != mo.last.frame) || (sp.lmt != mo.last.lmt) ||
+                                (sp.fsm != mo.last.fsm) || (sp.hp != mo.last.hp);
+            plugin::Log("[怪物扫描]   #%d ptr=%p  HP %.0f/%.0f  动作 %d  fsm %d/%d  帧 %.1f/%.1f  %s",
+                        (int)i, reinterpret_cast<void*>(mo.ptr), sp.hp, sp.hpMax,
+                        sp.lmt, sp.fsmTgt, sp.fsm, sp.frame, sp.frameEnd,
+                        moving ? "<-- 在动，像真的" : "(300ms 内没动静，可能是误报)");
+            mo.last = sp;
+            mo.hpAtStart = sp.hp;
+            mo.actStart = ::GetTickCount64();
+        }
+    } else {
+        plugin::Log("[怪物扫描] 没找到。确认已经进任务、怪物已经出现，再按一次。");
+    }
+}
+
+// 每轮轮询调一次。扫描也在这儿做，和 Tick 同一个线程 —— gList 不存在并发。
 void Tick()
 {
-    if (gEnabled == 0 || gList.empty()) return;
-    const std::uint64_t now = ::GetTickCount64();
+    if (gEnabled == 0) return;
 
+    if (::InterlockedExchange(&gScanReq, 0) != 0) {
+        Scan();
+        return;
+    }
+    if (gList.empty()) return;
+
+    const std::uint64_t now = ::GetTickCount64();
     for (std::size_t i = 0; i < gList.size(); ++i) {
         Mon& mo = gList[i];
         if (!mo.alive) continue;
 
-        float mx = 0.0f, cu = 0.0f;
-        std::int32_t l = 0, f1 = 0, f2 = 0;
-        if (!Read(mo.ptr, mx, cu, l, f1, f2)) {
+        Snap sp;
+        if (!Read(mo.ptr, sp)) {
             mo.alive = false;
             plugin::Log("[怪物%d] 读不出来了，停止跟踪（怪物已销毁或内存被回收）。"
-                "共记录 %d 次动作切换。", (int)i, mo.changes);
+                        "共记录 %d 次动作切换。", (int)i, mo.changes);
             continue;
         }
 
-        if (l != mo.lmt || f1 != mo.fsm || f2 != mo.fsmTgt) {
-            const std::uint64_t dur = (mo.actStart == 0) ? 0 : (now - mo.actStart);
-            const float dhp = mo.hpAtStart - cu;
+        if (sp.lmt != mo.last.lmt || sp.fsm != mo.last.fsm || sp.fsmTgt != mo.last.fsmTgt) {
+            const double dur = (mo.actStart == 0) ? 0.0 : (double)(now - mo.actStart);
             ++mo.changes;
-            plugin::Log("[怪物%d] 动作 %d -> %d | fsm %d/%d -> %d/%d | 上一动作 %llums 掉血 %.0f "
-                "| HP %.0f/%.0f (%.1f%%)",
-                (int)i, mo.lmt, l, mo.fsmTgt, mo.fsm, f2, f1,
-                (unsigned long long)dur, dhp, cu, mx,
-                mx > 0.0f ? (cu * 100.0f / mx) : 0.0f);
-            mo.lmt = l; mo.fsm = f1; mo.fsmTgt = f2;
+            plugin::Log("[怪物%d] 动作 %d -> %d | fsm %d/%d -> %d/%d | 上一动作 %.0fms 掉血 %.0f "
+                        "| HP %.0f/%.0f (%.1f%%) | 总帧 %.0f",
+                        (int)i, mo.last.lmt, sp.lmt, mo.last.fsmTgt, mo.last.fsm,
+                        sp.fsmTgt, sp.fsm, dur, mo.hpAtStart - sp.hp, sp.hp, sp.hpMax,
+                        sp.hpMax > 0.0f ? (sp.hp * 100.0f / sp.hpMax) : 0.0f, sp.frameEnd);
             mo.actStart = now;
-            mo.hpAtStart = cu;
+            mo.hpAtStart = sp.hp;
         }
-        mo.hp = cu;
-        mo.hpMax = mx;
+        mo.last = sp;
     }
 }
 
@@ -2240,11 +2307,10 @@ DWORD WINAPI HotkeyProc(LPVOID)
 
         if (monDown && !monWas) {
             if (monster::gEnabled) {
-                monster::Scan();
-                char m[0x180] = {};
-                snprintf(m, sizeof(m), "wse: 扫到 %d 个怪物候选",
-                         (int)monster::gList.size());
-                ShowMessage(m, true);
+                // 只置标志，真正的扫描交给轮询线程 —— 两个线程同时动 gList
+                // 会在 vector 扩容时把游戏搞崩（已经犯过一次）。
+                ::InterlockedExchange(&monster::gScanReq, 1);
+                ShowMessage("wse: 开始扫描怪物，结果看日志", true);
             } else {
                 ShowMessage("wse: MonsterProbe=0, 怪物探针没开", true);
             }
