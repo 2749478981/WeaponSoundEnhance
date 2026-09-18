@@ -390,7 +390,7 @@ const std::uint32_t OFF_HPCUR   = 0x64;     //    +0x64 (float)
 // 认怪物的门槛。玩家血上限撑死 200 出头，怪物动辄上千。
 float gHpMin = 500.0f;
 float gHpMaxCap = 1000000.0f;
-int   gScanBudgetMs = 4000;     // 扫描时间上限，宁可扫不全也不能卡死游戏
+int   gScanBudgetMs = 1500;     // 扫描时间上限，宁可扫不全也不能卡死游戏
 
 struct Snap {
     float        hpMax = 0.0f, hp = 0.0f, frame = 0.0f, frameEnd = 0.0f;
@@ -414,8 +414,9 @@ std::vector<Mon> gList;             // 只有轮询线程碰它
 int gAutoScan     = 1;
 int gAutoFirstMs  = 5000;    // 进场景后等这么久再扫，给怪物生成留时间
 int gAutoRetryMs  = 20000;   // 没扫到时的重试间隔
-int gAutoMaxTries = 8;       // 重试上限，免得一直扫一直卡
+int gAutoMaxTries = 3;       // 重试上限，免得一直扫一直卡
 std::uint64_t gNextAutoAt = 0;
+long long gDeepProbes = 0;   // 真正下到 VirtualQuery 的候选数，用来看预筛好不好使
 int  gAutoTries  = 0;
 bool gWasInScene = false;
 
@@ -486,8 +487,26 @@ bool ScanRange(std::uintptr_t lo, std::uintptr_t hi, std::uintptr_t selfEnt,
                     break;
 
                 const std::size_t lim = static_cast<std::size_t>(got) - TAIL;
-                // 实体对象至少 16 字节对齐，按 16 步进，省一半时间
+                // 实体对象至少 16 字节对齐，按 16 步进，省一半时间。
+                //
+                // 这里的筛选顺序是性能命门：Read() 要读 9 个字段，而每次
+                // mem::ReadVal 都要过一遍 IsReadable，也就是一次 VirtualQuery
+                // 系统调用 —— 一个候选就是九次陷内核。之前只用「两个字段长得
+                // 像指针」预筛，在堆里几十分之一都能过，上百万个候选乘九次
+                // 系统调用，直接把游戏卡死（用户那边表现为崩溃）。
+                //
+                // 所以能在缓冲区里判的一律先判完：fsmID / fsmTarget 都在对象
+                // 自己身上（偏移 < TAIL，一定在缓冲区内），范围检查极便宜又
+                // 极有区分度。只有全过了才去碰真内存。
                 for (std::size_t k = 0; k < lim; k += 16) {
+                    if ((k & 0xFFFF) == 0 && ::GetTickCount64() > deadline) return true;
+
+                    std::int32_t f1 = 0, f2 = 0;
+                    std::memcpy(&f1, buf.data() + k + OFF_FSMID, sizeof(f1));
+                    if (f1 < 0 || f1 > 100000) continue;
+                    std::memcpy(&f2, buf.data() + k + OFF_FSMTGT, sizeof(f2));
+                    if (f2 < 0 || f2 > 100000) continue;
+
                     std::uintptr_t a = 0, h = 0;
                     std::memcpy(&a, buf.data() + k + OFF_ACT, sizeof(a));
                     if (a < 0x10000 || a > 0x7FFFFFFFFFFFULL || (a & 15)) continue;
@@ -497,6 +516,7 @@ bool ScanRange(std::uintptr_t lo, std::uintptr_t hi, std::uintptr_t selfEnt,
                     const std::uintptr_t m = base + off + k;
                     if (m == selfEnt) continue;
 
+                    ++gDeepProbes;          // 走到这一步才开始花系统调用
                     Snap sp;
                     if (!Read(m, sp)) continue;
 
@@ -524,8 +544,10 @@ bool ScanRange(std::uintptr_t lo, std::uintptr_t hi, std::uintptr_t selfEnt,
 void Scan()
 {
     gList.clear();
+    gDeepProbes = 0;
     const std::uint64_t t0 = ::GetTickCount64();
     const std::uint64_t deadline = t0 + (std::uint64_t)gScanBudgetMs;
+    plugin::Log("[怪物扫描] 开始（预算 %d ms）", gScanBudgetMs);
 
     // 玩家实体也符合布局，先拿到好排除掉；顺便拿它当锚点
     std::uintptr_t selfEnt = 0;
@@ -576,10 +598,11 @@ void Scan()
         how = "全量";
     }
 
-    plugin::Log("[怪物扫描] %s: %d 个区域 / %.0f MB, 用时 %.0fms%s, 找到 %d 个候选",
+    plugin::Log("[怪物扫描] %s: %d 个区域 / %.0f MB, 用时 %.0fms%s, "
+                "深度校验 %.0f 次, 找到 %d 个候选",
                 how, regions, (double)(bytes >> 20),
                 (double)(::GetTickCount64() - t0),
-                timedOut ? "(超时中断)" : "", (int)gList.size());
+                timedOut ? "(超时中断)" : "", (double)gDeepProbes, (int)gList.size());
 
     // 复核：等一小会儿再读一遍。真怪物的动作帧一定在走，纯属撞上布局的
     // 垃圾数据基本是死的 —— 这一步把误报标出来。
