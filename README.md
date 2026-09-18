@@ -209,7 +209,7 @@ W8=斩斧-拳
 WeaponType=3
 FSMId=11
 LMT=49265,49256
-Sound:sounds/主1.wav
+Sound=sounds/主1.wav
 
 [Weapon3:太刀-备用]
 [Attack21]
