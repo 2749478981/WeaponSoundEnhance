@@ -65,6 +65,7 @@ struct App {
     } editor;
 
     bool fsmWinOpen = false;   // 启动时不弹 FSM 查询窗（点工具栏「FSM 查询」再开）
+    bool idWinOpen = false;    // 共享动作 ID 库窗口（点工具栏「上传ID」打开）
     char fsmQuery[160] = {};
     int fsmWeaponFilter = -1;
 
@@ -98,6 +99,7 @@ private:
     void OpenEditorEdit(int index);
     void ApplyEditor();
     void DrawFsmWindow();
+    void DrawIdShareWindow();   // 共享动作 ID 库（上传/获取）
     void Save();
     void SaveAs();
     void Load(const std::string& path);

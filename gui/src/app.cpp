@@ -534,6 +534,10 @@ void App::DrawToolbar() {
     ImGui::SameLine(0, 16);
     if (ImGui::Button("FSM 查询")) fsmWinOpen = !fsmWinOpen;
     ImGui::SameLine();
+    if (ImGui::Button("上传ID")) idWinOpen = !idWinOpen;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("共享动作 ID 库：导出你的实测 FSM/LMT、导入别人的、提交到共享库、获取最新库");
+    ImGui::SameLine();
     if (ImGui::Button("打开 sounds\\")) {
         std::wstring sd = Utf8ToWide(BaseDir() + "sounds");
         CreateDirectoryW(sd.c_str(), nullptr);
@@ -1408,7 +1412,9 @@ void App::DrawFsmWindow() {
     ImGui::Separator();
 
     auto results = SearchFsmDb(fsmQuery, fsmWeaponFilter);
-    ImGui::BeginChild("fsmres", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
+    // 给底部两行提示留出高度，否则子区会把它挤出可视区
+    const float reserveY = ImGui::GetTextLineHeightWithSpacing() * 2.0f + 8.0f * dpiScale;
+    ImGui::BeginChild("fsmres", ImVec2(0, -reserveY), false, ImGuiWindowFlags_HorizontalScrollbar);
     for (const auto& r : results) {
         char lmtStr[32], fsmStr[32];
         snprintf(lmtStr, sizeof(lmtStr), "%d", r.lmt);
@@ -1423,27 +1429,75 @@ void App::DrawFsmWindow() {
     if (results.empty()) ImGui::TextDisabled("无匹配结果");
     ImGui::EndChild();
     ImGui::TextDisabled("可在 exe 同目录放 fsm_db.csv 扩展知识库 (weapon,fsm,lmt,name)");
+    ImGui::TextDisabled("上传/获取共享 ID 库 → 工具栏「上传ID」（当前库 %d 条）", (int)GetFsmDb().size());
 
-    // ---- 共享动作 ID 库：导出实测 / 导入合并 / 提交 / 获取最新 ----
+    ImGui::End();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(3);
+}
+
+// 共享动作 ID 库：导出实测 / 导入合并 / 提交到共享库 / 获取最新库
+void App::DrawIdShareWindow() {
+    ImGui::SetNextWindowSize(ImVec2(560 * dpiScale, 380 * dpiScale), ImGuiCond_FirstUseEver);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.72f, 0.72f, 0.75f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBg, ImVec4(0.93f, 0.93f, 0.95f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.93f, 0.93f, 0.95f, 1.0f));
+    if (!ImGui::Begin("共享动作 ID 库（上传/获取）", &idWinOpen)) {
+        ImGui::End();
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor(3);
+        return;
+    }
+
+    ImGui::TextWrapped("把你在游戏里实测到的 FSM/LMT 动作 ID 共享出来，别人就不用一招收一招试了。"
+                       "先在游戏里做几次动作（主界面右侧「实时捕获」会记录），再点下面按钮。");
+    ImGui::Spacing();
+
+    if (ImGui::Button("① 导出实测ID", ImVec2(150 * dpiScale, 0))) ExportMeasuredIdsCsv();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("把「实时捕获」历史 + 当前条目里的 weapon/fsm/lmt 去重导出为\nfsm_db_submission.csv（在 exe 同目录）");
+    ImGui::SameLine();
+    if (ImGui::Button("② 提交到共享库", ImVec2(150 * dpiScale, 0))) SubmitIdsToGithub();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("导出 + 复制到剪贴板 + 打开 GitHub 提交页；在页面里粘贴提交即可");
+
+    if (ImGui::Button("③ 导入CSV合并", ImVec2(150 * dpiScale, 0))) ImportIdsCsv();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("选择别人分享的 csv（weapon,fsm,lmt,name），合并进本地 fsm_db.csv（自动去重）");
+    ImGui::SameLine();
+    if (ImGui::Button("④ 获取最新库", ImVec2(150 * dpiScale, 0))) FetchLatestFsmDb();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("从仓库下载最新的 fsm_db.csv 覆盖本地（需要网络），下次启动即生效");
+
     ImGui::Separator();
-    ImGui::TextColored(C_AMBER, "共享动作 ID 库");
-    if (ImGui::Button("导出实测ID")) ExportMeasuredIdsCsv();
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("把「实时捕获」历史 + 当前条目里的 weapon/fsm/lmt 导出为\nfsm_db_submission.csv，可自己留着或提交共享");
+    ImGui::TextDisabled("当前库: %d 条", (int)GetFsmDb().size());
+    ImGui::TextDisabled("本地文件: %s", FsmDbPath().c_str());
+
+    // 实测候选（来自实时捕获历史 + 当前条目）
+    {
+        int cand = 0, withFsm = 0;
+        for (const auto& h : history) {
+            if (h.fsm <= 0 && h.lmt <= 0) continue;
+            ++cand;
+            if (h.fsm > 0) ++withFsm;
+        }
+        ImGui::Spacing();
+        ImGui::TextDisabled("本次实测候选: %d 条（其中带 FSM 的 %d 条）", cand, withFsm);
+        if (cand == 0)
+            ImGui::TextColored(C_AMBER, "还没有实测记录：先去游戏里做几次要共享的动作。");
+    }
+
+    ImGui::Spacing();
+    ImGui::TextDisabled("说明: 导出的 CSV 也可以直接当 fsm_db.csv 用；提交后由维护者合并进仓库，"
+                        "其他人点「获取最新库」即可拿到。");
+    ImGui::Separator();
+    if (ImGui::Button("打开 exe 目录")) {
+        std::wstring d = Utf8ToWide(BaseDir());
+        ShellExecuteW(nullptr, L"open", d.c_str(), nullptr, nullptr, SW_SHOW);
+    }
     ImGui::SameLine();
-    if (ImGui::Button("导入CSV合并")) ImportIdsCsv();
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("选择别人分享的 csv（weapon,fsm,lmt,name），合并进 exe 同目录的 fsm_db.csv");
-    ImGui::SameLine();
-    if (ImGui::Button("提交到共享库")) SubmitIdsToGithub();
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("导出并复制到剪贴板，然后打开 GitHub 提交页；粘贴提交即可贡献你的实测 ID");
-    ImGui::SameLine();
-    if (ImGui::Button("获取最新库")) FetchLatestFsmDb();
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("从仓库下载最新的 fsm_db.csv 覆盖到 exe 同目录（需要网络）");
-    ImGui::TextDisabled("贡献一次，别人就不用再逐招测了；当前库 %d 条，本地文件: %s",
-                        (int)GetFsmDb().size(), FsmDbPath().c_str());
+    ImGui::TextDisabled("%s", status.c_str());
 
     ImGui::End();
     ImGui::PopStyleVar();
@@ -1742,4 +1796,5 @@ void App::Draw() {
     // 编辑内容改由独立原生窗口（main.cpp 的第二个 ImGui 上下文）绘制，
     // 不再作为主窗内弹窗。DrawEditorDetached 由编辑窗渲染循环调用。
     if (fsmWinOpen) DrawFsmWindow();
+    if (idWinOpen) DrawIdShareWindow();
 }
