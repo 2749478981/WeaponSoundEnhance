@@ -373,6 +373,8 @@ void LogD(const char* fmt, ...)
 //  偏移来自 LuaEngine 的 Engine_monster.lua，怪物和玩家共用同一套实体布局
 //  （插件读玩家用的就是其中几个）。
 // ===========================================================================
+namespace plugin { void ShowMessage(const char* utf8, bool emphasized); }
+
 namespace monster {
 
 const std::uint32_t OFF_ACT     = 0x468;    // *(m+0x468) -> 动作对象
@@ -407,6 +409,15 @@ struct Mon {
 volatile int  gEnabled  = 0;
 volatile LONG gScanReq  = 0;        // 热键只置这个标志，真正的扫描在轮询线程做
 std::vector<Mon> gList;             // 只有轮询线程碰它
+
+// 自动扫描：进任务后自己扫，不用按键。ini MonsterAutoScan=0 可关。
+int gAutoScan     = 1;
+int gAutoFirstMs  = 5000;    // 进场景后等这么久再扫，给怪物生成留时间
+int gAutoRetryMs  = 20000;   // 没扫到时的重试间隔
+int gAutoMaxTries = 8;       // 重试上限，免得一直扫一直卡
+std::uint64_t gNextAutoAt = 0;
+int  gAutoTries  = 0;
+bool gWasInScene = false;
 
 // 读一遍全部字段，顺带当有效性校验。
 bool Read(std::uintptr_t m, Snap& o)
@@ -602,14 +613,55 @@ void Scan()
 void Tick()
 {
     if (gEnabled == 0) return;
+    const std::uint64_t now = ::GetTickCount64();
 
-    if (::InterlockedExchange(&gScanReq, 0) != 0) {
+    // 进任务自动安排一次扫描，离开就把跟踪列表清掉（指针全失效了）
+    const bool inScene = player::RefreshIsInScene();
+    if (!inScene) {
+        if (gWasInScene) {
+            plugin::Log("[怪物] 离开场景，清空跟踪列表");
+            gList.clear();
+        }
+        gWasInScene = false;
+        gNextAutoAt = 0;
+        gAutoTries  = 0;
+        ::InterlockedExchange(&gScanReq, 0);   // 场景外按的热键直接丢掉
+        return;
+    }
+    if (!gWasInScene) {
+        gWasInScene = true;
+        gList.clear();
+        gAutoTries  = 0;
+        gNextAutoAt = now + (std::uint64_t)gAutoFirstMs;
+        plugin::Log("[怪物] 进入场景，%.1f 秒后自动扫描", gAutoFirstMs / 1000.0);
+    }
+
+    bool anyAlive = false;
+    for (std::size_t q = 0; q < gList.size(); ++q)
+        if (gList[q].alive) { anyAlive = true; break; }
+
+    const bool manual  = (::InterlockedExchange(&gScanReq, 0) != 0);
+    const bool autoDue = (gAutoScan != 0) && !manual && !anyAlive &&
+                         gNextAutoAt != 0 && now >= gNextAutoAt &&
+                         gAutoTries < gAutoMaxTries;
+    if (manual || autoDue) {
+        gAutoTries = manual ? 0 : (gAutoTries + 1);
         Scan();
+        gNextAutoAt = ::GetTickCount64() + (std::uint64_t)gAutoRetryMs;
+        int live = 0;
+        for (std::size_t q = 0; q < gList.size(); ++q) if (gList[q].alive) ++live;
+        if (live > 0) {
+            gAutoTries = 0;
+            char msg[0x100] = {};
+            snprintf(msg, sizeof(msg), "wse: 开始跟踪 %d 个怪物", live);
+            plugin::ShowMessage(msg, true);
+        } else if (gAutoTries >= gAutoMaxTries) {
+            plugin::Log("[怪物] 自动扫了 %d 次都没找到，先不试了。"
+                        "怪物出现后按 Ctrl+F6 可以手动补一次。", gAutoTries);
+        }
         return;
     }
     if (gList.empty()) return;
-
-    const std::uint64_t now = ::GetTickCount64();
     for (std::size_t i = 0; i < gList.size(); ++i) {
         Mon& mo = gList[i];
         if (!mo.alive) continue;
@@ -1495,6 +1547,7 @@ void LoadConfig()
                 else if (key == "ChatCommands") g_useChatCommands = std::atoi(val.c_str()) != 0;
                 else if (key == "Hotkeys") g_hotkeysEnabled = std::atoi(val.c_str()) != 0;
                 else if (key == "MonsterProbe") monster::gEnabled = std::atoi(val.c_str()) != 0;
+                else if (key == "MonsterAutoScan") monster::gAutoScan = std::atoi(val.c_str()) != 0;
                 else if (key == "Debug") gDebug = std::atoi(val.c_str()) != 0;
                 else if (key == "GaugePtrOff") { std::uintptr_t v = ParseHex(val); if (v) gGaugePtrOff = (std::uint32_t)v; }
                 else if (key == "GaugeValOff") { std::uintptr_t v = ParseHex(val); if (v) gGaugeValOff = (std::uint32_t)v; }
@@ -2310,7 +2363,7 @@ DWORD WINAPI HotkeyProc(LPVOID)
                 // 只置标志，真正的扫描交给轮询线程 —— 两个线程同时动 gList
                 // 会在 vector 扩容时把游戏搞崩（已经犯过一次）。
                 ::InterlockedExchange(&monster::gScanReq, 1);
-                ShowMessage("wse: 开始扫描怪物，结果看日志", true);
+                ShowMessage("wse: 手动扫描已排队", true);
             } else {
                 ShowMessage("wse: MonsterProbe=0, 怪物探针没开", true);
             }
