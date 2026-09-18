@@ -5,6 +5,7 @@
 #include <shellapi.h>
 #include <commdlg.h>
 #include <mmsystem.h>
+#include <urlmon.h>
 #include <cwchar>
 #include <cstdio>
 #include <cstring>
@@ -13,6 +14,15 @@
 #pragma comment(lib, "winmm.lib")
 #pragma comment(lib, "comdlg32.lib")
 #pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "urlmon.lib")
+
+// 共享动作 ID 库：仓库里的 fsm_db.csv（“获取最新库”从这里下载）
+static const wchar_t* const kSharedFsmDbUrl =
+    L"https://raw.githubusercontent.com/2749478981/WeaponSoundEnhance/main/fsm_db.csv";
+// 提交入口：GitHub 新建 issue（把导出的 CSV 粘进去/附件即可）
+static const wchar_t* const kSubmitIssueUrl =
+    L"https://github.com/2749478981/WeaponSoundEnhance/issues/new"
+    L"?title=%E5%8A%A8%E4%BD%9CID%E6%8F%90%E4%BA%A4&body=%E8%AF%B7%E6%8A%8A%20fsm_db_submission.csv%20%E7%9A%84%E5%86%85%E5%AE%B9%E7%B2%98%E5%9C%A8%E4%B8%8B%E9%9D%A2%EF%BC%88%E6%88%96%E4%BD%9C%E4%B8%BA%E9%99%84%E4%BB%B6%E4%B8%8A%E4%BC%A0%EF%BC%89%EF%BC%9A";
 
 namespace {
 
@@ -1397,6 +1407,28 @@ void App::DrawFsmWindow() {
     if (results.empty()) ImGui::TextDisabled("无匹配结果");
     ImGui::EndChild();
     ImGui::TextDisabled("可在 exe 同目录放 fsm_db.csv 扩展知识库 (weapon,fsm,lmt,name)");
+
+    // ---- 共享动作 ID 库：导出实测 / 导入合并 / 提交 / 获取最新 ----
+    ImGui::Separator();
+    ImGui::TextColored(C_AMBER, "共享动作 ID 库");
+    if (ImGui::Button("导出实测ID")) ExportMeasuredIdsCsv();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("把「实时捕获」历史 + 当前条目里的 weapon/fsm/lmt 导出为\nfsm_db_submission.csv，可自己留着或提交共享");
+    ImGui::SameLine();
+    if (ImGui::Button("导入CSV合并")) ImportIdsCsv();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("选择别人分享的 csv（weapon,fsm,lmt,name），合并进 exe 同目录的 fsm_db.csv");
+    ImGui::SameLine();
+    if (ImGui::Button("提交到共享库")) SubmitIdsToGithub();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("导出并复制到剪贴板，然后打开 GitHub 提交页；粘贴提交即可贡献你的实测 ID");
+    ImGui::SameLine();
+    if (ImGui::Button("获取最新库")) FetchLatestFsmDb();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("从仓库下载最新的 fsm_db.csv 覆盖到 exe 同目录（需要网络）");
+    ImGui::TextDisabled("贡献一次，别人就不用再逐招测了；当前库 %d 条，本地文件: %s",
+                        (int)GetFsmDb().size(), FsmDbPath().c_str());
+
     ImGui::End();
     ImGui::PopStyleVar();
     ImGui::PopStyleColor(3);
@@ -1410,6 +1442,89 @@ void App::PlaySoundPreview(const std::string& rel, int vol, int delayMs) {
     if (gain < 0.0f) gain = 0.0f;
     if (gain > 1.0f) gain = 1.0f;
     PlayPreviewFile(Utf8ToWide(full), gain, delayMs > 0 ? (unsigned)delayMs : 0);
+}
+
+std::string App::OpenFileDialogCsv() {
+    wchar_t buf[MAX_PATH * 2] = {};
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = (HWND)hwnd;
+    ofn.lpstrFilter = L"CSV 动作ID库 (*.csv)\0*.csv\0所有文件 (*.*)\0*.*\0";
+    ofn.lpstrFile = buf;
+    ofn.nMaxFile = sizeof(buf) / sizeof(wchar_t);
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (!GetOpenFileNameW(&ofn)) return "";
+    return Utf8FromWide(buf);
+}
+
+void App::ExportMeasuredIdsCsv() {
+    // 汇总"实测到的动作 ID"：实时捕获历史 + 当前配置条目（按 weapon/fsm/lmt 去重）
+    std::vector<FsmDbEntry> ids;
+    auto exists = [&](int w, int f, int l) {
+        for (const auto& e : ids) if (e.weapon == w && e.fsm == f && e.lmt == l) return true;
+        return false;
+    };
+    auto add = [&](int w, int f, int l, const std::string& nm) {
+        if (f <= 0 && l <= 0) return;            // 跳过自由态(0/-1)
+        if (exists(w, f, l)) return;
+        FsmDbEntry e;
+        e.weapon = w; e.fsm = f; e.lmt = l;
+        e.name = nm.empty() ? std::string("(未命名)") : nm;
+        ids.push_back(e);
+    };
+    for (const auto& h : history)
+        add(h.weapon, h.fsm, h.lmt, ResolveName(h.weapon, h.fsm, h.lmt));
+    for (const auto& e : cfg.entries)
+        add(e.weaponType, e.fsmId, e.LmtAny(), e.name);
+
+    const std::string path = BaseDir() + "fsm_db_submission.csv";
+    if (!SaveFsmDbCsv(path, ids)) { status = "导出失败: " + path; return; }
+    status = "已导出 " + std::to_string(ids.size()) + " 条实测动作ID -> " + path;
+}
+
+void App::ImportIdsCsv() {
+    const std::string p = OpenFileDialogCsv();
+    if (p.empty()) return;
+    const int added = MergeFsmDbCsv(p, FsmDbPath());
+    ReloadFsmDb();
+    EnrichNames();
+    if (added > 0) {
+        mDirty = true;
+        status = "已合并 " + std::to_string(added) + " 条新动作ID -> " + FsmDbPath();
+    } else {
+        status = "没有可合并的新条目（都已存在）";
+    }
+}
+
+void App::SubmitIdsToGithub() {
+    ExportMeasuredIdsCsv();
+    const std::string path = BaseDir() + "fsm_db_submission.csv";
+    // 把 CSV 内容放进剪贴板，打开提交页后直接粘贴即可
+    std::string content;
+    {
+        FILE* f = nullptr;
+        if (fopen_s(&f, path.c_str(), "rb") == 0 && f) {
+            char buf[4096];
+            size_t n = 0;
+            while ((n = fread(buf, 1, sizeof(buf), f)) > 0) content.append(buf, n);
+            fclose(f);
+        }
+    }
+    if (!content.empty()) ImGui::SetClipboardText(content.c_str());
+    ShellExecuteW(nullptr, L"open", kSubmitIssueUrl, nullptr, nullptr, SW_SHOWNORMAL);
+    status = "已导出 " + path + "，内容已复制到剪贴板；请在打开的页面粘贴提交";
+}
+
+void App::FetchLatestFsmDb() {
+    const std::wstring dst = Utf8ToWide(FsmDbPath());
+    const HRESULT hr = URLDownloadToFileW(nullptr, kSharedFsmDbUrl, dst.c_str(), 0, nullptr);
+    if (SUCCEEDED(hr)) {
+        ReloadFsmDb();
+        EnrichNames();
+        status = "已更新共享动作ID库 -> " + FsmDbPath();
+    } else {
+        status = "获取最新ID库失败（检查网络或代理）";
+    }
 }
 
 std::string App::OpenFileDialogIni() {

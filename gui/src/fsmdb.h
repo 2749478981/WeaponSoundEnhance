@@ -15,3 +15,15 @@ const std::vector<FsmDbEntry>& GetFsmDb();
 std::vector<FsmDbEntry> SearchFsmDb(const std::string& query, int weaponFilter);
 // 反查名称，未知返回空串
 std::string LookupFsmName(int weapon, int fsm, int lmt);
+
+// ---- 共享 ID 库（fsm_db.csv）----
+// exe 同目录的 fsm_db.csv 路径（不存在时也能返回路径）
+std::string FsmDbPath();
+// 把 entries 按 weapon,fsm,lmt,name 写成 CSV（自动跳过重复键、清理逗号）
+bool SaveFsmDbCsv(const std::string& path, const std::vector<FsmDbEntry>& entries);
+// 把 srcPath 的条目合并进 dstPath（按 weapon/fsm/lmt 去重，追加写入），返回新增条数
+int MergeFsmDbCsv(const std::string& srcPath, const std::string& dstPath);
+// 让 GetFsmDb() 丢弃缓存、重新读盘（导入/下载后调用）
+void ReloadFsmDb();
+// 读取单个 CSV 文件（不合并内置库），供导出/预览用
+std::vector<FsmDbEntry> LoadFsmDbCsv(const std::string& path);

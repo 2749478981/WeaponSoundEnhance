@@ -100,8 +100,7 @@ std::string ExeDir() {
     return std::string(mb);
 }
 
-void LoadExternal(std::vector<FsmDbEntry>& db) {
-    std::string path = ExeDir() + "fsm_db.csv";
+void LoadCsvInto(const std::string& path, std::vector<FsmDbEntry>& db) {
     std::ifstream in(path, std::ios::binary);
     if (!in) return;
     std::string line;
@@ -126,17 +125,82 @@ void LoadExternal(std::vector<FsmDbEntry>& db) {
     }
 }
 
+bool SameKey(const FsmDbEntry& a, const FsmDbEntry& b) {
+    return a.weapon == b.weapon && a.fsm == b.fsm && a.lmt == b.lmt;
+}
+
+std::string CsvName(std::string name) {
+    for (auto& c : name) if (c == ',' || c == '\r' || c == '\n') c = ' ';
+    return name;
+}
+
+void WriteCsvHeader(std::ostream& out) {
+    out << "# WeaponSoundEnhance 动作 ID 库\n";
+    out << "# 格式: weapon,fsm,lmt,name  (weapon 0..13 / -1=通用；fsm 或 lmt 未知写 -1)\n";
+}
+
+// 知识库缓存：ReloadFsmDb() 后重新读盘
+std::vector<FsmDbEntry> g_db;
+bool g_loaded = false;
+
 } // namespace
 
+std::string FsmDbPath() { return ExeDir() + "fsm_db.csv"; }
+
+std::vector<FsmDbEntry> LoadFsmDbCsv(const std::string& path) {
+    std::vector<FsmDbEntry> v;
+    LoadCsvInto(path, v);
+    return v;
+}
+
 const std::vector<FsmDbEntry>& GetFsmDb() {
-    static std::vector<FsmDbEntry> db;
-    static bool loaded = false;
-    if (!loaded) {
-        loaded = true;
-        db = Builtin();
-        LoadExternal(db);
+    if (!g_loaded) {
+        g_loaded = true;
+        g_db = Builtin();
+        LoadCsvInto(FsmDbPath(), g_db);
     }
-    return db;
+    return g_db;
+}
+
+void ReloadFsmDb() { g_loaded = false; }
+
+bool SaveFsmDbCsv(const std::string& path, const std::vector<FsmDbEntry>& entries) {
+    std::ofstream out(path, std::ios::binary);
+    if (!out) return false;
+    WriteCsvHeader(out);
+    std::vector<FsmDbEntry> uniq;
+    for (const auto& e : entries) {
+        bool dup = false;
+        for (const auto& u : uniq) if (SameKey(u, e)) { dup = true; break; }
+        if (!dup) uniq.push_back(e);
+    }
+    for (const auto& e : uniq)
+        out << e.weapon << "," << e.fsm << "," << e.lmt << "," << CsvName(e.name) << "\n";
+    return true;
+}
+
+int MergeFsmDbCsv(const std::string& srcPath, const std::string& dstPath) {
+    std::vector<FsmDbEntry> src = LoadFsmDbCsv(srcPath);
+    if (src.empty()) return 0;
+    std::vector<FsmDbEntry> dst = LoadFsmDbCsv(dstPath);
+
+    // 目标文件不存在时先写表头，保持文件可读
+    bool hadFile = false;
+    { std::ifstream in(dstPath, std::ios::binary); hadFile = (bool)in; }
+    std::ofstream out(dstPath, std::ios::binary | std::ios::app);
+    if (!out) return 0;
+    if (!hadFile) WriteCsvHeader(out);
+
+    int added = 0;
+    for (const auto& e : src) {
+        bool dup = false;
+        for (const auto& d : dst) if (SameKey(d, e)) { dup = true; break; }
+        if (dup) continue;
+        out << e.weapon << "," << e.fsm << "," << e.lmt << "," << CsvName(e.name) << "\n";
+        dst.push_back(e);
+        ++added;
+    }
+    return added;
 }
 
 std::vector<FsmDbEntry> SearchFsmDb(const std::string& query, int weaponFilter) {

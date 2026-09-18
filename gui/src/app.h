@@ -111,4 +111,10 @@ private:
     std::string ActiveCombo(int w) const;
     // 该条目是否属于"当前激活组合"（非激活条目不显示/不参与匹配）
     bool EntryActive(const SoundEntry& e) const;
+    // 共享动作 ID 库（fsm_db.csv）：导出实测 / 导入合并 / 提交 / 获取最新
+    std::string OpenFileDialogCsv();
+    void ExportMeasuredIdsCsv();
+    void ImportIdsCsv();
+    void SubmitIdsToGithub();
+    void FetchLatestFsmDb();
 };
