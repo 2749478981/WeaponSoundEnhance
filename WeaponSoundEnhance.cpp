@@ -279,6 +279,13 @@ bool FileExistsW(const std::wstring& p)
     return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
 }
 
+// 目录是否存在
+bool DirExistsW(const std::wstring& p)
+{
+    const DWORD a = ::GetFileAttributesW(p.c_str());
+    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
 // 选数据目录，规则（兼容旧布局）：
 //   1) <plugins>\WeaponSoundEnhance\WeaponSoundEnhance.ini 存在 → 用子目录
 //   2) <plugins>\WeaponSoundEnhance.ini 存在              → 用旧布局(DLL 同目录)
@@ -307,7 +314,15 @@ void LogInit()
 {
     gLogPath = gDataDir + L"WeaponSoundEnhance.log";
     ::DeleteFileW(gLogPath.c_str());
-    Log("WeaponSoundEnhance 2.3 starting");
+    Log("WeaponSoundEnhance 2.4 starting");
+    // 旧布局提示：wav 还在 plugins\sounds\ 时自动兼容，但建议搬进数据目录
+    const std::wstring oldSounds = gModuleDir + L"sounds";
+    if (gDataDir != gModuleDir && DirExistsW(oldSounds) &&
+        !DirExistsW(gDataDir + L"sounds")) {
+        Log("hint: 音效目录仍在旧位置 %s （已自动兼容；建议整体移动到 %s ）",
+            strconv::ToUtf8(oldSounds).c_str(),
+            strconv::ToUtf8(gDataDir + L"sounds").c_str());
+    }
 }
 
 void LogV(const char* fmt, va_list ap)
@@ -1430,9 +1445,12 @@ void PreloadSounds()
 }
 
 // Relative "sounds/xxx.wav" -> absolute path below the module dir.
-std::wstring AbsFor(const std::string& rel)
+// 查找顺序：数据目录(plugins\WeaponSoundEnhance\) → 旧布局(DLL 同目录)。
+// 2.3 之前 wav 都放在 plugins\sounds\ 下，这里自动兼容，用户不用搬文件；
+// 已经绝对路径的(如 F:\...\a.wav)直接原样返回。
+std::wstring JoinPath(const std::wstring& dir, const std::string& rel)
 {
-    std::wstring w = gDataDir + strconv::ToWide(rel);
+    std::wstring w = dir + strconv::ToWide(rel);
     for (auto& c : w) if (c == L'/') c = L'\\';
     std::wstring out;
     out.reserve(w.size());
@@ -1447,6 +1465,29 @@ std::wstring AbsFor(const std::string& rel)
         }
     }
     return out;
+}
+
+std::wstring AbsFor(const std::string& rel)
+{
+    if (rel.size() > 1 && rel[1] == ':') return strconv::ToWide(rel);   // 绝对路径
+
+    static std::mutex pathMutex;
+    static std::map<std::string, std::wstring> pathCache;
+    {
+        std::lock_guard<std::mutex> lk(pathMutex);
+        auto it = pathCache.find(rel);
+        if (it != pathCache.end()) return it->second;
+    }
+
+    std::wstring p = JoinPath(gDataDir, rel);
+    if (gDataDir != gModuleDir && !FileExistsW(p)) {
+        const std::wstring legacy = JoinPath(gModuleDir, rel);
+        if (FileExistsW(legacy)) p = legacy;   // 旧布局回退
+    }
+
+    std::lock_guard<std::mutex> lk(pathMutex);
+    pathCache[rel] = p;
+    return p;
 }
 
 // ===========================================================================

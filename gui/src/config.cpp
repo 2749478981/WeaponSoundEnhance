@@ -394,7 +394,8 @@ bool SaveConfig(const std::string& path, const Config& cfg) {
     o += "; ============================================================================\r\n";
     o += ";  WeaponSoundEnhance.ini —— 武器音效拓展插件配置\r\n";
     o += ";  (由 WeaponSoundEnhanceGUI 生成)\r\n";
-    o += ";  音效 wav 文件请放到 DLL 同目录的 sounds\\ 文件夹里。\r\n";
+    o += ";  路径：本文件在 plugins\\WeaponSoundEnhance\\ 下（与 DLL 同目录的旧布局也兼容）；\r\n";
+    o += ";        音效 wav 放在本文件同级的 sounds\\ 文件夹里（旧位置 plugins\\sounds\\ 仍自动兼容）。\r\n";
     o += ";\r\n";
     o += ";  武器类型表（与原版武器序号一致）：\r\n";
     o += ";    0=大剑  1=片手  2=双刀  3=太刀  4=大锤  5=笛子\r\n";

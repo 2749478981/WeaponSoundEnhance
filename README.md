@@ -17,7 +17,7 @@
 
 - 最新发布：<https://github.com/2749478981/WeaponSoundEnhance/releases/latest>
 
-> Release zip 解压后为 `nativePC\plugins\` 结构（dll + ini + 空的 sounds\），拖进狩技 mod 盒子或放入游戏目录即可。
+> Release zip 解压后为 `nativePC\plugins\` 结构（`WeaponSoundEnhance.dll` + `WeaponSoundEnhance\` 子目录：`*.ini.template`、`fsm_db.csv`、GUI、空的 `sounds\`），拖进狩技 mod 盒子或放入游戏目录即可。
 
 ---
 
@@ -99,7 +99,7 @@ nativePC\plugins\
 5. 进游戏，拿对应武器做派生攻击即可触发。
 
 > ini 为**干净模板**，不含预置攻击条目，请按下方配置说明自行添加。
-> **旧布局仍然兼容**：如果你的 `WeaponSoundEnhance.ini` 与 DLL 同目录（v2.2 及更早的装法），插件会继续用那一份，不用搬家。
+> **旧布局仍然兼容**：如果你的 `WeaponSoundEnhance.ini` 与 DLL 同目录（v2.2 及更早的装法），插件会继续用那一份；音效放在旧的 `plugins\sounds\` 也照旧能读，不用搬家。
 
 ### 升级指南（不丢配置）
 
@@ -108,9 +108,14 @@ nativePC\plugins\
 - 你实测的动作 ID 存在 `WeaponSoundEnhance\fsm_db_user.csv`，**任何更新都不会动它**。
 
 ### 从源码构建
-1. 编译得到 `WeaponSoundEnhance.dll`（见上一节）。
-2. 把 `WeaponSoundEnhance.dll`、`WeaponSoundEnhance.ini`、`sounds\` 一起放进游戏 `nativePC\plugins\`。
+1. 编译得到 `WeaponSoundEnhance.dll`（见上一节）和 `gui\out\x64\Release\WeaponSoundEnhanceGUI.exe`。
+2. `WeaponSoundEnhance.dll` 放进游戏 `nativePC\plugins\`；`WeaponSoundEnhanceGUI.exe`、`WeaponSoundEnhance.ini`、`fsm_db.csv` 与 `sounds\` 放进 `nativePC\plugins\WeaponSoundEnhance\`（或用 `refresh_dist.ps1` 一键打包出 `dist\`）。
 3. 其余同上。
+
+### 常见问题
+- **GUI 显示「已连接」但实时捕获一直是空的**：多半是后台残留了**同名僵尸进程**（游戏崩溃或被强杀后留下的 0 线程进程，也叫 `MonsterHunterWorld.exe`）。v2.4 起 GUI 会自动跳过它们、只连真正在跑的那个，并在状态栏显示所连 `pid` 与失败原因；也可以自己去任务管理器结束掉那些只占 1MB 内存的 `MonsterHunterWorld.exe`。
+- **升级后音效全都不响、日志里全是 `wav not found`**：v2.3 起音效应放在 `plugins\WeaponSoundEnhance\sounds\`；还留在旧的 `plugins\sounds\` 也能读（v2.4 起自动回退，日志会提示建议搬移）。另外音效是**启动时预载**的，放好文件后重进游戏或按 `Ctrl+F5` 重载。
+- **连不上游戏进程**：若游戏以管理员身份运行，本工具也需要右键「以管理员身份运行」。
 
 ---
 

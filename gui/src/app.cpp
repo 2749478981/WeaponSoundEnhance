@@ -451,9 +451,10 @@ void App::PollGame() {
     unsigned long long now = GetTickCount64();
     if (now - mLastPoll < 250) return;   // 250ms 轮询，利于捕获动作窗口
     mLastPoll = now;
-    if (!game.IsAttached()) game.Attach();
+    const std::uint64_t pr = ParsePlayerRoot(cfg.global.playerRoot, 0x1450139A0ULL);
+    // 传入 PlayerRoot：Attach 会逐个候选进程验证指针链，避免连到残留的僵尸进程
+    if (!game.IsAttached()) game.Attach(pr);
     if (!game.IsAttached()) { liveOk = false; return; }
-    std::uint64_t pr = ParsePlayerRoot(cfg.global.playerRoot, 0x1450139A0ULL);
     liveOk = game.Poll(pr, live);
     if (!game.IsAttached()) liveOk = false;
     RecordHistory();
@@ -561,7 +562,12 @@ void App::DrawToolbar() {
         ImGui::SetTooltip("把旧版 ini 里的动作合并进来（不替换当前配置），换新版时不用重填");
     ImGui::SameLine();
     if (ImGui::Button("打开 sounds\\")) {
+        // 数据目录下没有 sounds\ 但旧布局(与 DLL 同级)有 → 打开旧目录，避免用户找不到音效
         std::wstring sd = Utf8ToWide(BaseDir() + "sounds");
+        std::wstring legacy = Utf8ToWide(ExeDir() + "sounds");
+        if (GetFileAttributesW(sd.c_str()) == INVALID_FILE_ATTRIBUTES &&
+            GetFileAttributesW(legacy.c_str()) != INVALID_FILE_ATTRIBUTES)
+            sd = legacy;
         CreateDirectoryW(sd.c_str(), nullptr);
         ShellExecuteW((HWND)hwnd, L"open", sd.c_str(), nullptr, nullptr, SW_SHOW);
     }
@@ -663,6 +669,8 @@ void App::DrawCapturePanel() {
         ImGui::TextColored(C_GREEN, "●");
         ImGui::SameLine(0, 4);
         ImGui::Text("已连接");
+        ImGui::SameLine(0, 6);
+        ImGui::TextDisabled("pid %lu", live.pid);
         const char* wn = (live.weapon >= 0 && live.weapon <= 13) ? WeaponName(live.weapon) : "?";
         ImGui::SameLine(0, 8);
         ImGui::TextColored(C_ACCENT, "fsm %d", live.fsm);
@@ -680,6 +688,19 @@ void App::DrawCapturePanel() {
         ImGui::TextDisabled("未连接");
         ImGui::SameLine(0, 8);
         if (ImGui::Button("重连")) game.Detach();
+        // 说明连不上的具体原因（找不到进程 / 打开失败 / 只有残留僵尸进程）
+        const std::string& le = game.LastError();
+        if (!le.empty()) {
+            float cw = ImGui::GetContentRegionAvail().x;
+            ImGui::TextDisabled("%s", ClipText(le, cw).c_str());
+        }
+    }
+    // 同名残留进程（崩溃/被强杀后留下的僵尸）会让人误以为“连上了却抓不到”，这里明示
+    if (game.CandidateCount() > 1) {
+        char bb[96];
+        snprintf(bb, sizeof(bb), "检测到 %d 个同名游戏进程（无响应的残留进程已自动跳过）",
+                 game.CandidateCount());
+        ImGui::TextDisabled("%s", bb);
     }
     ImGui::Separator();
     ImGui::TextDisabled("历史 (fsm≠0 已高亮)");
@@ -1601,7 +1622,7 @@ void App::SubmitIdsToGithub() {
     std::string content;
     {
         FILE* f = nullptr;
-        if (fopen_s(&f, path.c_str(), "rb") == 0 && f) {
+        if (_wfopen_s(&f, Utf8ToWide(path).c_str(), L"rb") == 0 && f) {
             char buf[4096];
             size_t n = 0;
             while ((n = fread(buf, 1, sizeof(buf), f)) > 0) content.append(buf, n);
@@ -1641,6 +1662,13 @@ std::string App::OpenFileDialogIni() {
 int App::BrowseSounds(std::vector<SoundSpec>& out) {
     std::string sdir = BaseDir() + "sounds";
     std::wstring target = Utf8ToWide(sdir);
+    // 旧布局：wav 可能还在与 DLL 同级的 sounds\ 里。数据目录下还没有 sounds\ 时，
+    // 选择对话框直接开在旧目录，免得用户以为音效丢了（选中后仍会复制到数据目录）。
+    const std::wstring legacySounds = Utf8ToWide(ExeDir() + "sounds");
+    std::wstring initDir = target;
+    if (GetFileAttributesW(target.c_str()) == INVALID_FILE_ATTRIBUTES &&
+        GetFileAttributesW(legacySounds.c_str()) != INVALID_FILE_ATTRIBUTES)
+        initDir = legacySounds;
     CreateDirectoryW(target.c_str(), nullptr);
     std::wstring targetNorm = target;
     if (!targetNorm.empty() && targetNorm.back() != L'\\') targetNorm += L'\\';
@@ -1654,7 +1682,7 @@ int App::BrowseSounds(std::vector<SoundSpec>& out) {
     ofn.lpstrFilter = L"WAV 音效 (*.wav)\0*.wav\0所有文件 (*.*)\0*.*\0";
     ofn.lpstrFile = buf;
     ofn.nMaxFile = 16384;
-    ofn.lpstrInitialDir = target.c_str();
+    ofn.lpstrInitialDir = initDir.c_str();
     ofn.Flags = OFN_EXPLORER | OFN_ALLOWMULTISELECT | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     if (!GetOpenFileNameW(&ofn)) {
         // 取消选择：同样把编辑窗口带回最前（对话框期间它可能被主窗口盖住）
