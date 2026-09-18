@@ -857,7 +857,12 @@ std::map<int, std::string>  g_activeCombo;                            // weapon 
 std::map<int, std::vector<std::string>> g_comboOrder;                 // weapon -> combo names (默认""在前)
 
 // 依据 g_combos + g_activeCombo 重建"当前激活"的攻击条目表（运行线程只遍历 gAttacks）。
-void RebuildActiveAttacks()
+//
+// 注意：本函数分两层，防止**重复加锁**（std::mutex 非递归，同线程二次 lock 是未定义行为，
+// MSVC 下会抛 system_error 直接把进程带崩——Ctrl+F11 切组合曾经就是这样闪退的）：
+//   * RebuildActiveAttacksLocked() —— 调用方必须已持有 gCfgMutex
+//   * RebuildActiveAttacks()       —— 自行加锁，给不持锁的调用方用
+void RebuildActiveAttacksLocked()
 {
     std::vector<Attack> acts;
     for (const auto& wc : g_combos) {
@@ -874,11 +879,14 @@ void RebuildActiveAttacks()
         auto it = wc.second.find(active);
         if (it != wc.second.end()) acts.insert(acts.end(), it->second.begin(), it->second.end());
     }
-    {
-        std::lock_guard<std::mutex> lk(gCfgMutex);
-        gAttacks = std::move(acts);
-        g_groups.clear();   // 组合切换后旧组状态作废
-    }
+    gAttacks = std::move(acts);
+    g_groups.clear();   // 组合切换后旧组状态作废
+}
+
+void RebuildActiveAttacks()
+{
+    std::lock_guard<std::mutex> lk(gCfgMutex);
+    RebuildActiveAttacksLocked();
 }
 
 std::uint64_t gLastTrigger = 0;
@@ -2002,7 +2010,7 @@ DWORD WINAPI HotkeyProc(LPVOID)
                     for (std::size_t k = 0; k < order.size(); ++k)
                         if (order[k] == cur) { nxt = order[(k + 1) % order.size()]; break; }
                     g_activeCombo[w] = nxt;
-                    RebuildActiveAttacks();
+                    RebuildActiveAttacksLocked();   // 已持有 gCfgMutex，不能再调加锁版
                 }
             }
             if (!nxt.empty()) {

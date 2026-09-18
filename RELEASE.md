@@ -1,6 +1,11 @@
-# WeaponSoundEnhance v2.2
+# WeaponSoundEnhance v2.2.1
 
 给《怪物猎人：世界 / 冰原》(15.23.00) 增加武器派生攻击音效的原生 DLL 插件。
+
+## 更新内容（v2.2.1）
+
+### 🐞 修复
+- **修复游戏内 `Ctrl+F11`（切换武器配置组合）闪退**：该热键在**已持有配置锁**的情况下，又调用了会**再次加锁**的重建函数；`std::mutex` 是非递归的，同线程二次加锁属未定义行为（MSVC 下抛 `system_error` → 进程直接终止）。现拆成「已持锁 `RebuildActiveAttacksLocked()`」和「自行加锁 `RebuildActiveAttacks()`」两个版本，热键路径改用前者。
 
 ## 更新内容（v2.2）
 
