@@ -411,7 +411,7 @@ volatile LONG gScanReq  = 0;        // 热键只置这个标志，真正的扫�
 std::vector<Mon> gList;             // 只有轮询线程碰它
 
 // 自动扫描：进任务后自己扫，不用按键。ini MonsterAutoScan=0 可关。
-int gAutoScan     = 0;   // 堆扫描实测覆盖率太低、误报全是垃圾，默认不跑
+int gAutoScan     = 1;
 int gAutoFirstMs  = 5000;    // 进场景后等这么久再扫，给怪物生成留时间
 int gAutoRetryMs  = 20000;   // 没扫到时的重试间隔
 int gAutoMaxTries = 3;       // 重试上限，免得一直扫一直卡
@@ -420,31 +420,55 @@ long long gDeepProbes = 0;   // 真正下到 VirtualQuery 的候选数，用来�
 int  gAutoTries  = 0;
 bool gWasInScene = false;
 
-// 读一遍全部字段，顺带当有效性校验。
+// 一次进程内读取。比 mem::ReadVal 强的地方在于读失败只是返回 false，
+// 而且一次调用能取一整块，不像 IsReadable 每个字段都要一次 VirtualQuery。
+inline bool Rpm(std::uintptr_t a, void* out, std::size_t n)
+{
+    SIZE_T got = 0;
+    return ::ReadProcessMemory(::GetCurrentProcess(), reinterpret_cast<LPCVOID>(a),
+                               out, n, &got) && got == n;
+}
+
+// 已知 act/hpo/fsm 时的校验。顺序按「最挑剔的先读」排 —— 绝大多数候选
+// 在第一次调用就被血量范围否掉，不会走到后面。
+// （之前每个候选固定九次 VirtualQuery，实测 175 次/MB，直接把游戏拖死。）
+bool Validate(std::uintptr_t act, std::uintptr_t hpo,
+              std::int32_t fsm, std::int32_t fsmTgt, Snap& o)
+{
+    float hpv[2];                        // +0x60 上限, +0x64 当前
+    if (!Rpm(hpo + OFF_HPMAX, hpv, sizeof(hpv))) return false;
+    if (!(hpv[0] > gHpMin && hpv[0] < gHpMaxCap)) return false;
+    if (!(hpv[1] >= 1.0f && hpv[1] <= hpv[0]))    return false;   // 血量不足 1 的基本是垃圾
+
+    float fb[3];                         // +0x10C 当前帧 … +0x114 总帧
+    if (!Rpm(act + OFF_FRAME, fb, sizeof(fb))) return false;
+    const float frame = fb[0], frameEnd = fb[2];
+    // 真实动作的总帧是几十到几百。之前门槛是 >0，把「帧 0.0/0.2」这种
+    // 垃圾全放进来了。
+    if (!(frameEnd > 1.0f && frameEnd < 3000.0f)) return false;   // 真实动作总帧几十到几百
+    if (!(frame >= 0.0f && frame <= frameEnd + 1.0f)) return false;
+
+    std::int32_t lmt = 0;
+    if (!Rpm(act + OFF_LMT, &lmt, sizeof(lmt))) return false;
+    if (lmt < 0 || lmt > 200000) return false;
+
+    o.hpMax = hpv[0]; o.hp = hpv[1];
+    o.frame = frame;  o.frameEnd = frameEnd;
+    o.lmt = lmt;      o.fsm = fsm;  o.fsmTgt = fsmTgt;
+    return true;
+}
+
+// 只有指针时的完整读取（跟踪阶段用）
 bool Read(std::uintptr_t m, Snap& o)
 {
     std::uintptr_t act = 0, hpo = 0;
-    if (!mem::ReadVal(m + OFF_ACT,   act) || act < 0x10000) return false;
-    if (!mem::ReadVal(m + OFF_HPOBJ, hpo) || hpo < 0x10000) return false;
-
-    if (!mem::ReadVal(hpo + OFF_HPMAX, o.hpMax)) return false;
-    if (!mem::ReadVal(hpo + OFF_HPCUR, o.hp))    return false;
-    if (!(o.hpMax > gHpMin && o.hpMax < gHpMaxCap)) return false;
-    if (!(o.hp > 0.0f && o.hp <= o.hpMax))          return false;
-
-    if (!mem::ReadVal(act + OFF_LMT,     o.lmt))      return false;
-    if (!mem::ReadVal(act + OFF_FRAME,   o.frame))    return false;
-    if (!mem::ReadVal(act + OFF_FRAMEND, o.frameEnd)) return false;
-    if (!mem::ReadVal(m   + OFF_FSMID,   o.fsm))      return false;
-    if (!mem::ReadVal(m   + OFF_FSMTGT,  o.fsmTgt))   return false;
-
-    if (o.lmt    < 0 || o.lmt    > 200000) return false;
-    if (o.fsm    < 0 || o.fsm    > 100000) return false;
-    if (o.fsmTgt < 0 || o.fsmTgt > 100000) return false;
-    // 动作帧：正在播的动作总帧必然为正，当前帧不会离谱地超出
-    if (!(o.frameEnd > 0.0f && o.frameEnd < 100000.0f)) return false;
-    if (!(o.frame >= 0.0f && o.frame <= o.frameEnd + 1.0f)) return false;
-    return true;
+    if (!Rpm(m + OFF_ACT,   &act, sizeof(act)) || act < 0x10000) return false;
+    if (!Rpm(m + OFF_HPOBJ, &hpo, sizeof(hpo)) || hpo < 0x10000) return false;
+    std::int32_t f1 = 0, f2 = 0;
+    if (!Rpm(m + OFF_FSMID,  &f1, sizeof(f1))) return false;
+    if (!Rpm(m + OFF_FSMTGT, &f2, sizeof(f2))) return false;
+    if (f1 < 0 || f1 > 100000 || f2 < 0 || f2 > 100000) return false;
+    return Validate(act, hpo, f1, f2, o);
 }
 
 // 扫一段地址范围。返回是否因为超时而中断。
@@ -517,8 +541,9 @@ bool ScanRange(std::uintptr_t lo, std::uintptr_t hi, std::uintptr_t selfEnt,
                     if (m == selfEnt) continue;
 
                     ++gDeepProbes;          // 走到这一步才开始花系统调用
+                    // act/hpo/fsm 已经从缓冲区里拿到了，别再读一遍
                     Snap sp;
-                    if (!Read(m, sp)) continue;
+                    if (!Validate(a, h, f1, f2, sp)) continue;
 
                     bool dup = false;
                     for (std::size_t q = 0; q < gList.size(); ++q)
@@ -565,37 +590,27 @@ void Scan()
     bool timedOut = false;
     const char* how = "全量";
 
-    // 第一轮：只扫玩家实体所在的那一整块分配。怪物和玩家都是"实体"，
-    // 绝大多数情况在同一个堆里，这样能把几个 GB 缩到几十 MB。
-    if (selfEnt != 0) {
-        MEMORY_BASIC_INFORMATION mbi;
-        if (::VirtualQuery(reinterpret_cast<LPCVOID>(selfEnt), &mbi, sizeof(mbi)) == sizeof(mbi) &&
-            mbi.AllocationBase != nullptr) {
-            const std::uintptr_t ab = reinterpret_cast<std::uintptr_t>(mbi.AllocationBase);
-            // 把这块分配的范围量出来
-            std::uintptr_t cur = ab, endOfAlloc = ab;
-            MEMORY_BASIC_INFORMATION m2;
-            while (::VirtualQuery(reinterpret_cast<LPCVOID>(cur), &m2, sizeof(m2)) == sizeof(m2) &&
-                   reinterpret_cast<std::uintptr_t>(m2.AllocationBase) == ab) {
-                endOfAlloc = reinterpret_cast<std::uintptr_t>(m2.BaseAddress) +
-                             static_cast<std::uintptr_t>(m2.RegionSize);
-                cur = endOfAlloc;
-                if (m2.RegionSize == 0) break;
-            }
-            timedOut = ScanRange(ab, endOfAlloc, selfEnt, buf, deadline, regions, bytes);
-            how = "玩家堆";
-        }
-    }
+    SYSTEM_INFO si;
+    ::GetSystemInfo(&si);
+    const std::uintptr_t loAddr = reinterpret_cast<std::uintptr_t>(si.lpMinimumApplicationAddress);
+    const std::uintptr_t hiAddr = reinterpret_cast<std::uintptr_t>(si.lpMaximumApplicationAddress);
 
-    // 第一轮没结果才全量扫，且一样有时间上限
+    HMODULE hmod = ::GetModuleHandleW(L"MonsterHunterWorld.exe");
+    const std::uintptr_t modBase = hmod ? reinterpret_cast<std::uintptr_t>(hmod)
+                                        : 0x140000000ULL;
+
+    // 第一轮：模块基址往上。地址探针实测玩家实体在 0x14A1D0080，也就是
+    // 模块上方的私有堆里 —— 实体都在这一带。
+    // 之前从最低地址往上扫，1.5 秒预算全耗在低端那些无关区域上，根本没
+    // 走到这儿就超时了，扫出来的候选全是低 64MB 的垃圾。
+    timedOut = ScanRange(modBase, hiAddr, selfEnt, buf, deadline, regions, bytes);
+    how = "模块上方";
+
+    // 还没有就再扫模块下方，一样受同一个截止时间约束
     if (gList.empty() && !timedOut) {
-        SYSTEM_INFO si;
-        ::GetSystemInfo(&si);
         regions = 0; bytes = 0;
-        timedOut = ScanRange(reinterpret_cast<std::uintptr_t>(si.lpMinimumApplicationAddress),
-                             reinterpret_cast<std::uintptr_t>(si.lpMaximumApplicationAddress),
-                             selfEnt, buf, deadline, regions, bytes);
-        how = "全量";
+        timedOut = ScanRange(loAddr, modBase, selfEnt, buf, deadline, regions, bytes);
+        how = "模块下方";
     }
 
     plugin::Log("[怪物扫描] %s: %d 个区域 / %.0f MB, 用时 %.0fms%s, "
