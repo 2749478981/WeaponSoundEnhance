@@ -6,6 +6,15 @@
 //  detected by a background polling thread; wav playback uses winmm waveOut
 //  (one handle per voice -> true multi-sound overlap).
 //
+//  Files / paths:
+//    <plugins>\WeaponSoundEnhance.dll                                  <- DLL 放这里
+//    <plugins>\WeaponSoundEnhance\WeaponSoundEnhance.ini               <- 数据目录(优先)
+//    <plugins>\WeaponSoundEnhance\WeaponSoundEnhance.ini.template      <- 随包模板
+//    <plugins>\WeaponSoundEnhance\sounds\*.wav                         <- 音效
+//    <plugins>\WeaponSoundEnhance\WeaponSoundEnhance.log               <- 日志
+//    旧布局(<plugins>\WeaponSoundEnhance.ini 与 DLL 同目录)仍然兼容。
+//    用户 ini 缺失时自动由 *.ini.template 生成 —— 更新只覆盖模板，不动用户配置。
+//
 //  Memory layout (15.23.00, PlayerRoot overridable in ini):
 //    manager = *(PlayerRoot)                       [PlayerRoot = 0x1450139A0]
 //    entity  = *(manager + 0x50)
@@ -255,18 +264,50 @@ namespace plugin {
 
 HMODULE gModule = nullptr;
 volatile LONG gStop = 0;
-std::wstring gModuleDir;   // ends with '\'
+std::wstring gModuleDir;   // DLL 所在目录（ends with '\'）
+std::wstring gDataDir;     // 数据目录：<ModuleDir>WeaponSoundEnhance\ ，旧布局回退到 ModuleDir
 std::wstring gIniPath;
 std::wstring gLogPath;
 volatile int gDebug = 0;   // ini Debug=1 enables per-play / heartbeat logging
 
 void Log(const char* fmt, ...);
 
+// 文件是否存在
+bool FileExistsW(const std::wstring& p)
+{
+    const DWORD a = ::GetFileAttributesW(p.c_str());
+    return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+// 选数据目录，规则（兼容旧布局）：
+//   1) <plugins>\WeaponSoundEnhance\WeaponSoundEnhance.ini 存在 → 用子目录
+//   2) <plugins>\WeaponSoundEnhance.ini 存在              → 用旧布局(DLL 同目录)
+//   3) 都没有 → 建子目录并用子目录（新装用户）
+std::wstring ResolveDataDir()
+{
+    const std::wstring sub = gModuleDir + L"WeaponSoundEnhance\\";
+    if (FileExistsW(sub + L"WeaponSoundEnhance.ini")) return sub;
+    if (FileExistsW(gModuleDir + L"WeaponSoundEnhance.ini")) return gModuleDir;
+    ::CreateDirectoryW(sub.c_str(), nullptr);
+    return sub;
+}
+
+// 用户 ini 不存在时，用随包模板生成一份（这样更新只覆盖模板、不会覆盖用户配置）
+void SeedIniFromTemplate()
+{
+    if (FileExistsW(gIniPath)) return;
+    const std::wstring tpl = gDataDir + L"WeaponSoundEnhance.ini.template";
+    if (!FileExistsW(tpl)) return;
+    if (::CopyFileW(tpl.c_str(), gIniPath.c_str(), FALSE)) {
+        Log("created WeaponSoundEnhance.ini from template");
+    }
+}
+
 void LogInit()
 {
-    gLogPath = gModuleDir + L"WeaponSoundEnhance.log";
+    gLogPath = gDataDir + L"WeaponSoundEnhance.log";
     ::DeleteFileW(gLogPath.c_str());
-    Log("WeaponSoundEnhance 2.0 starting");
+    Log("WeaponSoundEnhance 2.3 starting");
 }
 
 void LogV(const char* fmt, va_list ap)
@@ -895,16 +936,6 @@ std::uint64_t gLastTrigger = 0;
 //  Text helpers
 // ===========================================================================
 
-std::wstring ReplaceExt(const std::wstring& path, const wchar_t* newExt)
-{
-    std::wstring p = path;
-    std::size_t dot = p.find_last_of(L'.');
-    std::size_t slash = p.find_last_of(L"\\/");
-    if (dot == std::wstring::npos || (slash != std::wstring::npos && dot < slash))
-        return p + newExt;
-    return p.substr(0, dot) + newExt;
-}
-
 inline std::string Trim(const std::string& s)
 {
     std::size_t a = s.find_first_not_of(" \t\r\n");
@@ -1401,7 +1432,7 @@ void PreloadSounds()
 // Relative "sounds/xxx.wav" -> absolute path below the module dir.
 std::wstring AbsFor(const std::string& rel)
 {
-    std::wstring w = gModuleDir + strconv::ToWide(rel);
+    std::wstring w = gDataDir + strconv::ToWide(rel);
     for (auto& c : w) if (c == L'/') c = L'\\';
     std::wstring out;
     out.reserve(w.size());
@@ -2043,8 +2074,10 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         const std::wstring selfw(self);
         std::size_t sl = selfw.find_last_of(L"\\/");
         gModuleDir = (sl == std::wstring::npos) ? std::wstring() : selfw.substr(0, sl + 1);
-        gIniPath = ReplaceExt(selfw, L".ini");
+        gDataDir  = ResolveDataDir();
+        gIniPath  = gDataDir + L"WeaponSoundEnhance.ini";
         LogInit();
+        SeedIniFromTemplate();
         LoadConfig();
         HANDLE t = ::CreateThread(nullptr, 0, &WorkerProc, nullptr, 0, nullptr);
         if (t) ::CloseHandle(t);

@@ -385,24 +385,42 @@ static void PlayPreviewFile(const std::wstring& path, float gain, unsigned delay
 } // namespace
 
 App::App() {
-    std::string ini = ExeDir() + "WeaponSoundEnhance.ini";
-    if (LoadConfig(ini, cfg)) {
-        EnrichNames();
-        status = "已加载: " + ini;
-        return;
-    }
+    // 数据目录优先：<exe目录>\WeaponSoundEnhance\ ；旧布局(与 exe 同目录)兼容
+    std::vector<std::string> cand;
+    cand.push_back(ExeDir() + "WeaponSoundEnhance\\WeaponSoundEnhance.ini");
+    cand.push_back(ExeDir() + "WeaponSoundEnhance.ini");
     std::string gdir;
     if (FindGameExeDir(gdir)) {
-        std::string p2 = gdir + "nativePC\\plugins\\WeaponSoundEnhance.ini";
-        if (LoadConfig(p2, cfg)) {
+        cand.push_back(gdir + "nativePC\\plugins\\WeaponSoundEnhance\\WeaponSoundEnhance.ini");
+        cand.push_back(gdir + "nativePC\\plugins\\WeaponSoundEnhance.ini");
+    }
+    for (const auto& p : cand) {
+        if (LoadConfig(p, cfg)) {
             EnrichNames();
-            status = "已加载: " + p2;
+            SetFsmDbDir(BaseDir());
+            ReloadFsmDb();
+            status = "已加载: " + p;
             return;
         }
     }
-    cfg.path = ini;
+    // 没找到用户 ini 时，尝试用随包模板生成一份（更新不会覆盖用户 ini）
+    {
+        const std::string tpl = ExeDir() + "WeaponSoundEnhance.ini.template";
+        const std::string ini = ExeDir() + "WeaponSoundEnhance.ini";
+        if (GetFileAttributesA(ini.c_str()) == INVALID_FILE_ATTRIBUTES &&
+            GetFileAttributesA(tpl.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            if (CopyFileA(tpl.c_str(), ini.c_str(), FALSE) && LoadConfig(ini, cfg)) {
+                EnrichNames();
+                SetFsmDbDir(BaseDir());
+                ReloadFsmDb();
+                status = "已由模板生成并加载: " + ini;
+                return;
+            }
+        }
+    }
+    cfg.path = ExeDir() + "WeaponSoundEnhance\\WeaponSoundEnhance.ini";
     cfg.loaded = false;
-    status = "未找到 ini，请点【打开 ini】选择 nativePC\\plugins\\WeaponSoundEnhance.ini";
+    status = "未找到 ini，请点【打开 ini】选择 WeaponSoundEnhance.ini（建议放在 plugins\\WeaponSoundEnhance\\ 下）";
 }
 
 std::string App::BaseDir() const {
@@ -537,6 +555,10 @@ void App::DrawToolbar() {
     if (ImGui::Button("上传ID")) idWinOpen = !idWinOpen;
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("共享动作 ID 库：导出你的实测 FSM/LMT、导入别人的、提交到共享库、获取最新库");
+    ImGui::SameLine();
+    if (ImGui::Button("合并旧版ini")) MergeOldIni();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("把旧版 ini 里的动作合并进来（不替换当前配置），换新版时不用重填");
     ImGui::SameLine();
     if (ImGui::Button("打开 sounds\\")) {
         std::wstring sd = Utf8ToWide(BaseDir() + "sounds");
@@ -1456,7 +1478,7 @@ void App::DrawIdShareWindow() {
 
     if (ImGui::Button("① 导出实测ID", ImVec2(150 * dpiScale, 0))) ExportMeasuredIdsCsv();
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("把「实时捕获」历史 + 当前条目里的 weapon/fsm/lmt 去重导出为\nfsm_db_submission.csv（在 exe 同目录）");
+        ImGui::SetTooltip("把「实时捕获」历史 + 当前条目里的 weapon/fsm/lmt 去重，\n收进「用户库」fsm_db_user.csv（立刻生效），并另存一份提交用 CSV");
     ImGui::SameLine();
     if (ImGui::Button("② 提交到共享库", ImVec2(150 * dpiScale, 0))) SubmitIdsToGithub();
     if (ImGui::IsItemHovered())
@@ -1464,15 +1486,16 @@ void App::DrawIdShareWindow() {
 
     if (ImGui::Button("③ 导入CSV合并", ImVec2(150 * dpiScale, 0))) ImportIdsCsv();
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("选择别人分享的 csv（weapon,fsm,lmt,name），合并进本地 fsm_db.csv（自动去重）");
+        ImGui::SetTooltip("选择别人分享的 csv（weapon,fsm,lmt,name），合并进你的「用户库」（自动去重）");
     ImGui::SameLine();
     if (ImGui::Button("④ 获取最新库", ImVec2(150 * dpiScale, 0))) FetchLatestFsmDb();
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("从仓库下载最新的 fsm_db.csv 覆盖本地（需要网络），下次启动即生效");
+        ImGui::SetTooltip("从仓库下载最新的「基础库」fsm_db.csv（需要网络）；不会动你的用户库");
 
     ImGui::Separator();
-    ImGui::TextDisabled("当前库: %d 条", (int)GetFsmDb().size());
-    ImGui::TextDisabled("本地文件: %s", FsmDbPath().c_str());
+    ImGui::TextDisabled("当前生效: %d 条", (int)GetFsmDb().size());
+    ImGui::TextDisabled("基础库(可被更新): %s", FsmDbPath().c_str());
+    ImGui::TextDisabled("用户库(更新不动它): %s", FsmDbUserPath().c_str());
 
     // 实测候选（来自实时捕获历史 + 当前条目）
     {
@@ -1489,10 +1512,11 @@ void App::DrawIdShareWindow() {
     }
 
     ImGui::Spacing();
-    ImGui::TextDisabled("说明: 导出的 CSV 也可以直接当 fsm_db.csv 用；提交后由维护者合并进仓库，"
+    ImGui::TextDisabled("说明: 基础库 fsm_db.csv 随版本更新（只追加行、结构固定）；你的实测/导入都进"
+                        " fsm_db_user.csv，升级不会被动到。提交后由维护者合并进仓库，"
                         "其他人点「获取最新库」即可拿到。");
     ImGui::Separator();
-    if (ImGui::Button("打开 exe 目录")) {
+    if (ImGui::Button("打开数据目录")) {
         std::wstring d = Utf8ToWide(BaseDir());
         ShellExecuteW(nullptr, L"open", d.c_str(), nullptr, nullptr, SW_SHOW);
     }
@@ -1547,20 +1571,24 @@ void App::ExportMeasuredIdsCsv() {
     for (const auto& e : cfg.entries)
         add(e.weaponType, e.fsmId, e.LmtAny(), e.name);
 
-    const std::string path = BaseDir() + "fsm_db_submission.csv";
-    if (!SaveFsmDbCsv(path, ids)) { status = "导出失败: " + path; return; }
-    status = "已导出 " + std::to_string(ids.size()) + " 条实测动作ID -> " + path;
+    // 1) 收进"用户库"（永不被更新覆盖），立刻生效
+    const int added = MergeFsmDbEntries(ids, FsmDbUserPath());
+    ReloadFsmDb();
+    EnrichNames();
+    // 2) 另存一份提交用 CSV（可直接分享 / 提交）
+    SaveFsmDbCsv(FsmDbSubmissionPath(), ids);
+    status = "实测ID 共 " + std::to_string(ids.size()) + " 条：用户库新增 " +
+             std::to_string(added) + " 条 -> " + FsmDbUserPath();
 }
 
 void App::ImportIdsCsv() {
     const std::string p = OpenFileDialogCsv();
     if (p.empty()) return;
-    const int added = MergeFsmDbCsv(p, FsmDbPath());
+    const int added = MergeFsmDbCsv(p, FsmDbUserPath());   // 别人的 csv 也进用户库
     ReloadFsmDb();
     EnrichNames();
     if (added > 0) {
-        mDirty = true;
-        status = "已合并 " + std::to_string(added) + " 条新动作ID -> " + FsmDbPath();
+        status = "已合并 " + std::to_string(added) + " 条新动作ID -> " + FsmDbUserPath();
     } else {
         status = "没有可合并的新条目（都已存在）";
     }
@@ -1568,7 +1596,7 @@ void App::ImportIdsCsv() {
 
 void App::SubmitIdsToGithub() {
     ExportMeasuredIdsCsv();
-    const std::string path = BaseDir() + "fsm_db_submission.csv";
+    const std::string path = FsmDbSubmissionPath();
     // 把 CSV 内容放进剪贴板，打开提交页后直接粘贴即可
     std::string content;
     {
@@ -1582,7 +1610,7 @@ void App::SubmitIdsToGithub() {
     }
     if (!content.empty()) ImGui::SetClipboardText(content.c_str());
     ShellExecuteW(nullptr, L"open", kSubmitIssueUrl, nullptr, nullptr, SW_SHOWNORMAL);
-    status = "已导出 " + path + "，内容已复制到剪贴板；请在打开的页面粘贴提交";
+    status = "已写出 " + path + "，内容已复制到剪贴板；请在打开的页面粘贴提交";
 }
 
 void App::FetchLatestFsmDb() {
@@ -1702,6 +1730,8 @@ void App::SaveAs() {
         cfg.path = p;
         cfg.loaded = true;
         mDirty = false;
+        SetFsmDbDir(BaseDir());
+        ReloadFsmDb();
         status = "已保存: " + p;
         mSaveFlash = 2.0f;
     } else {
@@ -1712,11 +1742,49 @@ void App::SaveAs() {
 void App::Load(const std::string& path) {
     if (LoadConfig(path, cfg)) {
         EnrichNames();
+        SetFsmDbDir(BaseDir());
+        ReloadFsmDb();
         status = "已加载: " + path;
         mDirty = false;
     } else {
         status = "加载失败: " + path;
     }
+}
+
+// 把旧版 ini 里的动作条目合并进来（不替换当前配置），用于"换新版 ini 不丢旧动作"
+void App::MergeOldIni() {
+    const std::string p = OpenFileDialogIni();
+    if (p.empty()) return;
+    Config old;
+    if (!LoadConfig(p, old)) { status = "读取失败: " + p; return; }
+
+    auto keyOf = [](const SoundEntry& e) {
+        std::string k = std::to_string(e.weaponType) + "|" + e.combo + "|" +
+                        std::to_string(e.fsmId) + "|" + std::to_string(e.fsmTarget) + "|";
+        for (int x : e.lmt) k += std::to_string(x) + ",";
+        k += "|";
+        for (const auto& s : e.def.specs) k += s.path + ";";
+        for (int i = 0; i < 4; ++i)
+            for (const auto& s : e.gauge[i].specs) k += s.path + ";";
+        return k;
+    };
+    std::vector<std::string> have;
+    have.reserve(cfg.entries.size());
+    for (const auto& e : cfg.entries) have.push_back(keyOf(e));
+
+    int added = 0, skipped = 0;
+    for (const auto& e : old.entries) {
+        const std::string k = keyOf(e);
+        bool dup = false;
+        for (const auto& h : have) if (h == k) { dup = true; break; }
+        if (dup) { ++skipped; continue; }
+        cfg.entries.push_back(e);
+        have.push_back(k);
+        ++added;
+    }
+    if (added > 0) mDirty = true;
+    status = "导入旧版 ini: 新增 " + std::to_string(added) + " 条，跳过重复 " +
+             std::to_string(skipped) + " 条（记得保存）";
 }
 
 void App::EnrichNames() {

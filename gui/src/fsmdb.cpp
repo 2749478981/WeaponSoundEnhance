@@ -135,17 +135,39 @@ std::string CsvName(std::string name) {
 }
 
 void WriteCsvHeader(std::ostream& out) {
-    out << "# WeaponSoundEnhance 动作 ID 库\n";
-    out << "# 格式: weapon,fsm,lmt,name  (weapon 0..13 / -1=通用；fsm 或 lmt 未知写 -1)\n";
+    out << "# WeaponSoundEnhance 动作 ID 库（基础库）\n";
+    out << "# schema: weapon,fsm,lmt,name  —— 结构固定不变；解析时会忽略多余列、容忍缺列\n";
+    out << "# weapon 0..13: 大剑/片手/双刀/太刀/大锤/笛子/长枪/铳枪/斩斧/盾斧/虫棍/弓箭/轻弩/重弩；-1=通用\n";
+    out << "# fsm 或 lmt 未知时写 -1；name 不要包含英文逗号\n";
+    out << "#\n";
+    out << "# 本文件 = 随包/下载的“基础库”，可被「获取最新库」整体更新（只追加行，不改结构）。\n";
+    out << "# 你自己的实测/导入请放 fsm_db_user.csv：优先级更高，且任何更新都不会覆盖它。\n";
+    out << "# 贡献流程：GUI 工具栏「上传ID」→ 导出实测ID / 提交到共享库。\n";
 }
 
 // 知识库缓存：ReloadFsmDb() 后重新读盘
 std::vector<FsmDbEntry> g_db;
 bool g_loaded = false;
+std::string g_dir;   // 数据目录（ini 所在目录）；空 = exe 同目录
+
+bool FileExists(const std::string& p) {
+    const DWORD a = GetFileAttributesA(p.c_str());
+    return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
+}
 
 } // namespace
 
-std::string FsmDbPath() { return ExeDir() + "fsm_db.csv"; }
+void SetFsmDbDir(const std::string& dir) {
+    if (g_dir == dir) return;
+    g_dir = dir;
+    g_loaded = false;   // 目录变了要重新读盘
+}
+
+static std::string DataDir() { return g_dir.empty() ? ExeDir() : g_dir; }
+
+std::string FsmDbPath() { return DataDir() + "fsm_db.csv"; }
+std::string FsmDbUserPath() { return DataDir() + "fsm_db_user.csv"; }
+std::string FsmDbSubmissionPath() { return DataDir() + "fsm_db_submission.csv"; }
 
 std::vector<FsmDbEntry> LoadFsmDbCsv(const std::string& path) {
     std::vector<FsmDbEntry> v;
@@ -156,11 +178,31 @@ std::vector<FsmDbEntry> LoadFsmDbCsv(const std::string& path) {
 const std::vector<FsmDbEntry>& GetFsmDb() {
     if (!g_loaded) {
         g_loaded = true;
-        g_db = Builtin();
+        g_db.clear();
+        // 基础库：以文件 fsm_db.csv 为准（随包/下载；更新只追加行，结构固定）。
+        // 文件缺失或为空时，用内置兜底数据播种出一份，让"ID 数据在文件里"成立。
+        if (!FileExists(FsmDbPath())) SaveFsmDbCsv(FsmDbPath(), Builtin());
         LoadCsvInto(FsmDbPath(), g_db);
+        if (g_db.empty()) {
+            SaveFsmDbCsv(FsmDbPath(), Builtin());
+            LoadCsvInto(FsmDbPath(), g_db);
+        }
+        if (g_db.empty()) g_db = Builtin();   // 连写文件都失败时的最后兜底
+
+        // 用户库：优先级更高（同名键覆盖名字），永不被更新覆盖
+        std::vector<FsmDbEntry> user;
+        LoadCsvInto(FsmDbUserPath(), user);
+        for (const auto& u : user) {
+            bool replaced = false;
+            for (auto& d : g_db)
+                if (SameKey(d, u)) { d.name = u.name; replaced = true; break; }
+            if (!replaced) g_db.push_back(u);
+        }
     }
     return g_db;
 }
+
+std::vector<FsmDbEntry> BuiltinFsmDb() { return Builtin(); }
 
 void ReloadFsmDb() { g_loaded = false; }
 
@@ -179,8 +221,7 @@ bool SaveFsmDbCsv(const std::string& path, const std::vector<FsmDbEntry>& entrie
     return true;
 }
 
-int MergeFsmDbCsv(const std::string& srcPath, const std::string& dstPath) {
-    std::vector<FsmDbEntry> src = LoadFsmDbCsv(srcPath);
+int MergeFsmDbEntries(const std::vector<FsmDbEntry>& src, const std::string& dstPath) {
     if (src.empty()) return 0;
     std::vector<FsmDbEntry> dst = LoadFsmDbCsv(dstPath);
 
@@ -201,6 +242,10 @@ int MergeFsmDbCsv(const std::string& srcPath, const std::string& dstPath) {
         ++added;
     }
     return added;
+}
+
+int MergeFsmDbCsv(const std::string& srcPath, const std::string& dstPath) {
+    return MergeFsmDbEntries(LoadFsmDbCsv(srcPath), dstPath);
 }
 
 std::vector<FsmDbEntry> SearchFsmDb(const std::string& query, int weaponFilter) {

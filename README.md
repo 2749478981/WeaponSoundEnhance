@@ -77,23 +77,35 @@ cmake --build build --config Release
 ## 🎮 安装与使用
 
 ### 从 Release 下载的 zip（大部分玩家用这个）
-zip 解压后是 **`nativePC\plugins\`** 结构：
+zip 解压后是 **`nativePC\plugins\`** 结构。**只有 DLL 放在 `plugins\` 根，其余文件都在同名子目录里**，避免文件挤在一起：
 
 ```
 nativePC\plugins\
-├─ WeaponSoundEnhance.dll     插件本体
-├─ WeaponSoundEnhance.ini     配置模板
-└─ sounds\                    空，放入你的 wav 音效
+├─ WeaponSoundEnhance.dll                    ← 插件本体（必须在这里，前置才认）
+└─ WeaponSoundEnhance\                       ← 数据目录（其余全在这）
+   ├─ WeaponSoundEnhance.ini.template        ← 随包配置模板
+   ├─ fsm_db.csv                             ← 基础动作 ID 库（可被「获取最新库」更新）
+   ├─ WeaponSoundEnhanceGUI.exe              ← 配置工具
+   ├─ 说明.txt
+   └─ sounds\                                ← 把你的 wav 放这里
 ```
 
 使用步骤：
 1. 把整个 `nativePC\plugins\` 放进游戏根目录（或用**狩技 mod 盒子**把 zip 直接拖进去安装）。
 2. **需要怪猎前置**：请使用 Stracker's Loader 前置。
-3. 把你想要的音效（**wav**，标准 PCM 16 位）放进 `sounds\`。
-4. 打开 `WeaponSoundEnhance.ini` 添加 `[AttackN]`（见下节配置），或用配套 GUI 编辑。
+3. 把你想要的音效（**wav**，标准 PCM 16 位）放进 `WeaponSoundEnhance\sounds\`。
+4. 打开 `WeaponSoundEnhance\WeaponSoundEnhance.ini` 添加 `[AttackN]`（见下节配置），或用 `WeaponSoundEnhance\WeaponSoundEnhanceGUI.exe` 编辑。
+   首次运行若没有 `WeaponSoundEnhance.ini`，插件/工具会**自动由 `*.ini.template` 生成一份**。
 5. 进游戏，拿对应武器做派生攻击即可触发。
 
 > ini 为**干净模板**，不含预置攻击条目，请按下方配置说明自行添加。
+> **旧布局仍然兼容**：如果你的 `WeaponSoundEnhance.ini` 与 DLL 同目录（v2.2 及更早的装法），插件会继续用那一份，不用搬家。
+
+### 升级指南（不丢配置）
+
+- **更新时只需要覆盖 DLL 和数据目录里的 `fsm_db.csv` / `*.ini.template` / GUI**；`WeaponSoundEnhance.ini` 是你自己的，别删、别覆盖。
+- 已经误换成新模板、想找回旧动作：用 GUI 工具栏 **「合并旧版ini」** 选旧 ini，动作会被**合并**（不替换）进当前配置，重复条目自动跳过。
+- 你实测的动作 ID 存在 `WeaponSoundEnhance\fsm_db_user.csv`，**任何更新都不会动它**。
 
 ### 从源码构建
 1. 编译得到 `WeaponSoundEnhance.dll`（见上一节）。
@@ -247,11 +259,18 @@ Sound=sounds/主1.wav
 
 > GUI 独立程序，可单独使用，也可仅用于生成 ini。
 
-### 共享动作 ID 库（fsm_db.csv）
+### 共享动作 ID 库（fsm_db.csv / fsm_db_user.csv）
 
-- 仓库根目录的 [`fsm_db.csv`](fsm_db.csv) 是社区共享的动作 ID 库，格式 `weapon,fsm,lmt,name`。
-- 本地放一份到 GUI 的 exe 同目录即可被加载（会与内置数据合并、自动去重）。
-- 贡献流程：GUI「导出实测ID」/「提交到共享库」→ 在提交页粘贴 CSV（或附件上传）→ 合并进 `fsm_db.csv` → 其他人「获取最新库」即可拿到。
+ID 数据是**独立文件**，和 ini 完全分开，升级互不影响。schema 固定为 `weapon,fsm,lmt,name`
+（解析时忽略多余列、容忍缺列，所以以后只会**追加行**，不会改结构）：
+
+| 文件（在数据目录 `WeaponSoundEnhance\` 下） | 作用 | 升级时 |
+| --- | --- | --- |
+| `fsm_db.csv` | **基础库**：随包附带 + 「获取最新库」下载 | 可被覆盖/更新 |
+| `fsm_db_user.csv` | **用户库**：你「导出实测ID」或「导入CSV合并」的内容 | **永不被动**，且优先级高于基础库 |
+
+- 仓库根目录的 [`fsm_db.csv`](fsm_db.csv) 就是基础库的来源；文件缺失/为空时，工具会用内置兜底数据**播种**出一份，所以数据始终在文件里而不是写死在代码里。
+- 贡献流程：GUI 工具栏「上传ID」→「导出实测ID」（进用户库，立刻生效）/「提交到共享库」（打开提交页，粘贴即可）→ 合并进仓库 `fsm_db.csv` → 其他人「获取最新库」。
 - ID 会被用来给条目/查询显示动作名，也能帮别人少走弯路地定位 FSM/LMT。
 
 ---

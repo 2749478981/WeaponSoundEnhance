@@ -121,4 +121,5 @@ private:
     void ImportIdsCsv();
     void SubmitIdsToGithub();
     void FetchLatestFsmDb();
+    void MergeOldIni();   // 合并旧版 ini 的动作条目（升级不丢配置）
 };
