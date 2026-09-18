@@ -276,6 +276,10 @@ bool LoadConfig(const std::string& path, Config& cfg) {
                 for (int x : cur.lmt) if (x == v) { dup = true; break; }
                 if (!dup) cur.lmt.push_back(v);
             }
+        } else if (key == "Target") {
+            cur.target = (val == "monster" || val == "Monster" || val == "1") ? 1 : 0;
+        } else if (key == "MonsterName") {
+            cur.monsterName = val;
         } else if (key == "Name") {
             cur.name = val;
         } else if (key == "CheckDelayMs") {
@@ -364,6 +368,10 @@ static void WriteEntry(const SoundEntry& e, int n, std::string& o) {
     o += "[Attack" + std::to_string(n) + "]\r\n";
     if (!e.name.empty()) o += "Name=" + e.name + "\r\n";
     if (!e.group.empty()) o += "Group=" + e.group + "\r\n";
+    if (e.target == 1) {
+        o += "Target=monster\r\n";
+        if (!e.monsterName.empty()) o += "MonsterName=" + e.monsterName + "\r\n";
+    }
     o += "WeaponType=" + std::to_string(e.weaponType) + "\r\n";
     o += LmtLine(e) + "\r\n";
     o += "FSMId=" + std::to_string(e.fsmId) + "\r\n";
@@ -478,23 +486,39 @@ bool SaveConfig(const std::string& path, const Config& cfg) {
         bool header = false;
         // 默认组合（""）
         for (const auto& e : cfg.entries)
-            if (e.weaponType == w && e.combo.empty()) { Banner(WeaponName(w), w, header); WriteEntry(e, ++n, o); }
+            if (e.target == 0 && e.weaponType == w && e.combo.empty()) { Banner(WeaponName(w), w, header); WriteEntry(e, ++n, o); }
         // 命名组合（按条目中出现顺序）
         std::vector<std::string> cbOrder;
         for (const auto& e : cfg.entries)
-            if (e.weaponType == w && !e.combo.empty() && !Has(cbOrder, e.combo)) cbOrder.push_back(e.combo);
+            if (e.target == 0 && e.weaponType == w && !e.combo.empty() && !Has(cbOrder, e.combo)) cbOrder.push_back(e.combo);
         for (const auto& cb : cbOrder) {
             Banner(WeaponName(w), w, header);
             o += "\r\n[Weapon" + std::to_string(w) + ":" + cb + "]\r\n";
             for (const auto& e : cfg.entries)
-                if (e.weaponType == w && e.combo == cb) WriteEntry(e, ++n, o);
+                if (e.target == 0 && e.weaponType == w && e.combo == cb) WriteEntry(e, ++n, o);
         }
     }
+    // 怪物条目：按怪物名分组写在最后。
+    // 注意上面的武器循环全部按 weaponType 过滤，而怪物条目的 weaponType 是 -1，
+    // 不单独写这一段的话，一保存就把它们全丢了。
+    {
+        std::vector<std::string> mons;
+        for (const auto& e : cfg.entries)
+            if (e.target == 1 && !Has(mons, e.monsterName)) mons.push_back(e.monsterName);
+        for (const auto& mn : mons) {
+            o += "\r\n; ----------------------------------------------------------------------------\r\n";
+            o += "; 怪物: " + (mn.empty() ? std::string("(未命名)") : mn) + "\r\n";
+            o += "; ----------------------------------------------------------------------------\r\n";
+            for (const auto& e : cfg.entries)
+                if (e.target == 1 && e.monsterName == mn) WriteEntry(e, ++n, o);
+        }
+    }
+
     // 任意武器（weaponType<0）默认组合放到最后
     {
         bool header = false;
         for (const auto& e : cfg.entries)
-            if (e.weaponType < 0 && e.combo.empty()) {
+            if (e.target == 0 && e.weaponType < 0 && e.combo.empty()) {
                 if (!header) {
                     o += "\r\n; ----------------------------------------------------------------------------\r\n";
                     o += "; 通用 / 任意武器\r\n";

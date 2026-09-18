@@ -37,7 +37,12 @@ struct App {
     bool liveOk = false;
     bool mDirty = false;
 
-    int weaponFilter = -1;     // -1=全部 -2=任意武器 0..13
+    // -1=全部  -2=任意武器  0..13=具体武器
+    // -3=所有怪物条目   -10-i=第 i 个怪物
+    int weaponFilter = -1;
+    bool monsterTreeOpen = false;
+    std::vector<std::string> extraMonsters;   // ini 里出现过但不在内置列表里的怪物名
+    std::string MonsterNameAt(int idx) const;
     char searchBuf[160] = {};
 
     struct Editor {
@@ -46,6 +51,8 @@ struct App {
         int index = -1;        // cfg.entries 索引
         char name[128] = {};
         char groupBuf[96] = {};   // 动作组（Group=）
+        int target = 0;            // 0=玩家动作 1=怪物动作
+        char monsterBuf[64] = {};  // 怪物名（归类用）
         int weaponType = -1;
         int fsmId = -1;
         int fsmTarget = -1;       // FSMTarget=：-1 = 不限定

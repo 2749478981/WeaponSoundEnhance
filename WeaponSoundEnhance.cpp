@@ -413,8 +413,8 @@ std::vector<Mon> gList;             // 只有轮询线程碰它
 // 自动扫描：进任务后自己扫，不用按键。ini MonsterAutoScan=0 可关。
 int gAutoScan     = 1;
 int gAutoFirstMs  = 5000;    // 进场景后等这么久再扫，给怪物生成留时间
-int gAutoRetryMs  = 20000;   // 没扫到时的重试间隔
-int gAutoMaxTries = 3;       // 重试上限，免得一直扫一直卡
+int gAutoRetryMs  = 15000;  // 没扫到时的重试间隔
+int gAutoMaxTries = 20;     // 重试上限（单次扫描已经只要几百毫秒，可以放开）
 std::uint64_t gNextAutoAt = 0;
 long long gDeepProbes = 0;   // 真正下到 VirtualQuery 的候选数，用来看预筛好不好使
 int  gAutoTries  = 0;
@@ -604,12 +604,18 @@ void Scan()
     // 之前从最低地址往上扫，1.5 秒预算全耗在低端那些无关区域上，根本没
     // 走到这儿就超时了，扫出来的候选全是低 64MB 的垃圾。
     timedOut = ScanRange(modBase, hiAddr, selfEnt, buf, deadline, regions, bytes);
+    plugin::Log("[怪物扫描]   第一轮 模块上方: %d 个区域 / %.0f MB, 深度校验 %.0f 次, 命中 %d 个%s",
+                regions, (double)(bytes >> 20), (double)gDeepProbes,
+                (int)gList.size(), timedOut ? " (超时)" : "");
     how = "模块上方";
 
     // 还没有就再扫模块下方，一样受同一个截止时间约束
     if (gList.empty() && !timedOut) {
         regions = 0; bytes = 0;
         timedOut = ScanRange(loAddr, modBase, selfEnt, buf, deadline, regions, bytes);
+        plugin::Log("[怪物扫描]   第二轮 模块下方: %d 个区域 / %.0f MB, 深度校验 %.0f 次, 命中 %d 个%s",
+                    regions, (double)(bytes >> 20), (double)gDeepProbes,
+                    (int)gList.size(), timedOut ? " (超时)" : "");
         how = "模块下方";
     }
 
@@ -746,6 +752,19 @@ void AddrProbe()
     plugin::Log("========== 探针结束 ==========");
 }
 
+// 当前的主要怪物。同屏多只时取血量上限最大的那只 —— 任务目标通常
+// 比环境生物血厚得多。
+const Mon* Primary()
+{
+    const Mon* best = nullptr;
+    for (std::size_t i = 0; i < gList.size(); ++i) {
+        const Mon& m = gList[i];
+        if (!m.alive) continue;
+        if (best == nullptr || m.last.hpMax > best->last.hpMax) best = &m;
+    }
+    return best;
+}
+
 // 每轮轮询调一次。扫描也在这儿做，和 Tick 同一个线程 —— gList 不存在并发。
 void Tick()
 {
@@ -810,6 +829,16 @@ void Tick()
             mo.alive = false;
             plugin::Log("[怪物%d] 读不出来了，停止跟踪（怪物已销毁或内存被回收）。"
                         "共记录 %d 次动作切换。", (int)i, mo.changes);
+            continue;
+        }
+
+        // 误报不能赖着不走：一个一直不动的候选会让 anyAlive 恒为真，
+        // 把后续的自动重扫全堵死（实测整把任务只扫了两次就再没扫过）。
+        // 真怪物不可能十秒一个动作都不换。
+        if (mo.changes == 0 && (now - mo.actStart) > 10000) {
+            mo.alive = false;
+            plugin::Log("[怪物%d] ptr=%p 十秒内一个动作都没换，判为误报，丢弃",
+                        (int)i, reinterpret_cast<void*>(mo.ptr));
             continue;
         }
 
@@ -1267,6 +1296,11 @@ struct CondPool
 // One ini [Attack...] section: trigger conditions + sound pools.
 struct Attack
 {
+    // 0 = 玩家自己的动作（原来的唯一行为）  1 = 怪物的动作
+    // 指向怪物时 weaponType 无意义，fsmId / lmt 拿当前跟踪的怪物来比。
+    int target = 0;
+    std::string monsterName;      // MonsterName=，仅用于在 GUI 里分组，匹配不看它
+
     int weaponType = -1;          // -1 = any weapon
     int fsmId = -1;               // -1 = any FSM
     int fsmTarget = -1;           // FSMTarget= 目标层；-1 = 不限定（只比 id，旧行为）
@@ -1731,6 +1765,11 @@ void LoadConfig()
                 for (int x : cur.lmt) if (x == v) { dup = true; break; }
                 if (!dup) cur.lmt.push_back(v);
             }
+        } else if (key == "Target") {
+            // Target=monster 让这条目改用怪物的动作来匹配
+            cur.target = (val == "monster" || val == "Monster" || val == "1") ? 1 : 0;
+        } else if (key == "MonsterName") {
+            cur.monsterName = val;
         } else if (key == "Name") {
             cur.name = val;
         } else if (key == "Group") {
@@ -1839,7 +1878,18 @@ void LoadConfig()
     g_activeCombo = activeMap;
 
     RebuildActiveAttacks();
-    Log("config: combos=%zu attacks=%zu", g_combos.size(), gAttacks.size());
+
+    // 配了怪物条目就自动把探针打开 —— 不然条目写了也永远匹配不上，
+    // 还得让人去 ini 里再开一个开关，纯属坑人。
+    int monEntries = 0;
+    for (const auto& e : gAttacks) if (e.target == 1) ++monEntries;
+    if (monEntries > 0 && monster::gEnabled == 0) {
+        monster::gEnabled = 1;
+        Log("config: 有 %d 条怪物条目，已自动启用怪物探针", monEntries);
+    }
+
+    Log("config: combos=%zu attacks=%zu (其中怪物条目 %d)",
+        g_combos.size(), gAttacks.size(), monEntries);
 }
 
 void PreloadSounds();   // defined below
@@ -2420,14 +2470,30 @@ DWORD WINAPI WorkerProc(LPVOID)
             }
 
             for (auto& e : gAttacks) {
+                // 动作来源：默认是玩家自己，Target=monster 的条目改用当前跟踪的怪物。
+                // 怪物实体和玩家实体是同一套内存布局，所以 fsm / fsmTarget / lmt
+                // 三样都能照搬，FSMTarget 那层匹配对怪物条目一样有效。
+                int sFsm = fsm, sLmt = lmt, sWeapon = weapon;
+                int sFsmTarget = player::gFsmTarget;
+                bool sOk = true;
+                if (e.target == 1) {
+                    const monster::Mon* mo = monster::Primary();
+                    if (mo != nullptr) {
+                        sFsm = mo->last.fsm; sLmt = mo->last.lmt; sWeapon = -1;
+                        sFsmTarget = mo->last.fsmTgt;
+                    } else {
+                        sOk = false;      // 还没扫到怪物，这条目直接不匹配
+                    }
+                }
+
                 bool lmtOk = e.lmt.empty();
                 if (!lmtOk)
-                    for (int x : e.lmt) if (x == lmt) { lmtOk = true; break; }
+                    for (int x : e.lmt) if (x == sLmt) { lmtOk = true; break; }
 
-                const bool match =
-                    (e.weaponType < 0 || e.weaponType == weapon) &&
-                    (e.fsmId < 0 || e.fsmId == fsm) &&
-                    (e.fsmTarget < 0 || e.fsmTarget == player::gFsmTarget) &&
+                const bool match = sOk &&
+                    (e.target == 1 || e.weaponType < 0 || e.weaponType == sWeapon) &&
+                    (e.fsmId < 0 || e.fsmId == sFsm) &&
+                    (e.fsmTarget < 0 || e.fsmTarget == sFsmTarget) &&
                     lmtOk &&
                     e.HasSounds();
 

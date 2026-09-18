@@ -27,6 +27,10 @@ struct CondSpec {
 
 // 一条派生攻击音效条目
 struct SoundEntry {
+    // 0 = 匹配玩家自己的动作（原来的唯一行为）  1 = 匹配怪物的动作
+    int target = 0;
+    std::string monsterName;    // MonsterName=，只用于在界面上归类，匹配时不看
+
     int weaponType = -1;        // 0..13，-1 = 任意武器
     std::vector<int> lmt;       // 触发的 LMT 列表；空 = 不限
     int fsmId = -1;             // 动作状态机 ID，-1 = 不限
