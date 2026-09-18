@@ -908,6 +908,7 @@ void App::OpenEditorEdit(int index) {
     const SoundEntry& e = cfg.entries[index];
     editor.weaponType = e.weaponType;
     editor.fsmId = e.fsmId;
+    editor.fsmTarget = e.fsmTarget;
     editor.lmt = e.lmt;
     FillLmtBuf(editor.lmtBuf, sizeof(editor.lmtBuf), editor.lmt);
     snprintf(editor.name, sizeof(editor.name), "%s", e.name.c_str());
@@ -919,6 +920,7 @@ void App::OpenEditorEdit(int index) {
     editor.checkTimeoutMs = e.checkTimeoutMs;
     editor.checkOffsetMs  = e.checkOffsetMs;
     editor.endOnAction    = e.endOnAction;
+    editor.checkMode      = e.checkMode;
     editor.conds.clear();
     for (const auto& c : e.conds) {
         CondRow r;
@@ -959,6 +961,7 @@ void App::ApplyEditor() {
     SoundEntry e;
     e.weaponType = editor.weaponType;
     e.fsmId = editor.fsmId;
+    e.fsmTarget = editor.fsmTarget;
     e.name = Trim(editor.name);
     e.group = Trim(editor.groupBuf);
     // 组合归属：新条目加入当前武器的激活组合；编辑已有条目保持其原组合
@@ -996,6 +999,7 @@ void App::ApplyEditor() {
         e.checkTimeoutMs = editor.checkTimeoutMs > 0 ? editor.checkTimeoutMs : 2500;
         e.checkOffsetMs  = editor.checkOffsetMs < 0 ? 0 : editor.checkOffsetMs;
         e.endOnAction    = editor.endOnAction;
+        e.checkMode      = editor.checkMode;
         for (const auto& r : editor.conds) {
             CondSpec c;
             c.expr  = r.parsed ? TermsToExpr(r.terms) : r.rawExpr;
@@ -1073,6 +1077,13 @@ void App::DrawEditorDetached() {
 
     ImGui::SetNextItemWidth(190 * dpiScale);
     ImGui::InputInt("FSMId (-1=不限)", &editor.fsmId, 1, 100);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("动作状态机 ID；同一招在不同 FSM 层(target)里 id 可能重号");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(180 * dpiScale);
+    ImGui::InputInt("FSMTarget (-1=不限)", &editor.fsmTarget, 1, 100);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("FSM 目标层。填上可避免跨层 id 重号误触发；-1 = 只比 FSMId（旧行为）");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(280 * dpiScale);
     ImGui::InputTextWithHint("##lmt", "LMT（逗号分隔；空/-1=不限）", editor.lmtBuf, sizeof(editor.lmtBuf));
@@ -1163,6 +1174,11 @@ void App::DrawEditorDetached() {
                 ImGui::SetTooltip("动作开始后的判定时间终点，超过时间即不进行以下判定");
 
             ImGui::Checkbox("将动作结束(或打断)作为判定时机", &editor.endOnAction);
+            bool finalMode = (editor.checkMode != 0);
+            if (ImGui::Checkbox("所有条件都在窗口结束时统一判定(CheckMode=final)", &finalMode))
+                editor.checkMode = finalMode ? 1 : 0;
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("勾选后忽略逐条的 Sound:/SoundEnd: 区分，全部等到窗口结束再评");
             ImGui::SetNextItemWidth(150 * dpiScale);
             ImGui::InputInt("余量(ms)", &editor.checkOffsetMs, 50, 200);
             if (editor.checkOffsetMs < 0) editor.checkOffsetMs = 0;

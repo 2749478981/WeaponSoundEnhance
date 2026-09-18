@@ -168,8 +168,11 @@ std::uint32_t gGaugePtrOff = 0x76B0;     // LS spirit object: *(entity + off)
 std::uint32_t gGaugeValOff = 0x2370;     // gauge level value: *(obj + off)
 
 // FSM 状态是 (target, id) 二元组寻址的：不同 target 层里的 id 会重号
-//（实测 fsmID 102 在通用层是别的动作、在太刀层是大居）。只比 id 会误触发。
+//（实测 fsmID 102 在通用层是别的动作、在太刀层是大居）。
+// 因此条目可选配 FSMTarget= 一起匹配；不写(-1)时只比 id（与旧行为一致），
+// 想避免跨层重号误触发就填上 target。target 也可在条件表达式里用 fsmTarget 读。
 std::int32_t   gFsmTarget = -1;
+std::uint32_t  gFsmTargetOff = 0x6274;   // FSM target 值偏移（ini FsmTargetOff 可覆盖）
 
 // 大剑蓄力等级：和太刀刃级在**同一个对象**上，只是值偏移不同
 std::int32_t   gCharge = -1;
@@ -200,7 +203,7 @@ void Refresh()
     if (!entity) return;
 
     gFsm       = mem::ReadI32(entity + 0x6278, -1);
-    gFsmTarget = mem::ReadI32(entity + 0x6274, -1);
+    gFsmTarget = mem::ReadI32(entity + gFsmTargetOff, -1);
 
     std::uintptr_t act = 0;
     if (mem::ReadVal(entity + 0x468, act) && act)
@@ -505,6 +508,7 @@ volatile int gMoreSounds = 1;   // legacy: only affects pools without any fixed 
 std::uint32_t gGaugePtrOff = 0x76B0;
 std::uint32_t gGaugeValOff = 0x2370;
 std::uint32_t gChargeValOff = 0x2358;          // 大剑蓄力等级（与刃级共用 GaugePtrOff）
+std::uint32_t gFsmTargetOff = 0x6274;          // FSM target 值偏移
 std::uintptr_t gQuestRoot   = 0x14500ED30ULL;  // 任务结构入口
 std::uint32_t gQuestDmgOff  = 0x17088;         // 任务累计伤害（只含你自己）
 
@@ -735,6 +739,7 @@ struct Attack
 {
     int weaponType = -1;          // -1 = any weapon
     int fsmId = -1;               // -1 = any FSM
+    int fsmTarget = -1;           // FSMTarget= 目标层；-1 = 不限定（只比 id，旧行为）
     std::vector<int> lmt;         // empty = any LMT
     std::string name;             // Name= display label (ignored by matching)
     std::string group;            // Group= logical action: all members fire at most
@@ -1156,6 +1161,7 @@ void LoadConfig()
                 else if (key == "GaugePtrOff") { std::uintptr_t v = ParseHex(val); if (v) gGaugePtrOff = (std::uint32_t)v; }
                 else if (key == "GaugeValOff") { std::uintptr_t v = ParseHex(val); if (v) gGaugeValOff = (std::uint32_t)v; }
                 else if (key == "ChargeValOff") gChargeValOff = (std::uint32_t)ParseHex(val);
+                else if (key == "FsmTargetOff") gFsmTargetOff = (std::uint32_t)ParseHex(val);
                 else if (key == "QuestRoot")    gQuestRoot    = ParseHex(val);
                 else if (key == "QuestDmgOff")  gQuestDmgOff  = (std::uint32_t)ParseHex(val);
             } else if (section == "Hotkeys") {
@@ -1183,6 +1189,8 @@ void LoadConfig()
             cur.weaponType = std::atoi(val.c_str());
         } else if (key == "FSMId") {
             cur.fsmId = std::atoi(val.c_str());
+        } else if (key == "FSMTarget") {
+            cur.fsmTarget = std::atoi(val.c_str());
         } else if (key == "ActionLMT" || key == "LMT") {
             std::vector<std::string> toks;
             SplitList(val, toks);
@@ -1258,6 +1266,7 @@ void LoadConfig()
     player::gGaugePtrOff = gGaugePtrOff;
     player::gGaugeValOff = gGaugeValOff;
     player::gChargeValOff = gChargeValOff;
+    player::gFsmTargetOff = gFsmTargetOff;
     player::gQuestRoot    = gQuestRoot;
     player::gQuestDmgOff  = gQuestDmgOff;
 
@@ -1861,6 +1870,7 @@ DWORD WINAPI WorkerProc(LPVOID)
                 const bool match =
                     (e.weaponType < 0 || e.weaponType == weapon) &&
                     (e.fsmId < 0 || e.fsmId == fsm) &&
+                    (e.fsmTarget < 0 || e.fsmTarget == player::gFsmTarget) &&
                     lmtOk &&
                     e.HasSounds();
 

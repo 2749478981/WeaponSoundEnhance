@@ -238,6 +238,10 @@ bool LoadConfig(const std::string& path, Config& cfg) {
                 else if (key == "Debug") cfg.global.debug = std::atoi(val.c_str());
                 else if (key == "GaugePtrOff") cfg.global.gaugePtrOff = val;
                 else if (key == "GaugeValOff") cfg.global.gaugeValOff = val;
+                else if (key == "ChargeValOff") cfg.global.chargeValOff = val;
+                else if (key == "FsmTargetOff") cfg.global.fsmTargetOff = val;
+                else if (key == "QuestRoot") cfg.global.questRoot = val;
+                else if (key == "QuestDmgOff") cfg.global.questDmgOff = val;
                 else if (key == "ChatEcho") cfg.global.chatEcho = std::atoi(val.c_str());
                 else if (key == "ChatCommands") cfg.global.chatCommands = std::atoi(val.c_str());
                 else if (key == "Hotkeys") cfg.global.hotkeysEnabled = std::atoi(val.c_str());
@@ -285,6 +289,12 @@ bool LoadConfig(const std::string& path, Config& cfg) {
             std::string lv;
             for (char c : val) lv += (char)tolower((unsigned char)c);
             cur.endOnAction = (lv == "action");
+        } else if (key == "CheckMode") {
+            std::string lv;
+            for (char c : val) lv += (char)tolower((unsigned char)c);
+            cur.checkMode = (lv == "final") ? 1 : 0;
+        } else if (key == "FSMTarget") {
+            cur.fsmTarget = std::atoi(val.c_str());
         } else if (key == "Group") {
             cur.group = val;
         } else if (key == "Sound") {
@@ -357,11 +367,13 @@ static void WriteEntry(const SoundEntry& e, int n, std::string& o) {
     o += "WeaponType=" + std::to_string(e.weaponType) + "\r\n";
     o += LmtLine(e) + "\r\n";
     o += "FSMId=" + std::to_string(e.fsmId) + "\r\n";
+    if (e.fsmTarget >= 0) o += "FSMTarget=" + std::to_string(e.fsmTarget) + "\r\n";
     if (e.checkTimeoutMs > 0 && !e.conds.empty()) {
         if (e.checkDelayMs > 0)
             o += "CheckDelayMs=" + std::to_string(e.checkDelayMs) + "\r\n";
         o += "CheckTimeoutMs=" + std::to_string(e.checkTimeoutMs) + "\r\n";
         if (e.endOnAction) o += "CheckEndOn=action\r\n";
+        if (e.checkMode) o += "CheckMode=final\r\n";
         o += "CheckOffsetMs=" + std::to_string(e.checkOffsetMs) + "\r\n";
         for (const auto& c : e.conds) {
             if (c.pool.empty() || c.expr.empty()) continue;
@@ -411,6 +423,10 @@ bool SaveConfig(const std::string& path, const Config& cfg) {
     o += "Debug=" + std::to_string(cfg.global.debug) + "\r\n";
     o += "GaugePtrOff=" + cfg.global.gaugePtrOff + "\r\n";
     o += "GaugeValOff=" + cfg.global.gaugeValOff + "\r\n";
+    o += "ChargeValOff=" + cfg.global.chargeValOff + "\r\n";
+    o += "FsmTargetOff=" + cfg.global.fsmTargetOff + "\r\n";
+    o += "QuestRoot=" + cfg.global.questRoot + "\r\n";
+    o += "QuestDmgOff=" + cfg.global.questDmgOff + "\r\n";
     o += "ChatEcho=" + std::to_string(cfg.global.chatEcho) + "\r\n";
     o += "ChatCommands=" + std::to_string(cfg.global.chatCommands) + "\r\n";
     o += "Hotkeys=" + std::to_string(cfg.global.hotkeysEnabled) + "\r\n\r\n";

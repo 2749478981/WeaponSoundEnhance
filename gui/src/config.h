@@ -30,6 +30,7 @@ struct SoundEntry {
     int weaponType = -1;        // 0..13，-1 = 任意武器
     std::vector<int> lmt;       // 触发的 LMT 列表；空 = 不限
     int fsmId = -1;             // 动作状态机 ID，-1 = 不限
+    int fsmTarget = -1;         // FSMTarget= 目标层；-1 = 不限定
     std::string combo;          // 所属配置组合名（"" = 默认组合）
     std::string name;           // 显示名（Name=，插件匹配时忽略）
     std::string group;          // 动作组（Group=）：同一招的多个触发条目填相同组名，
@@ -44,6 +45,7 @@ struct SoundEntry {
     int checkTimeoutMs = 0;       // 窗口上限；0 = 不启用判定，行为与旧版一致
     int checkOffsetMs = 150;      // 判定点在"实测最晚出伤时刻"之上留的余量
     bool endOnAction = true;      // 动作结束(含被打断)也作为判定时机
+    int checkMode = 0;            // CheckMode=final(1)：把所有条件都改成窗口结束时评
     std::vector<CondSpec> conds;
 
     int LmtAny() const { return lmt.empty() ? -1 : lmt.front(); }
@@ -63,6 +65,10 @@ struct GlobalSettings {
     int moreSounds = 1;         // 旧全局开关：仅对无固定音效的纯旧条目生效
     std::string gaugePtrOff = "0x76B0";   // 太刀气刃对象偏移（十六进制）
     std::string gaugeValOff = "0x2370";   // 气刃等级偏移（十六进制）
+    std::string chargeValOff = "0x2358";  // 大剑蓄力等级偏移（十六进制）
+    std::string fsmTargetOff = "0x6274";  // FSM target 偏移（十六进制）
+    std::string questRoot = "0x14500ED30";// 任务结构入口（十六进制）
+    std::string questDmgOff = "0x17088";  // 任务累计伤害偏移（十六进制）
     int debug = 0;              // 调试日志（插件侧 Debug=1）
     int chatEcho = 1;
     int chatCommands = 1;

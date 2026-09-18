@@ -118,6 +118,10 @@ Hotkeys=1                ; 游戏内热键总开关
 Debug=0                  ; 调试日志（每次播放/心跳写入 log）
 GaugePtrOff=0x76B0       ; 太刀气刃对象偏移
 GaugeValOff=0x2370       ; 太刀气刃等级偏移
+ChargeValOff=0x2358      ; 大剑蓄力等级偏移（与刃级同对象）
+FsmTargetOff=0x6274      ; FSM target 偏移
+QuestRoot=0x14500ED30    ; 任务结构入口（累计伤害用）
+QuestDmgOff=0x17088      ; 任务累计伤害偏移（只含本人）
 
 [Hotkeys]                ; 17=Ctrl；数字是 Windows 虚拟键码
 ModifierKey=17
@@ -143,7 +147,9 @@ Sound=sounds/a.wav; sounds/b.wav            ; 多条分号分隔，随机抽一�
 - 多 LMT：`LMT=49265,49256`（命中任一即触发）。
 - 固定音效：`Sound=sounds/hit.wav|0|100|F; sounds/other.wav`（`F` 者恒播，未固定者随机一条同播）。
 - 动作组：`Group=气刃斩1`（同招多帧只响一次）。
-- 刃时音效（太刀）：`Sound:white=sounds/白1.wav|0|100|F; sounds/白2.wav`（还有 `none/yellow/red`；未配置回退默认 `Sound=`）。
+- FSM 目标层：`FSMTarget=3`。FSM 是 `(target, id)` 二元组，不同层里 id 可能重号（实测 fsmID 102 在通用层是别的动作、太刀层才是大居）；填上 target 可避免跨层误触发，不写（`-1`）则只比 `FSMId`（旧行为）。
+- 条件判定：见下节 `CheckTimeoutMs` / `Sound:<表达式>`。
+- 刃时音效（太刀）：`Sound:white=sounds/白1.wav|0|100|F; sounds/白2.wav`（还有 `none/yellow/red`；未配置回退默认 `Sound=`）。注意：**判定条目不走刃时池**，它只在自己的条件池 + 默认 `Sound=` 里选。
 
 ### 条件判定
 
@@ -197,6 +203,13 @@ Sound           = sounds/fail.wav   ; 完全落空
 条件按写的顺序依次评，第一条成立的赢；都不成立就播兜底的 `Sound=`。
 
 > GUI 里这一套有预设，不用手写表达式，见下方「配置工具」一节。
+
+**判定条目的几点注意**
+
+- 判定条目**不走动作组** `Group=`，也**不受全局 Debounce 限制** —— 观察窗本身负责去重（同一次判定只会出一次声）。所以「同招多帧只响一次」这类需求，判定条目不需要、也暂不支持再叠 `Group=`。
+- 判定条目**不参与刃时池**（`Sound:white/...` 等）：它只在"自己的条件池 + 默认 `Sound=`"里挑。想按刃级分音效就把它写成普通条目或写进条件表达式（用 `aura`/`dAura`）。
+- 想让所有条件都等到窗口结束再评，可加 `CheckMode=final`（等价于把每条都写成 `SoundEnd:`）。
+- 手写的高级键（`CheckMode`、`FSMTarget`、`ChargeValOff`/`QuestRoot`/`QuestDmgOff` 等）GUI 会原样保留、保存时不会丢。
 
 ### 每武器配置组合
 ```ini

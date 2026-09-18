@@ -48,6 +48,7 @@ struct App {
         char groupBuf[96] = {};   // 动作组（Group=）
         int weaponType = -1;
         int fsmId = -1;
+        int fsmTarget = -1;       // FSMTarget=：-1 = 不限定
         std::vector<int> lmt;          // 空 = 不限
         char lmtBuf[128] = {};
         std::vector<SoundSpec> pool[5]; // 0 = 默认音效；1..4 = 无刃时/白刃时/黄刃时/红刃时
@@ -59,6 +60,7 @@ struct App {
         int  checkTimeoutMs = 0;
         int  checkOffsetMs = 150;
         bool endOnAction = true;
+        int  checkMode = 0;          // 1 = CheckMode=final
         std::vector<CondRow> conds;
     } editor;
 
