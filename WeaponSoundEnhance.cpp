@@ -358,6 +358,221 @@ void LogD(const char* fmt, ...)
 } // namespace plugin
 
 // ===========================================================================
+//  怪物探针 —— 纯数据采集，默认关闭（ini [WeaponSoundEnhance] MonsterProbe=1）
+//
+//  为什么是扫内存而不是挂钩子：
+//  游戏没有「怪物列表」这种全局变量可读。LuaEngine 的做法是 inline hook 怪物
+//  构造/析构函数（0x141CA1F00 / 0x141CA47E0）自己维护一张表。我们要在同一个
+//  地址上再挂一层，就得和它的 hook 链式共存 —— 能work，但崩的是游戏进程，
+//  采集阶段不值得冒这个险。
+//
+//  这里改成：按热键扫一遍游戏的私有堆，用「实体布局」把怪物认出来，之后只
+//  轮询扫到的那几个指针。扫描一次性，轮询纯读 —— 全程不写游戏内存、不改游戏
+//  代码、不碰任何已有的 hook。
+//
+//  偏移来自 LuaEngine 的 Engine_monster.lua，怪物和玩家共用同一套实体布局
+//  （插件读玩家用的就是其中几个）。
+// ===========================================================================
+namespace monster {
+
+const std::uint32_t OFF_ACT     = 0x468;    // *(m+0x468) -> 动作对象
+const std::uint32_t OFF_LMT     = 0xE9C4;   //    +0xE9C4  动作 LMT (int)
+const std::uint32_t OFF_FRAME   = 0x10C;    //    +0x10C   当前帧 (float)
+const std::uint32_t OFF_FRAMEND = 0x114;    //    +0x114   总帧   (float)
+const std::uint32_t OFF_FSMTGT  = 0x6274;   // m+0x6274 fsmTarget (int)
+const std::uint32_t OFF_FSMID   = 0x6278;   // m+0x6278 fsmID     (int)
+const std::uint32_t OFF_HPOBJ   = 0x7670;   // *(m+0x7670) -> 血量对象
+const std::uint32_t OFF_HPMAX   = 0x60;     //    +0x60 (float)
+const std::uint32_t OFF_HPCUR   = 0x64;     //    +0x64 (float)
+
+// 认怪物的门槛。玩家血上限撑死 200 出头，怪物动辄上千，拿这个把玩家排掉。
+float gHpMin = 500.0f;
+float gHpMax = 1000000.0f;
+
+struct Mon {
+    std::uintptr_t ptr = 0;
+    std::int32_t   lmt = -1, fsm = -1, fsmTgt = -1;
+    float          hpMax = 0.0f, hp = 0.0f;
+    std::uint64_t  actStart = 0;      // 当前动作是什么时候开始的
+    float          hpAtStart = 0.0f;  // 当前动作开始时的血量
+    int            changes = 0;
+    bool           alive = true;
+};
+
+volatile int gEnabled = 0;
+std::vector<Mon> gList;
+std::uint64_t gScanAt = 0;
+
+// 读一遍全部字段，顺便当有效性校验：任何一步读不出来或值不合理就不是怪物。
+bool Read(std::uintptr_t m, float& hpMax, float& hpCur,
+          std::int32_t& lmt, std::int32_t& fsm, std::int32_t& fsmTgt)
+{
+    std::uintptr_t act = 0, hpo = 0;
+    if (!mem::ReadVal(m + OFF_ACT,   act) || act < 0x10000) return false;
+    if (!mem::ReadVal(m + OFF_HPOBJ, hpo) || hpo < 0x10000) return false;
+
+    float mx = 0.0f, cu = 0.0f;
+    if (!mem::ReadVal(hpo + OFF_HPMAX, mx)) return false;
+    if (!mem::ReadVal(hpo + OFF_HPCUR, cu)) return false;
+    if (!(mx > gHpMin && mx < gHpMax))      return false;
+    if (!(cu >= 0.0f && cu <= mx))          return false;
+
+    std::int32_t l = 0, f1 = 0, f2 = 0;
+    if (!mem::ReadVal(act + OFF_LMT,    l))  return false;
+    if (!mem::ReadVal(m   + OFF_FSMID,  f1)) return false;
+    if (!mem::ReadVal(m   + OFF_FSMTGT, f2)) return false;
+    if (l  < 0 || l  > 200000) return false;
+    if (f1 < 0 || f1 > 100000) return false;
+    if (f2 < 0 || f2 > 100000) return false;
+
+    hpMax = mx; hpCur = cu; lmt = l; fsm = f1; fsmTgt = f2;
+    return true;
+}
+
+// 扫游戏的私有可读写堆，把长得像怪物的对象挑出来。
+void Scan()
+{
+    gList.clear();
+    const std::uint64_t t0 = ::GetTickCount64();
+
+    SYSTEM_INFO si;
+    ::GetSystemInfo(&si);
+    std::uintptr_t addr = reinterpret_cast<std::uintptr_t>(si.lpMinimumApplicationAddress);
+    const std::uintptr_t hi = reinterpret_cast<std::uintptr_t>(si.lpMaximumApplicationAddress);
+
+    // 玩家实体也符合布局，扫之前先拿到它的地址，好排除掉
+    std::uintptr_t selfEnt = 0;
+    {
+        std::uintptr_t mgr = 0;
+        if (mem::ReadVal(player::gRoot, mgr) && mgr != 0) {
+            const std::uint32_t c0[1] = { 0x50 };
+            selfEnt = mem::Walk(mgr, c0, 1);
+        }
+    }
+
+    const std::uintptr_t TAIL = OFF_HPOBJ + 0x10;   // 要读到的最远字段
+    const std::uintptr_t CHUNK = 4u << 20;          // 每次拷 4MB
+    std::vector<unsigned char> buf;
+    std::uint64_t bytes = 0;
+    int regions = 0;
+
+    MEMORY_BASIC_INFORMATION mbi;
+    while (addr < hi && ::VirtualQuery(reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi)) == sizeof(mbi)) {
+        const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress);
+        const std::uintptr_t size = static_cast<std::uintptr_t>(mbi.RegionSize);
+        if (size == 0) break;
+
+        const bool usable =
+            mbi.State == MEM_COMMIT &&
+            mbi.Type  == MEM_PRIVATE &&
+            (mbi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE)) != 0 &&
+            (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) == 0;
+
+        if (usable && size > TAIL) {
+            ++regions;
+            bytes += size;
+            // 不直接解引用游戏内存：扫的过程中别的线程可能正好把这块释放掉，
+            // 那样一个访问违例就把游戏带走了。先 ReadProcessMemory 拷到自己的
+            // 缓冲区里再扫 —— 读不到只是返回 false，不会炸。
+            std::uintptr_t off = 0;
+            while (off + TAIL < size) {
+                const std::uintptr_t left = size - off;
+                const std::size_t want = static_cast<std::size_t>(left < CHUNK ? left : CHUNK);
+                if (buf.size() < want) buf.resize(want);
+
+                SIZE_T got = 0;
+                if (!::ReadProcessMemory(::GetCurrentProcess(),
+                                         reinterpret_cast<LPCVOID>(base + off),
+                                         buf.data(), want, &got) || got <= TAIL) {
+                    break;   // 这块读不了，整个区域剩下的也不管了
+                }
+
+                const std::size_t lim = static_cast<std::size_t>(got) - TAIL;
+                for (std::size_t k = 0; k < lim; k += 8) {
+                    std::uintptr_t a = 0, h = 0;
+                    std::memcpy(&a, buf.data() + k + OFF_ACT,   sizeof(a));
+                    if (a < 0x10000 || a > 0x7FFFFFFFFFFFULL || (a & 7)) continue;
+                    std::memcpy(&h, buf.data() + k + OFF_HPOBJ, sizeof(h));
+                    if (h < 0x10000 || h > 0x7FFFFFFFFFFFULL || (h & 7)) continue;
+
+                    const std::uintptr_t m = base + off + k;
+                    if (m == selfEnt) continue;
+
+                    float mx = 0.0f, cu = 0.0f;
+                    std::int32_t l = 0, f1 = 0, f2 = 0;
+                    if (!Read(m, mx, cu, l, f1, f2)) continue;
+
+                    Mon mo;
+                    mo.ptr = m; mo.hpMax = mx; mo.hp = cu;
+                    mo.lmt = l; mo.fsm = f1; mo.fsmTgt = f2;
+                    mo.actStart = ::GetTickCount64();
+                    mo.hpAtStart = cu;
+                    gList.push_back(mo);
+                    if (gList.size() >= 32) break;
+                }
+                if (gList.size() >= 32) break;
+                if (left <= CHUNK) break;
+                off += CHUNK - TAIL;   // 重叠 TAIL 字节，免得跨块的对象被漏掉
+            }
+        }
+        addr = base + size;
+        if (gList.size() >= 32) break;
+    }
+
+    gScanAt = ::GetTickCount64();
+    plugin::Log("[怪物扫描] 扫了 %d 个区域 / %llu MB, 用时 %llums, 找到 %d 个候选",
+        regions, (unsigned long long)(bytes >> 20),
+        (unsigned long long)(gScanAt - t0), (int)gList.size());
+    for (std::size_t i = 0; i < gList.size(); ++i) {
+        const Mon& mo = gList[i];
+        plugin::Log("[怪物扫描]   #%d ptr=%p  HP %.0f/%.0f  动作 %d  fsm %d/%d",
+            (int)i, reinterpret_cast<void*>(mo.ptr), mo.hp, mo.hpMax,
+            mo.lmt, mo.fsmTgt, mo.fsm);
+    }
+    if (gList.empty())
+        plugin::Log("[怪物扫描] 没找到。确认已经进任务、怪物已出现再按一次。");
+}
+
+// 每轮轮询调一次：只记「动作变了」这一件事。
+void Tick()
+{
+    if (gEnabled == 0 || gList.empty()) return;
+    const std::uint64_t now = ::GetTickCount64();
+
+    for (std::size_t i = 0; i < gList.size(); ++i) {
+        Mon& mo = gList[i];
+        if (!mo.alive) continue;
+
+        float mx = 0.0f, cu = 0.0f;
+        std::int32_t l = 0, f1 = 0, f2 = 0;
+        if (!Read(mo.ptr, mx, cu, l, f1, f2)) {
+            mo.alive = false;
+            plugin::Log("[怪物%d] 读不出来了，停止跟踪（怪物已销毁或内存被回收）。"
+                "共记录 %d 次动作切换。", (int)i, mo.changes);
+            continue;
+        }
+
+        if (l != mo.lmt || f1 != mo.fsm || f2 != mo.fsmTgt) {
+            const std::uint64_t dur = (mo.actStart == 0) ? 0 : (now - mo.actStart);
+            const float dhp = mo.hpAtStart - cu;
+            ++mo.changes;
+            plugin::Log("[怪物%d] 动作 %d -> %d | fsm %d/%d -> %d/%d | 上一动作 %llums 掉血 %.0f "
+                "| HP %.0f/%.0f (%.1f%%)",
+                (int)i, mo.lmt, l, mo.fsmTgt, mo.fsm, f2, f1,
+                (unsigned long long)dur, dhp, cu, mx,
+                mx > 0.0f ? (cu * 100.0f / mx) : 0.0f);
+            mo.lmt = l; mo.fsm = f1; mo.fsmTgt = f2;
+            mo.actStart = now;
+            mo.hpAtStart = cu;
+        }
+        mo.hp = cu;
+        mo.hpMax = mx;
+    }
+}
+
+} // namespace monster
+
+// ===========================================================================
 //  Standalone WAV player: winmm waveOut, one handle per voice, concurrency cap
 // ===========================================================================
 namespace audio {
@@ -581,6 +796,7 @@ int gSetVolKey   = VK_F8;
 int gToggleKey   = VK_F9;
 int gMoreKey     = VK_F10;
 int gComboKey    = VK_F11;   // 切换当前武器配置组合
+int gMonScanKey  = VK_F6;    // 扫描怪物（仅 MonsterProbe=1 时有用）
 int gSetVolValue = 50;
 
 // --- game module addresses (15.23.00) ---
@@ -1211,6 +1427,7 @@ void LoadConfig()
                 else if (key == "ChatEcho") g_useChatEcho = std::atoi(val.c_str()) != 0;
                 else if (key == "ChatCommands") g_useChatCommands = std::atoi(val.c_str()) != 0;
                 else if (key == "Hotkeys") g_hotkeysEnabled = std::atoi(val.c_str()) != 0;
+                else if (key == "MonsterProbe") monster::gEnabled = std::atoi(val.c_str()) != 0;
                 else if (key == "Debug") gDebug = std::atoi(val.c_str()) != 0;
                 else if (key == "GaugePtrOff") { std::uintptr_t v = ParseHex(val); if (v) gGaugePtrOff = (std::uint32_t)v; }
                 else if (key == "GaugeValOff") { std::uintptr_t v = ParseHex(val); if (v) gGaugeValOff = (std::uint32_t)v; }
@@ -1912,6 +2129,7 @@ DWORD WINAPI WorkerProc(LPVOID)
         if (::InterlockedCompareExchange(&gStop, 0, 0) != 0) break;
 
         player::Refresh();
+        monster::Tick();
         const int lmt = player::gLmt;
         const int fsm = player::gFsm;
         const int weapon = player::gWeapon;
@@ -1998,17 +2216,17 @@ DWORD WINAPI WorkerProc(LPVOID)
 DWORD WINAPI HotkeyProc(LPVOID)
 {
     bool reloadWas=false, upWas=false, downWas=false,
-         setWas=false, togWas=false, moreWas=false, comboWas=false;
+         setWas=false, togWas=false, moreWas=false, comboWas=false, monWas=false;
     while (::InterlockedCompareExchange(&gStop, 0, 0) == 0) {
         ::Sleep(30);
         if (g_hotkeysEnabled == 0) {
-            reloadWas = upWas = downWas = setWas = togWas = moreWas = comboWas = false;
+            reloadWas = upWas = downWas = setWas = togWas = moreWas = comboWas = monWas = false;
             continue;
         }
         const bool mod = (gModifierKey == 0) ||
                          ((::GetAsyncKeyState(gModifierKey) & 0x8000) != 0);
         if (!mod) {
-            reloadWas = upWas = downWas = setWas = togWas = moreWas = comboWas = false;
+            reloadWas = upWas = downWas = setWas = togWas = moreWas = comboWas = monWas = false;
             continue;
         }
         const bool reloadDown = (::GetAsyncKeyState(gReloadKey) & 0x8000) != 0;
@@ -2018,6 +2236,20 @@ DWORD WINAPI HotkeyProc(LPVOID)
         const bool togDown    = (::GetAsyncKeyState(gToggleKey) & 0x8000) != 0;
         const bool moreDown   = (::GetAsyncKeyState(gMoreKey)   & 0x8000) != 0;
         const bool comboDown  = (::GetAsyncKeyState(gComboKey)  & 0x8000) != 0;
+        const bool monDown    = (::GetAsyncKeyState(gMonScanKey)& 0x8000) != 0;
+
+        if (monDown && !monWas) {
+            if (monster::gEnabled) {
+                monster::Scan();
+                char m[0x180] = {};
+                snprintf(m, sizeof(m), "wse: 扫到 %d 个怪物候选",
+                         (int)monster::gList.size());
+                ShowMessage(m, true);
+            } else {
+                ShowMessage("wse: MonsterProbe=0, 怪物探针没开", true);
+            }
+        }
+        monWas = monDown;
 
         if (reloadDown && !reloadWas) {
             ReloadConfig();
