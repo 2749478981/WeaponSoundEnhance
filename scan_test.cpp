@@ -19,6 +19,12 @@ int main()
     plugin::gLogPath = L"scan_test.log";
     ::DeleteFileW(plugin::gLogPath.c_str());
 
+    // 最严苛的情况：这个进程里那些游戏地址全都没映射，
+    // 探针必须老老实实报「读不出来」，不能炸。
+    printf("---- 地址探针（全部地址无效）----\n");
+    monster::AddrProbe();
+    printf("没崩，日志见 scan_test.log\n\n");
+
     // ---- 造一块 256MB 的假堆 ----
     const std::size_t SZ = 256u << 20;
     unsigned char* heap = (unsigned char*)::VirtualAlloc(

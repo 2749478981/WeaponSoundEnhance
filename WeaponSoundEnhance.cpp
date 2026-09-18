@@ -411,7 +411,7 @@ volatile LONG gScanReq  = 0;        // 热键只置这个标志，真正的扫�
 std::vector<Mon> gList;             // 只有轮询线程碰它
 
 // 自动扫描：进任务后自己扫，不用按键。ini MonsterAutoScan=0 可关。
-int gAutoScan     = 1;
+int gAutoScan     = 0;   // 堆扫描实测覆盖率太低、误报全是垃圾，默认不跑
 int gAutoFirstMs  = 5000;    // 进场景后等这么久再扫，给怪物生成留时间
 int gAutoRetryMs  = 20000;   // 没扫到时的重试间隔
 int gAutoMaxTries = 3;       // 重试上限，免得一直扫一直卡
@@ -632,6 +632,105 @@ void Scan()
     }
 }
 
+
+// 地址探针：纯读，不挂钩、不扫描，跑一次就完。
+// 在动手挂钩子之前先确认两件事：候选函数地址处是不是正常的函数开头，
+// 以及实体布局里还没被证明的那几个偏移（血量、动作帧）对不对。
+// 动作/fsm 那几个偏移 player::Refresh 一直在用且读数正常，已经不用验。
+void AddrProbe()
+{
+    static bool done = false;
+    if (done) return;
+    done = true;
+
+    plugin::Log("========== 地址探针 ==========");
+
+    HMODULE hm = ::GetModuleHandleW(L"MonsterHunterWorld.exe");
+    plugin::Log("[探针] 模块基址 = %p   (ghidra 导出假定 0x140000000)", (void*)hm);
+
+    // ---- 玩家实体：已知正确的实体，拿它当标尺 ----
+    std::uintptr_t mgr = 0, ent = 0;
+    if (mem::ReadVal(player::gRoot, mgr) && mgr) {
+        const std::uint32_t c0[1] = { 0x50 };
+        ent = mem::Walk(mgr, c0, 1);
+    }
+    plugin::Log("[探针] 玩家实体 = %p", (void*)ent);
+
+    if (ent) {
+        MEMORY_BASIC_INFORMATION mbi;
+        if (::VirtualQuery(reinterpret_cast<LPCVOID>(ent), &mbi, sizeof(mbi)) == sizeof(mbi))
+            plugin::Log("[探针]   所在区域 base=%p 大小=%.2f MB 分配基址=%p type=%lx prot=%lx",
+                        mbi.BaseAddress, (double)mbi.RegionSize / 1048576.0,
+                        mbi.AllocationBase, (unsigned long)mbi.Type,
+                        (unsigned long)mbi.Protect);
+
+        std::uintptr_t act = 0, hpo = 0;
+        mem::ReadVal(ent + OFF_ACT,   act);
+        mem::ReadVal(ent + OFF_HPOBJ, hpo);
+        plugin::Log("[探针]   动作对象 *(e+0x468)=%p   血量对象 *(e+0x7670)=%p",
+                    (void*)act, (void*)hpo);
+        plugin::Log("[探针]   fsm=%d fsmTarget=%d   (插件自己读到 %d/%d，应该一致)",
+                    mem::ReadI32(ent + OFF_FSMID, -1), mem::ReadI32(ent + OFF_FSMTGT, -1),
+                    (int)player::gFsm, (int)player::gFsmTarget);
+
+        if (act) {
+            float fr = -1.0f, fe = -1.0f;
+            mem::ReadVal(act + OFF_FRAME,   fr);
+            mem::ReadVal(act + OFF_FRAMEND, fe);
+            plugin::Log("[探针]   lmt=%d (插件读到 %d)   当前帧=%.2f   总帧=%.2f"
+                        "   <== 真实动作帧的数量级，用来收紧怪物判定",
+                        mem::ReadI32(act + OFF_LMT, -1), (int)player::gLmt,
+                        (double)fr, (double)fe);
+        }
+        if (hpo) {
+            float hp = -1.0f, mx = -1.0f;
+            mem::ReadVal(hpo + OFF_HPCUR, hp);
+            mem::ReadVal(hpo + OFF_HPMAX, mx);
+            plugin::Log("[探针]   玩家血量 %.2f / %.2f   <== 验证血量偏移，顺便定怪物门槛",
+                        (double)hp, (double)mx);
+        }
+    } else {
+        plugin::Log("[探针]   玩家实体取不到 —— 可能还没进场景");
+    }
+
+    // ---- 候选函数地址 ----
+    // ctor/dtor 是 LuaEngine 挂过钩子的：如果这两处读到的是一条 jmp
+    // (E9 / FF 25)，那就同时证明了地址正确、且钩子确实在那儿。
+    struct Cand { const char* name; std::uintptr_t va; const char* note; };
+    static const Cand cands[] = {
+        { "Monster::ctor",         0x141CA1F00ULL, "LuaEngine 挂了，应看到 jmp" },
+        { "Monster::dtor",         0x141CA47E0ULL, "LuaEngine 挂了，应看到 jmp" },
+        { "Monster::LaunchAction", 0x141CC5360ULL, "想挂的就是它，应是原始函数开头" },
+        { "Monster::MotionFromId", 0x141BFF880ULL, "备选" },
+        { "Player::GetPlayer",     0x141B8DBB0ULL, "对照组，同一份导出里的另一个地址" },
+    };
+    for (std::size_t i = 0; i < sizeof(cands) / sizeof(cands[0]); ++i) {
+        const Cand& c = cands[i];
+        unsigned long prot = 0;
+        bool exec = false;
+        MEMORY_BASIC_INFORMATION mbi;
+        if (::VirtualQuery(reinterpret_cast<LPCVOID>(c.va), &mbi, sizeof(mbi)) == sizeof(mbi)) {
+            prot = (unsigned long)mbi.Protect;
+            exec = (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ |
+                                   PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+        }
+        char hex[96];
+        hex[0] = 0;
+        if (mem::IsReadable(c.va, 16)) {
+            const unsigned char* p = reinterpret_cast<const unsigned char*>(c.va);
+            int w = 0;
+            for (int k = 0; k < 16 && w < (int)sizeof(hex) - 4; ++k)
+                w += snprintf(hex + w, sizeof(hex) - (std::size_t)w, "%02X ", p[k]);
+        } else {
+            snprintf(hex, sizeof(hex), "(读不出来)");
+        }
+        plugin::Log("[探针] %-22s %p prot=%lx %s : %s   | %s",
+                    c.name, (void*)c.va, prot,
+                    exec ? "可执行" : "不可执行!!", hex, c.note);
+    }
+    plugin::Log("========== 探针结束 ==========");
+}
+
 // 每轮轮询调一次。扫描也在这儿做，和 Tick 同一个线程 —— gList 不存在并发。
 void Tick()
 {
@@ -656,7 +755,9 @@ void Tick()
         gList.clear();
         gAutoTries  = 0;
         gNextAutoAt = now + (std::uint64_t)gAutoFirstMs;
-        plugin::Log("[怪物] 进入场景，%.1f 秒后自动扫描", gAutoFirstMs / 1000.0);
+        AddrProbe();
+        if (gAutoScan != 0)
+            plugin::Log("[怪物] 进入场景，%.1f 秒后自动扫描", gAutoFirstMs / 1000.0);
     }
 
     bool anyAlive = false;
