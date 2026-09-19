@@ -933,7 +933,10 @@ void App::DrawEntries() {
 
             ImGui::TableSetColumnIndex(0);
             std::string nm = e.name;
-            if (nm.empty()) nm = LookupFsmName(e.weaponType, e.fsmId, e.LmtAny());
+            if (nm.empty() && e.target == 1)
+                nm = LookupMonsterAction(e.monsterName, e.LmtAny());
+            if (nm.empty() && e.target == 0)
+                nm = LookupFsmName(e.weaponType, e.fsmId, e.LmtAny());
             if (nm.empty()) nm = "条目";
             ImGui::Text("%s", nm.c_str());
 
@@ -1232,6 +1235,50 @@ void App::DrawEditorDetached() {
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("只是个归类标签，插件匹配只看动作 ID。\n"
                               "列表里没有的怪物直接手填就行。");
+
+        // 已知动作挑选器：选中就把动作 ID 填进下面的 LMT 框，不用记数字。
+        // 相变、劫火这种一整招拆成多段的，选「整套」会一次填全并自动配 Group=。
+        std::vector<FsmDbEntry> known = MonsterActions(editor.monsterBuf);
+        if (!known.empty()) {
+            std::vector<std::string> labels;
+            for (std::size_t i = 0; i < known.size(); ++i) {
+                char b[160];
+                snprintf(b, sizeof(b), "%d  %s", known[i].lmt, known[i].name.c_str());
+                labels.push_back(b);
+            }
+            std::vector<const char*> items;
+            items.push_back("(从已知动作里挑…)");
+            for (const auto& l : labels) items.push_back(l.c_str());
+            int pick = 0;
+            ImGui::SetNextItemWidth(430 * dpiScale);
+            if (ImGui::Combo("已知动作", &pick, items.data(), (int)items.size()) && pick > 0) {
+                const FsmDbEntry& k = known[pick - 1];
+                // 追加而不是覆盖：一整招的多段要一起填进同一条
+                std::string cur = Trim(editor.lmtBuf);
+                bool dup = false;
+                {
+                    std::string tok;
+                    for (std::size_t i = 0; i <= cur.size(); ++i) {
+                        char c = (i < cur.size()) ? cur[i] : ',';
+                        if (c == ',' || c == ';' || c == ' ') {
+                            if (Trim(tok) == std::to_string(k.lmt)) dup = true;
+                            tok.clear();
+                        } else tok += c;
+                    }
+                }
+                if (!dup) {
+                    if (!cur.empty()) cur += ",";
+                    cur += std::to_string(k.lmt);
+                    snprintf(editor.lmtBuf, sizeof(editor.lmtBuf), "%s", cur.c_str());
+                }
+                if (editor.name[0] == 0)
+                    snprintf(editor.name, sizeof(editor.name), "%s", k.name.c_str());
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("挑中的动作 ID 会追加到下面的 LMT 框里。\n"
+                                  "相变、劫火这类是一整招拆成的多段，\n"
+                                  "把几段都挑上并填一个「动作组」，整招才只响一次。");
+        }
     } else {
         int wi = editor.weaponType + 1;
         if (wi < 0) wi = 0;
