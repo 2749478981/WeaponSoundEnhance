@@ -1348,11 +1348,25 @@ void App::DrawEditorDetached() {
         // 相变、劫火这种一整招拆成多段的，选「整套」会一次填全并自动配 Group=。
         std::vector<FsmDbEntry> known = MonsterActions(editor.monsterBuf);
         if (!known.empty()) {
+            // 同一招的不同方向共用一个名字（大咬就有两个 ID）。下拉里按名字
+            // 去重，只列一行；选中时把这个名字下的所有 ID 一起填进 LMT 框。
+            // 拆成两行让人挨个挑没有意义 —— 漏掉一个就少响一次，这正是当初
+            // 「看到大咬却没响」的成因。
+            std::vector<std::string> names;
+            for (const auto& k : known) {
+                bool has = false;
+                for (const auto& n : names) if (n == k.name) { has = true; break; }
+                if (!has) names.push_back(k.name);
+            }
             std::vector<std::string> labels;
-            for (std::size_t i = 0; i < known.size(); ++i) {
-                char b[160];
-                snprintf(b, sizeof(b), "%d  %s", known[i].lmt, known[i].name.c_str());
-                labels.push_back(b);
+            for (const auto& n : names) {
+                std::string ids;
+                for (const auto& k : known)
+                    if (k.name == n) {
+                        if (!ids.empty()) ids += ",";
+                        ids += std::to_string(k.lmt);
+                    }
+                labels.push_back(ids + "  " + n);
             }
             std::vector<const char*> items;
             items.push_back("(从已知动作里选择…)");
@@ -1360,27 +1374,28 @@ void App::DrawEditorDetached() {
             int pick = 0;
             ImGui::SetNextItemWidth(430 * dpiScale);
             if (ImGui::Combo("已知动作", &pick, items.data(), (int)items.size()) && pick > 0) {
-                const FsmDbEntry& k = known[pick - 1];
+                const std::string& nm = names[pick - 1];
                 // 追加而不是覆盖：一整招的多段要一起填进同一条
                 std::string cur = Trim(editor.lmtBuf);
-                bool dup = false;
-                {
+                auto already = [&](int lmt) {
                     std::string tok;
                     for (std::size_t i = 0; i <= cur.size(); ++i) {
                         char c = (i < cur.size()) ? cur[i] : ',';
                         if (c == ',' || c == ';' || c == ' ') {
-                            if (Trim(tok) == std::to_string(k.lmt)) dup = true;
+                            if (Trim(tok) == std::to_string(lmt)) return true;
                             tok.clear();
                         } else tok += c;
                     }
-                }
-                if (!dup) {
+                    return false;
+                };
+                for (const auto& k : known) {
+                    if (k.name != nm || already(k.lmt)) continue;
                     if (!cur.empty()) cur += ",";
                     cur += std::to_string(k.lmt);
-                    snprintf(editor.lmtBuf, sizeof(editor.lmtBuf), "%s", cur.c_str());
                 }
+                snprintf(editor.lmtBuf, sizeof(editor.lmtBuf), "%s", cur.c_str());
                 if (editor.name[0] == 0)
-                    snprintf(editor.name, sizeof(editor.name), "%s", k.name.c_str());
+                    snprintf(editor.name, sizeof(editor.name), "%s", nm.c_str());
             }
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("选中的动作ID会自动加入LMT框中。");
