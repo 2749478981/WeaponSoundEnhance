@@ -37,3 +37,4 @@ sounds/
 *.v1backup
 *.bak
 *.bak_*
+tmp_probe/
