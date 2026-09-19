@@ -276,6 +276,14 @@ bool LoadConfig(const std::string& path, Config& cfg) {
                 for (int x : cur.lmt) if (x == v) { dup = true; break; }
                 if (!dup) cur.lmt.push_back(v);
             }
+        } else if (key == "Chat") {
+            cur.defChat = val;
+        } else if (key.size() > 5 && key.compare(0, 5, "Chat:") == 0) {
+            const std::string expr = Trim(key.substr(5));
+            bool found = false;
+            for (auto& c : cur.conds)
+                if (c.expr == expr) { c.chat = val; found = true; break; }
+            if (!found) { CondSpec cs; cs.expr = expr; cs.chat = val; cur.conds.push_back(cs); }
         } else if (key == "Target") {
             cur.target = (val == "monster" || val == "Monster" || val == "1") ? 1 : 0;
         } else if (key == "MonsterName") {
@@ -380,15 +388,22 @@ static void WriteEntry(const SoundEntry& e, int n, std::string& o) {
         if (e.checkDelayMs > 0)
             o += "CheckDelayMs=" + std::to_string(e.checkDelayMs) + "\r\n";
         o += "CheckTimeoutMs=" + std::to_string(e.checkTimeoutMs) + "\r\n";
-        if (e.endOnAction) o += "CheckEndOn=action\r\n";
+        // 两种取值都显式写出。原来只在 endOnAction 为真时写 action，
+        // 于是 ini 里的 CheckEndOn=time 保存一次就没了，回读时又按默认值
+        // 变回 action（往返测试抓到的）。
+        o += e.endOnAction ? "CheckEndOn=action\r\n" : "CheckEndOn=time\r\n";
         if (e.checkMode) o += "CheckMode=final\r\n";
         o += "CheckOffsetMs=" + std::to_string(e.checkOffsetMs) + "\r\n";
         for (const auto& c : e.conds) {
-            if (c.pool.empty() || c.expr.empty()) continue;
+            if (c.expr.empty()) continue;
+            // 只配了 Chat= 没配音效的条件也要写出来，不能当成空条件跳过
+            if (c.pool.empty() && c.chat.empty()) continue;
             const std::string k = (c.atEnd ? "SoundEnd:" : "Sound:") + c.expr;
-            WritePool(c.pool, k.c_str(), o);
+            if (!c.pool.empty()) WritePool(c.pool, k.c_str(), o);
+            if (!c.chat.empty()) o += "Chat:" + c.expr + "=" + c.chat + "\r\n";
         }
     }
+    if (!e.defChat.empty()) o += "Chat=" + e.defChat + "\r\n";
     WritePool(e.def, "Sound", o);
     for (int i = 0; i < 4; ++i) {
         std::string k = std::string("Sound:") + GaugeTagName(i);

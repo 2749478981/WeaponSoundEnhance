@@ -20,6 +20,7 @@ struct PoolSpec {
 
 // 一条「条件 -> 音效池」。判定窗口内按书写顺序求值，第一个成立的播。
 struct CondSpec {
+    std::string chat;       // Chat:<表达式>= 条件命中时发的队伍聊天
     std::string expr;       // 条件表达式，如 "dmg>0 & dAura>=0"
     bool atEnd = false;     // true 写成 SoundEnd:（只在窗口结束时评），false 写成 Sound:
     PoolSpec pool;
@@ -48,8 +49,12 @@ struct SoundEntry {
     int checkDelayMs = 0;         // 从第几毫秒开始计伤害（排除招式前段的伤害）
     int checkTimeoutMs = 0;       // 窗口上限；0 = 不启用判定，行为与旧版一致
     int checkOffsetMs = 150;      // 判定点在"实测最晚出伤时刻"之上留的余量
-    bool endOnAction = true;      // 动作结束(含被打断)也作为判定时机
+    // 默认必须和插件一致：插件的 checkEndOn 默认是 0(=time)。
+    // 原来这里是 true，导致 ini 里写 CheckEndOn=time 的条目被 GUI 保存后
+    // 变成 action（往返测试抓到的）。
+    bool endOnAction = false;     // 动作结束(含被打断)也作为判定时机
     int checkMode = 0;            // CheckMode=final(1)：把所有条件都改成窗口结束时评
+    std::string defChat;          // Chat=，兜底触发时发的队伍聊天
     std::vector<CondSpec> conds;
 
     int LmtAny() const { return lmt.empty() ? -1 : lmt.front(); }

@@ -1931,13 +1931,24 @@ void LoadConfig()
                 // Pool* ，而 conds 是 vector，push_back 扩容会让指针失效。
                 // 代价是旧式的 SoundDelay=/SoundVol= 对条件池不生效，
                 // 用新式的 路径|延时|音量|F 内联写法即可。
-                CondPool cp;
-                cp.text  = cond::Trim(tag);
-                cp.expr  = ex;
-                cp.atEnd = atEnd;
+                // 同一个表达式可能已经被 Chat:<表达式>= 先建出来了，
+                // 那就往它身上补音效，别再建一条 —— 否则会出现两条同表达式
+                // 的条件，先评到的那条音效池是空的，行为跟写的顺序有关。
+                const std::string txt = cond::Trim(tag);
+                CondPool* slot = nullptr;
+                for (auto& c : cur.conds)
+                    if (c.text == txt && c.atEnd == atEnd) { slot = &c; break; }
                 std::vector<std::pair<Pool*, int>> scratch;
-                AppendSpecs(cp.pool, val, scratch);
-                cur.conds.push_back(std::move(cp));
+                if (slot != nullptr) {
+                    AppendSpecs(slot->pool, val, scratch);
+                } else {
+                    CondPool cp;
+                    cp.text  = txt;
+                    cp.expr  = ex;
+                    cp.atEnd = atEnd;
+                    AppendSpecs(cp.pool, val, scratch);
+                    cur.conds.push_back(std::move(cp));
+                }
             } else {
                 const int lvl = GaugeTagToLevel(ToLower(tag));
                 if (lvl >= 0 && lvl < 4)
@@ -2528,7 +2539,8 @@ void TickJudgeEntry(Attack& e, bool match, std::uint64_t nowMs,
     // CheckMode=final 等价于把所有条件都标成 SoundEnd。
     for (std::size_t i = 0; i < e.conds.size(); ++i) {
         const CondPool& c = e.conds[i];
-        if (c.pool.empty()) continue;
+        // 只配了 Chat= 没配音效的条件也算数，不能当成「没配」跳过
+        if (c.pool.empty() && c.chat.empty()) continue;
         const bool waitEnd = c.atEnd || e.checkMode == 1;
         if (waitEnd && !timeUp) continue;          // 还没到点，这条先不评
         if (!cond::Eval(c.expr, v)) continue;
