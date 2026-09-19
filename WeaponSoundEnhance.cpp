@@ -480,7 +480,8 @@ bool Read(std::uintptr_t m, Snap& o)
 }
 
 // 扫一段地址范围。返回是否因为超时而中断。
-bool ScanRange(std::uintptr_t lo, std::uintptr_t hi, std::uintptr_t selfEnt,
+bool ScanRange(std::vector<Mon>& out,
+               std::uintptr_t lo, std::uintptr_t hi, std::uintptr_t selfEnt,
                std::vector<unsigned char>& buf, std::uint64_t deadline,
                int& regions, std::uint64_t& bytes)
 {
@@ -554,16 +555,16 @@ bool ScanRange(std::uintptr_t lo, std::uintptr_t hi, std::uintptr_t selfEnt,
                     if (!Validate(a, h, f1, f2, sp)) continue;
 
                     bool dup = false;
-                    for (std::size_t q = 0; q < gList.size(); ++q)
-                        if (gList[q].ptr == m) { dup = true; break; }
+                    for (std::size_t q = 0; q < out.size(); ++q)
+                        if (out[q].ptr == m) { dup = true; break; }
                     if (dup) continue;
 
                     Mon mo;
                     mo.ptr = m; mo.last = sp;
                     mo.actStart = ::GetTickCount64();
                     mo.hpAtStart = sp.hp;
-                    gList.push_back(mo);
-                    if (gList.size() >= 16) return false;
+                    out.push_back(mo);
+                    if (out.size() >= 16) return false;
                 }
                 if (left <= CHUNK) break;
                 off += CHUNK - TAIL;      // 重叠，免得跨块对象被漏掉
@@ -574,9 +575,16 @@ bool ScanRange(std::uintptr_t lo, std::uintptr_t hi, std::uintptr_t selfEnt,
     return false;
 }
 
-void Scan()
+// 扫描线程和轮询线程之间的交接。扫描全程只碰自己的局部容器，
+// 扫完才在锁里把结果换给轮询线程 —— 两边不会同时动同一个 vector。
+std::mutex gResultMx;
+std::vector<Mon> gPending;
+volatile LONG gHasPending = 0;
+volatile LONG gScanBusy   = 0;
+
+void ScanBody()
 {
-    gList.clear();
+    std::vector<Mon> found;
     gDeepProbes = 0;
     const std::uint64_t t0 = ::GetTickCount64();
     const std::uint64_t deadline = t0 + (std::uint64_t)gScanBudgetMs;
@@ -611,19 +619,19 @@ void Scan()
     // 模块上方的私有堆里 —— 实体都在这一带。
     // 之前从最低地址往上扫，1.5 秒预算全耗在低端那些无关区域上，根本没
     // 走到这儿就超时了，扫出来的候选全是低 64MB 的垃圾。
-    timedOut = ScanRange(modBase, hiAddr, selfEnt, buf, deadline, regions, bytes);
+    timedOut = ScanRange(found, modBase, hiAddr, selfEnt, buf, deadline, regions, bytes);
     plugin::Log("[怪物扫描]   第一轮 模块上方: %d 个区域 / %.0f MB, 深度校验 %.0f 次, 命中 %d 个%s",
                 regions, (double)(bytes >> 20), (double)gDeepProbes,
-                (int)gList.size(), timedOut ? " (超时)" : "");
+                (int)found.size(), timedOut ? " (超时)" : "");
     how = "模块上方";
 
     // 还没有就再扫模块下方，一样受同一个截止时间约束
-    if (gList.empty() && !timedOut) {
+    if (found.empty() && !timedOut) {
         regions = 0; bytes = 0;
-        timedOut = ScanRange(loAddr, modBase, selfEnt, buf, deadline, regions, bytes);
+        timedOut = ScanRange(found, loAddr, modBase, selfEnt, buf, deadline, regions, bytes);
         plugin::Log("[怪物扫描]   第二轮 模块下方: %d 个区域 / %.0f MB, 深度校验 %.0f 次, 命中 %d 个%s",
                     regions, (double)(bytes >> 20), (double)gDeepProbes,
-                    (int)gList.size(), timedOut ? " (超时)" : "");
+                    (int)found.size(), timedOut ? " (超时)" : "");
         how = "模块下方";
     }
 
@@ -631,14 +639,14 @@ void Scan()
                 "深度校验 %.0f 次, 找到 %d 个候选",
                 how, regions, (double)(bytes >> 20),
                 (double)(::GetTickCount64() - t0),
-                timedOut ? "(超时中断)" : "", (double)gDeepProbes, (int)gList.size());
+                timedOut ? "(超时中断)" : "", (double)gDeepProbes, (int)found.size());
 
     // 复核：等一小会儿再读一遍。真怪物的动作帧一定在走，纯属撞上布局的
     // 垃圾数据基本是死的 —— 这一步把误报标出来。
-    if (!gList.empty()) {
+    if (!found.empty()) {
         ::Sleep(300);
-        for (std::size_t i = 0; i < gList.size(); ++i) {
-            Mon& mo = gList[i];
+        for (std::size_t i = 0; i < found.size(); ++i) {
+            Mon& mo = found[i];
             Snap sp;
             if (!Read(mo.ptr, sp)) {
                 mo.alive = false;
@@ -659,9 +667,30 @@ void Scan()
     } else {
         plugin::Log("[怪物扫描] 没找到。确认已经进任务、怪物已经出现，再按一次。");
     }
+
+    // 交接：换给轮询线程，自己不再碰
+    {
+        std::lock_guard<std::mutex> lk(gResultMx);
+        gPending.swap(found);
+    }
+    ::InterlockedExchange(&gHasPending, 1);
 }
 
+DWORD WINAPI ScanThreadProc(LPVOID)
+{
+    ScanBody();
+    ::InterlockedExchange(&gScanBusy, 0);
+    return 0;
+}
 
+// 起一次后台扫描。已经在扫就不重复起。
+void Scan()
+{
+    if (::InterlockedCompareExchange(&gScanBusy, 1, 0) != 0) return;
+    HANDLE h = ::CreateThread(nullptr, 0, &ScanThreadProc, nullptr, 0, nullptr);
+    if (h == nullptr) { ::InterlockedExchange(&gScanBusy, 0); return; }
+    ::CloseHandle(h);
+}
 // 地址探针：纯读，不挂钩、不扫描，跑一次就完。
 // 在动手挂钩子之前先确认两件事：候选函数地址处是不是正常的函数开头，
 // 以及实体布局里还没被证明的那几个偏移（血量、动作帧）对不对。
@@ -806,22 +835,35 @@ void Tick()
     for (std::size_t q = 0; q < gList.size(); ++q)
         if (gList[q].alive) { anyAlive = true; break; }
 
+    // 后台扫描的结果到了就接过来
+    if (::InterlockedCompareExchange(&gHasPending, 0, 0) != 0) {
+        std::lock_guard<std::mutex> lk(gResultMx);
+        gList.swap(gPending);
+        gPending.clear();
+        ::InterlockedExchange(&gHasPending, 0);
+        plugin::Log("[怪物扫描] 结果已接收，开始跟踪 %d 个", (int)gList.size());
+        int live = 0;
+        for (std::size_t q = 0; q < gList.size(); ++q) if (gList[q].alive) ++live;
+        if (live > 0) {
+            gAutoTries = 0;          // 扫到了就把重试计数清零
+            char m[0x100] = {};
+            snprintf(m, sizeof(m), "wse: 开始跟踪 %d 个怪物", live);
+            plugin::ShowMessage(m, true);
+        }
+    }
+
     const bool manual  = (::InterlockedExchange(&gScanReq, 0) != 0);
     const bool autoDue = (gAutoScan != 0) && !manual && !anyAlive &&
                          gNextAutoAt != 0 && now >= gNextAutoAt &&
                          gAutoTries < gAutoMaxTries;
     if (manual || autoDue) {
         gAutoTries = manual ? 0 : (gAutoTries + 1);
+        // Scan() 现在只是起一个后台线程，立刻就返回。
+        // 结果要等下一轮（或几轮之后）在上面那个「结果已接收」分支里拿，
+        // 所以这里不能再去数 gList —— 那时候它还是旧的。
         Scan();
         gNextAutoAt = ::GetTickCount64() + (std::uint64_t)gAutoRetryMs;
-        int live = 0;
-        for (std::size_t q = 0; q < gList.size(); ++q) if (gList[q].alive) ++live;
-        if (live > 0) {
-            gAutoTries = 0;
-            char msg[0x100] = {};
-            snprintf(msg, sizeof(msg), "wse: 开始跟踪 %d 个怪物", live);
-            plugin::ShowMessage(msg, true);
-        } else if (gAutoTries >= gAutoMaxTries) {
+        if (gAutoTries >= gAutoMaxTries) {
             plugin::Log("[怪物] 自动扫了 %d 次都没找到，先不试了。"
                         "怪物出现后按 Ctrl+F6 可以手动补一次。", gAutoTries);
         }
