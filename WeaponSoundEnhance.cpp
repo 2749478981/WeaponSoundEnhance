@@ -1116,6 +1116,100 @@ const std::uintptr_t kMessageLenOff  = 0xBC;
 const std::uintptr_t kMessageBodyOff = 0xC0;
 
 // ===========================================================================
+//  队伍聊天发送
+//
+//  做法来自 eigeen/mhw-toolkit 的 send_chat_message，并和 LuaEngine 的
+//  ghidra 导出交叉验证过 —— 两边的 uGuiChatBase 都是 0x1451C4640，
+//  插件自己的 kSystemMessageMgrRva 也和它的 CHAT_MAIN_PTR 一致，
+//  说明三份资料指的是同一个游戏版本。
+//
+//  不调游戏函数：把文字写进聊天输入缓冲区，再把发送标志置 true，游戏
+//  自己会在下一帧发出去。比从后台线程调 UI 函数安全得多。
+//
+//  指针链（语义是「先解引用，再加偏移」，逐级如此）：
+//      b = *(模块基址 + 0x51C4640)
+//      p = *(b + 0x13FD0)
+//      聊天缓冲区 = p + 0x28F8 + 0x165   （UGUIChat.chat_buffer，128 字节）
+//      发送标志   = p + 0x325E           （bool：false 才能发）
+//      发送目标   = b + 0x14748          （int，0 = 任务频道）
+// ===========================================================================
+namespace teamchat {
+
+const std::uintptr_t kBaseRva   = 0x51C4640;
+const std::uintptr_t kOff1      = 0x13FD0;
+const std::uintptr_t kBufOff    = 0x28F8 + 0x165;
+const std::uintptr_t kSendOff   = 0x325E;
+const std::uintptr_t kTargetOff = 0x14748;
+
+volatile int gEnabled = 0;        // 有条目配了 Chat= 就自动打开
+int gMinGapMs = 1200;             // 两条之间的最小间隔
+std::mutex gMx;
+std::vector<std::string> gQueue;
+std::uint64_t gLastSentMs = 0;
+
+bool Ptrs(std::uintptr_t& buf, std::uintptr_t& flag)
+{
+    if (gGameBase == 0) return false;
+    std::uintptr_t b = 0;
+    if (!mem::ReadVal(gGameBase + kBaseRva, b) || b <= 0x10000) return false;
+    std::uintptr_t p = 0;
+    if (!mem::ReadVal(b + kOff1, p) || p <= 0x10000) return false;
+    buf  = p + kBufOff;
+    flag = p + kSendOff;
+    return true;
+}
+
+void Queue(const std::string& msg)
+{
+    if (msg.empty()) return;
+    std::lock_guard<std::mutex> lk(gMx);
+    if (gQueue.size() >= 8) return;      // 别攒太多，过时的喊话没意义
+    gQueue.push_back(msg);
+}
+
+// 每轮轮询调一次，一次最多发一条
+void Pump()
+{
+    if (gEnabled == 0) return;
+    if (!player::RefreshIsInScene()) return;
+
+    const std::uint64_t now = ::GetTickCount64();
+    if (now - gLastSentMs < (std::uint64_t)gMinGapMs) return;
+
+    std::string msg;
+    {
+        std::lock_guard<std::mutex> lk(gMx);
+        if (gQueue.empty()) return;
+        msg = gQueue.front();
+    }
+
+    std::uintptr_t buf = 0, flag = 0;
+    if (!Ptrs(buf, flag)) return;
+
+    unsigned char busy = 1;
+    if (!mem::ReadVal(flag, busy)) return;
+    if (busy != 0) return;               // 上一条还没被游戏取走
+
+    if (!mem::IsWritable(buf, 128) || !mem::IsWritable(flag, 1)) return;
+
+    char tmp[128] = {};
+    _snprintf_s(tmp, _TRUNCATE, "%s", msg.c_str());   // 超长自动截断并留 NUL
+    std::memcpy(reinterpret_cast<void*>(buf), tmp, sizeof(tmp));
+    const unsigned char one = 1;
+    std::memcpy(reinterpret_cast<void*>(flag), &one, 1);
+
+    gLastSentMs = now;
+    {
+        std::lock_guard<std::mutex> lk(gMx);
+        if (!gQueue.empty()) gQueue.erase(gQueue.begin());
+    }
+    Log("[队伍聊天] 已发送: %s", msg.c_str());
+}
+
+} // namespace teamchat
+
+
+// ===========================================================================
 //  Data model
 // ===========================================================================
 
@@ -1297,6 +1391,7 @@ struct Pool
 // 一条「条件 -> 音效池」。按书写顺序求值，第一个成立的那条播。
 struct CondPool
 {
+    std::string chat;    // Chat:<表达式>= 条件成立时顺带喊一句
     std::string text;    // 原始表达式，写回 ini / 日志用
     cond::Expr  expr;
     Pool        pool;
@@ -1317,6 +1412,7 @@ struct Attack
     // 指向怪物时 weaponType 无意义，fsmId / lmt 拿当前跟踪的怪物来比。
     int target = 0;
     std::string monsterName;      // MonsterName=，仅用于在 GUI 里分组，匹配不看它
+    std::string defChat;          // Chat=，兜底触发时喊的话
 
     int weaponType = -1;          // -1 = any weapon
     int fsmId = -1;               // -1 = any FSM
@@ -1783,6 +1879,20 @@ void LoadConfig()
                 for (int x : cur.lmt) if (x == v) { dup = true; break; }
                 if (!dup) cur.lmt.push_back(v);
             }
+        } else if (key == "Chat") {
+            cur.defChat = val;
+        } else if (key.rfind("Chat:", 0) == 0) {
+            // Chat:<表达式>= ：和 Sound:<表达式>= 用同一套条件
+            const std::string expr = Trim(key.substr(5));
+            bool found = false;
+            for (auto& c : cur.conds)
+                if (c.text == expr) { c.chat = val; found = true; break; }
+            if (!found) {
+                CondPool cp;
+                cp.text = expr;
+                cp.atEnd = false;
+                if (cond::Parse(expr, cp.expr)) { cp.chat = val; cur.conds.push_back(cp); }
+            }
         } else if (key == "Target") {
             // Target=monster 让这条目改用怪物的动作来匹配
             cur.target = (val == "monster" || val == "Monster" || val == "1") ? 1 : 0;
@@ -1899,8 +2009,16 @@ void LoadConfig()
 
     // 配了怪物条目就自动把探针打开 —— 不然条目写了也永远匹配不上，
     // 还得让人去 ini 里再开一个开关，纯属坑人。
-    int monEntries = 0;
-    for (const auto& e : gAttacks) if (e.target == 1) ++monEntries;
+    int monEntries = 0, chatEntries = 0;
+    for (const auto& e : gAttacks) {
+        if (e.target == 1) ++monEntries;
+        if (!e.defChat.empty()) ++chatEntries;
+        for (const auto& c : e.conds) if (!c.chat.empty()) ++chatEntries;
+    }
+    if (chatEntries > 0 && teamchat::gEnabled == 0) {
+        teamchat::gEnabled = 1;
+        Log("config: 有 %d 处配了 Chat=，已启用队伍聊天发送", chatEntries);
+    }
     if (monEntries > 0 && monster::gEnabled == 0) {
         monster::gEnabled = 1;
         Log("config: 有 %d 条怪物条目，已自动启用怪物探针", monEntries);
@@ -2418,6 +2536,7 @@ void TickJudgeEntry(Attack& e, bool match, std::uint64_t nowMs,
              tag.c_str(), c.text.c_str(), waitEnd ? " (end)" : "",
              v.v[cond::V_DMG], v.v[cond::V_DAURA], v.v[cond::V_MS]);
         FirePool(&c.pool, rng, nowMs, tag + " [" + c.text + "]");
+        teamchat::Queue(c.chat);
         e.winOpen = false;
         return;
     }
@@ -2427,9 +2546,12 @@ void TickJudgeEntry(Attack& e, bool match, std::uint64_t nowMs,
         LogD("%s judge: timeout, fallback (dmg=%d dAura=%d)",
              tag.c_str(), v.v[cond::V_DMG], v.v[cond::V_DAURA]);
         FirePool(&e.defPool, rng, nowMs, tag + " [timeout]");
+        teamchat::Queue(e.defChat);
         e.winOpen = false;
     }
 }
+
+
 
 // ===========================================================================
 //  Worker threads
@@ -2457,6 +2579,7 @@ DWORD WINAPI WorkerProc(LPVOID)
 
         player::Refresh();
         monster::Tick();
+        teamchat::Pump();
         const int lmt = player::gLmt;
         const int fsm = player::gFsm;
         const int weapon = player::gWeapon;
