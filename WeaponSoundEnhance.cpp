@@ -327,7 +327,7 @@ void LogInit()
 {
     gLogPath = gDataDir + L"WeaponSoundEnhance.log";
     ::DeleteFileW(gLogPath.c_str());
-    Log("WeaponSoundEnhance 2.6 starting");
+    Log("WeaponSoundEnhance 2.7 starting");
     // 旧布局提示：wav 还在 plugins\sounds\ 时自动兼容，但建议搬进数据目录
     const std::wstring oldSounds = gModuleDir + L"sounds";
     if (gDataDir != gModuleDir && DirExistsW(oldSounds) &&
@@ -1061,6 +1061,162 @@ bool ReadFileUtf8(const std::wstring& path, std::string& out)
     return true;
 }
 
+// 覆盖写整个文件（宽路径）
+bool WriteFileBytes(const std::wstring& path, const std::string& data)
+{
+    HANDLE h = ::CreateFileW(LongPathW(path).c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                             CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    bool ok = true;
+    if (!data.empty()) {
+        DWORD wr = 0;
+        ok = ::WriteFile(h, data.data(), (DWORD)data.size(), &wr, nullptr) &&
+             wr == (DWORD)data.size();
+    }
+    ::CloseHandle(h);
+    return ok;
+}
+
+// ===========================================================================
+//  组合切换（热键 / 聊天框共用）
+//  切完把选择写回 ini 的 [Active] 段 —— 否则下次 Ctrl+F5 重载、重开游戏又会
+//  回到旧组合，用户看起来就是“切了没用”。
+// ===========================================================================
+std::uint32_t gPersistActiveCombo = 1;   // ini PersistActiveCombo=0 可关掉写回
+
+std::string ComboCurrent(int w)
+{
+    auto a = g_activeCombo.find(w);
+    return (a != g_activeCombo.end()) ? a->second : std::string();
+}
+
+std::vector<std::string> ComboList(int w)
+{
+    auto it = g_comboOrder.find(w);
+    return (it != g_comboOrder.end()) ? it->second : std::vector<std::string>();
+}
+
+std::string ComboDisplayName(const std::string& name) { return name.empty() ? "默认" : name; }
+
+// 只改 ini 里 [Active] 段的 W<w>=<名字>，其它内容原样保留
+bool PersistActiveCombo(int w, const std::string& name)
+{
+    if (gPersistActiveCombo == 0) return false;
+    std::string txt;
+    if (!ReadFileUtf8(gIniPath, txt) || txt.empty()) {
+        Log("combo: 写回失败（读不到 ini）");
+        return false;
+    }
+    const std::string eol = (txt.find("\r\n") != std::string::npos) ? "\r\n" : "\n";
+    std::vector<std::string> lines;
+    {
+        std::string cur;
+        for (std::size_t i = 0; i < txt.size(); ++i) {
+            if (txt[i] == '\n') {
+                if (!cur.empty() && cur.back() == '\r') cur.pop_back();
+                lines.push_back(cur);
+                cur.clear();
+            } else {
+                cur += txt[i];
+            }
+        }
+        if (!cur.empty()) { if (cur.back() == '\r') cur.pop_back(); lines.push_back(cur); }
+    }
+
+    const std::string want  = "W" + std::to_string(w) + "=" + name;
+    const std::string wantK = "w" + std::to_string(w);
+    int secStart = -1;
+    int secEnd   = (int)lines.size();
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        const std::string t = Trim(lines[i]);
+        if (t.size() >= 2 && t.front() == '[' && t.back() == ']') {
+            const std::string sec = Trim(t.substr(1, t.size() - 2));
+            if (sec == "Active") { secStart = (int)i; continue; }
+            if (secStart >= 0) { secEnd = (int)i; break; }
+        }
+    }
+
+    bool replaced = false;
+    if (secStart >= 0) {
+        for (int i = secStart + 1; i < secEnd; ++i) {
+            const std::string t = Trim(lines[i]);
+            if (t.size() > 1 && (t[0] == 'W' || t[0] == 'w')) {
+                const std::size_t eq = t.find('=');
+                const std::string k = ToLower((eq == std::string::npos) ? t : t.substr(0, eq));
+                if (k == wantK) { lines[i] = want; replaced = true; break; }
+            }
+        }
+        if (!replaced) lines.insert(lines.begin() + secEnd, want);
+    } else {
+        int at = (int)lines.size();
+        for (std::size_t i = 0; i < lines.size(); ++i) {
+            const std::string t = Trim(lines[i]);
+            if (t.size() > 7 && t[0] == '[' && t.compare(1, 6, "Attack") == 0) { at = (int)i; break; }
+        }
+        std::vector<std::string> add;
+        add.push_back(std::string());
+        add.push_back("[Active]");
+        add.push_back(want);
+        add.push_back(std::string());
+        lines.insert(lines.begin() + at, add.begin(), add.end());
+    }
+
+    std::string out;
+    out.reserve(txt.size() + 32);
+    for (const auto& l : lines) { out += l; out += eol; }
+
+    const std::wstring tmp = gIniPath + L".tmp";
+    if (!WriteFileBytes(tmp, out) ||
+        !::MoveFileExW(LongPathW(tmp).c_str(), LongPathW(gIniPath).c_str(),
+                       MOVEFILE_REPLACE_EXISTING)) {
+        ::DeleteFileW(LongPathW(tmp).c_str());
+        Log("combo: 写回 ini 失败（目录只读？）");
+        return false;
+    }
+    Log("combo: [Active] W%d=%s 已写回 ini", w, name.c_str());
+    return true;
+}
+
+// 切到指定组合（name="" 表示默认组合）。err 里带失败原因，便于回显。
+bool ComboSet(int w, const std::string& name, std::string& err)
+{
+    if (w < 0) { err = "未进入场景（读不到当前武器）"; return false; }
+    {
+        std::lock_guard<std::mutex> lk(gCfgMutex);
+        const std::vector<std::string> order = ComboList(w);
+        if (order.empty()) { err = "该武器没有任何动作条目"; return false; }
+        bool found = false;
+        for (const auto& c : order) if (c == name) { found = true; break; }
+        if (!found) {
+            err = "没有叫「" + ComboDisplayName(name) + "」的组合；可用：";
+            for (std::size_t i = 0; i < order.size(); ++i)
+                err += (i ? " / " : "") + ComboDisplayName(order[i]);
+            return false;
+        }
+        g_activeCombo[w] = name;
+        RebuildActiveAttacksLocked();
+    }
+    PersistActiveCombo(w, name);
+    return true;
+}
+
+// 切到下一个组合。调用方负责 PersistActiveCombo（避免在锁内做文件 I/O）。
+bool ComboNext(int w, std::string& next, std::string& err)
+{
+    if (w < 0) { err = "未进入场景（读不到当前武器）"; return false; }
+    std::lock_guard<std::mutex> lk(gCfgMutex);
+    const std::vector<std::string> order = ComboList(w);
+    if (order.empty()) { err = "该武器没有任何动作条目"; return false; }
+    const std::string cur = ComboCurrent(w);
+    std::string nxt = order[0];
+    for (std::size_t k = 0; k < order.size(); ++k)
+        if (order[k] == cur) { nxt = order[(k + 1) % order.size()]; break; }
+    g_activeCombo[w] = nxt;
+    RebuildActiveAttacksLocked();
+    next = nxt;
+    return true;
+}
+
 std::uintptr_t ParseHex(const std::string& s0)
 {
     std::string s = Trim(s0);
@@ -1224,6 +1380,7 @@ void LoadConfig()
                 else if (key == "ChatEcho") g_useChatEcho = std::atoi(val.c_str()) != 0;
                 else if (key == "ChatCommands") g_useChatCommands = std::atoi(val.c_str()) != 0;
                 else if (key == "Hotkeys") g_hotkeysEnabled = std::atoi(val.c_str()) != 0;
+                else if (key == "PersistActiveCombo") gPersistActiveCombo = std::atoi(val.c_str()) != 0;
                 else if (key == "Debug") gDebug = std::atoi(val.c_str()) != 0;
                 else if (key == "GaugePtrOff") { std::uintptr_t v = ParseHex(val); if (v) gGaugePtrOff = (std::uint32_t)v; }
                 else if (key == "GaugeValOff") { std::uintptr_t v = ParseHex(val); if (v) gGaugeValOff = (std::uint32_t)v; }
@@ -1584,7 +1741,44 @@ inline bool HandleWseCommand(const std::string& rest, bool& used)
     } else if (rest == "one" || rest == "single") {
         gMoreSounds = 0; ShowMessage("wse extra sounds OFF (single)", true);
     } else if (rest == "help" || rest == "h") {
-        ShowMessage("/wse reload(重载ini+音效) | on | off | more | one | vol N | vol+ | vol-");
+        ShowMessage("/wse reload | on | off | more | one | vol N | vol+ | vol- | "
+                    "combo [名字] (切组合) | combos (列出组合)");
+    } else if (rest == "combo" || rest.rfind("combo ", 0) == 0 || rest.rfind("cb", 0) == 0) {
+        const int w = player::gWeapon;
+        std::string arg = Trim((rest.rfind("combo", 0) == 0) ? rest.substr(5) : rest.substr(2));
+        std::string err;
+        if (arg.empty()) {
+            std::string nxt;
+            if (ComboNext(w, nxt, err)) {
+                PersistActiveCombo(w, nxt);
+                const std::vector<std::string> order = ComboList(w);
+                std::string m = "wse combo -> " + ComboDisplayName(nxt) +
+                                " (" + std::to_string(order.size()) + " 个可用:";
+                for (const auto& c : order) m += " " + ComboDisplayName(c);
+                m += ")";
+                ShowMessage(m.c_str(), true);
+            }
+        } else if (arg == "list" || arg == "ls" || arg == "?") {
+            const std::vector<std::string> order = ComboList(w);
+            if (w < 0) err = "未进入场景";
+            else if (order.empty()) err = "该武器没有任何动作条目";
+            else {
+                const std::string cur = ComboCurrent(w);
+                std::string m = "wse combos:";
+                for (const auto& c : order)
+                    m += (c == cur ? " [" : " ") + ComboDisplayName(c) + (c == cur ? "]" : "");
+                ShowMessage(m.c_str(), true);
+            }
+        } else if (!ComboSet(w, arg, err)) {
+            // err 已填好
+        } else {
+            std::string m = "wse combo -> " + ComboDisplayName(arg);
+            ShowMessage(m.c_str(), true);
+        }
+        if (!err.empty()) {
+            const std::string m = "wse combo: " + err;
+            ShowMessage(m.c_str(), true);
+        }
     } else if (rest == "vol+" || rest == "up") {
         gVolumePct += 5; if (gVolumePct > 100) gVolumePct = 100;
         char msg[0x180] = {}; _snprintf_s(msg, _TRUNCATE, "wse volume=%d", (int)gVolumePct);
@@ -2116,26 +2310,24 @@ DWORD WINAPI HotkeyProc(LPVOID)
         // 切换当前武器的配置组合（仅影响该武器；其它武器配置不变）
         if (comboDown && !comboWas) {
             const int w = player::gWeapon;
-            std::string nxt;
-            {
-                std::lock_guard<std::mutex> lk(gCfgMutex);
-                auto& order = g_comboOrder[w];
-                if (!order.empty()) {
-                    std::string cur = "";
-                    auto a = g_activeCombo.find(w);
-                    if (a != g_activeCombo.end()) cur = a->second;
-                    nxt = order[0];
-                    for (std::size_t k = 0; k < order.size(); ++k)
-                        if (order[k] == cur) { nxt = order[(k + 1) % order.size()]; break; }
-                    g_activeCombo[w] = nxt;
-                    RebuildActiveAttacksLocked();   // 已持有 gCfgMutex，不能再调加锁版
-                }
+            std::string nxt, err;
+            if (w < 0) {
+                err = "未进入场景，无法切换组合";
+            } else if (ComboNext(w, nxt, err)) {
+                PersistActiveCombo(w, nxt);
+                const std::vector<std::string> order = ComboList(w);
+                std::string m = "wse combo -> " + ComboDisplayName(nxt);
+                if (order.size() <= 1)
+                    m += "（该武器只有 1 个组合，GUI 里可「新增组合」）";
+                else
+                    m += "（" + std::to_string(order.size()) + " 个可用）";
+                ShowMessage(m.c_str(), true);
+                LogD("[hotkey] weapon %d combo -> [%s] (%zu combos)", w, nxt.c_str(), order.size());
             }
-            if (!nxt.empty()) {
-                char m[0x180] = {};
-                _snprintf_s(m, _TRUNCATE, "wse combo[%d] -> %s", w, nxt.c_str());
-                ShowMessage(m, true);
-                LogD("[hotkey] weapon %d combo -> %s", w, nxt.c_str());
+            if (!err.empty()) {
+                std::string m = "wse combo: " + err;
+                ShowMessage(m.c_str(), true);
+                Log("[hotkey] combo switch failed: %s", err.c_str());
             }
         }
         comboWas = comboDown;

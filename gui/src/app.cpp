@@ -41,6 +41,20 @@ std::string Trim(const std::string& s) {
     return s.substr(b, e - b);
 }
 
+// 路径比较：忽略大小写与 / \\ 差异（用于判断"正在编辑的是不是游戏那份 ini"）
+bool SamePath(const std::string& a, const std::string& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        char x = a[i], y = b[i];
+        if (x == '/') x = '\\';
+        if (y == '/') y = '\\';
+        if (x >= 'A' && x <= 'Z') x += 32;
+        if (y >= 'A' && y <= 'Z') y += 32;
+        if (x != y) return false;
+    }
+    return true;
+}
+
 // LMT 列表的显示文本；空列表 = 不限（任意 LMT）
 std::string LmtText(const SoundEntry& e) {
     if (e.lmt.empty()) return "不限";
@@ -441,15 +455,19 @@ static void PlayPreviewFile(const std::wstring& path, float gain, unsigned delay
 } // namespace
 
 App::App() {
-    // 数据目录优先：<exe目录>\WeaponSoundEnhance\ ；旧布局(与 exe 同目录)兼容
-    std::vector<std::string> cand;
-    cand.push_back(ExeDir() + "WeaponSoundEnhance\\WeaponSoundEnhance.ini");
-    cand.push_back(ExeDir() + "WeaponSoundEnhance.ini");
+    // 优先加载"游戏实际读取的那份" ini（GUI 可能被放在别处，比如发布包解压目录里；
+    // 之前先找 exe 同目录，结果 GUI 在改 A 文件、游戏在读 B 文件 —— 切组合/改动作全都没反应）。
     std::string gdir;
-    if (FindGameExeDir(gdir)) {
-        cand.push_back(gdir + "nativePC\\plugins\\WeaponSoundEnhance\\WeaponSoundEnhance.ini");
+    const bool haveGame = FindGameExeDir(gdir);
+    if (haveGame)
+        mGameIni = gdir + "nativePC\\plugins\\WeaponSoundEnhance\\WeaponSoundEnhance.ini";
+    std::vector<std::string> cand;
+    if (haveGame) {
+        cand.push_back(mGameIni);
         cand.push_back(gdir + "nativePC\\plugins\\WeaponSoundEnhance.ini");
     }
+    cand.push_back(ExeDir() + "WeaponSoundEnhance\\WeaponSoundEnhance.ini");
+    cand.push_back(ExeDir() + "WeaponSoundEnhance.ini");
     for (const auto& p : cand) {
         if (LoadConfig(p, cfg)) {
             EnrichNames();
@@ -977,6 +995,31 @@ void App::DrawEntries() {
 }
 
 void App::DrawStatus() {
+    // 关键提示：正在编辑的 ini 必须就是游戏读取的那份，否则怎么改都没反应
+    if (cfg.loaded && !cfg.path.empty()) {
+        const bool same = !mGameIni.empty() && SamePath(cfg.path, mGameIni);
+        if (same) {
+            ImGui::TextDisabled("配置文件: %s", ClipText(cfg.path, 620.0f * dpiScale).c_str());
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", cfg.path.c_str());
+        } else if (!mGameIni.empty()) {
+            ImGui::TextColored(C_AMBER, "⚠ 正在编辑的不是游戏读取的那份配置：");
+            ImGui::SameLine(0, 6);
+            if (ImGui::SmallButton("切换到游戏目录的 ini")) SwitchToGameIni();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("游戏读的是:\n%s\n\n当前编辑:\n%s\n\n"
+                                  "点了会切过去（那份已存在就直接加载，不存在就把当前配置保存到那里）。",
+                                  mGameIni.c_str(), cfg.path.c_str());
+            ImGui::SameLine(0, 10);
+            ImGui::TextDisabled("游戏读: %s", ClipText(mGameIni, 420.0f * dpiScale).c_str());
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", mGameIni.c_str());
+        } else {
+            ImGui::TextDisabled("配置文件: %s", ClipText(cfg.path, 620.0f * dpiScale).c_str());
+        }
+        if (cfg.entries.empty()) {
+            ImGui::SameLine(0, 12);
+            ImGui::TextColored(C_AMBER, "（当前配置没有任何动作条目 → 游戏里不会有音效）");
+        }
+    }
     ImGui::TextDisabled("%s", status.c_str());
     ImGui::SameLine(0, 20);
     ImGui::TextDisabled("| 目录: %s", BaseDir().c_str());
@@ -1900,6 +1943,28 @@ void App::Load(const std::string& path) {
         mDirty = false;
     } else {
         status = "加载失败: " + path;
+    }
+}
+
+// 切到游戏实际读取的那份 ini：已存在就加载它，不存在就把当前配置保存过去
+void App::SwitchToGameIni() {
+    if (mGameIni.empty()) { status = "找不到游戏目录（游戏没在运行？先用【另存为】存到 plugins\\WeaponSoundEnhance\\ 下）"; return; }
+    if (FsExists(mGameIni)) {
+        Load(mGameIni);
+        status = "已切到游戏读取的配置: " + mGameIni;
+        return;
+    }
+    const std::string old = cfg.path;
+    cfg.path = mGameIni;
+    cfg.loaded = true;
+    if (SaveConfig(cfg.path, cfg)) {
+        mDirty = false;
+        mSaveFlash = 2.0f;
+        SetFsmDbDir(BaseDir());
+        ReloadFsmDb();
+        status = "已把当前配置保存到游戏目录: " + mGameIni + "（原来的 " + old + " 没动）";
+    } else {
+        status = "保存到游戏目录失败: " + mGameIni;
     }
 }
 

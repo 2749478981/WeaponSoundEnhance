@@ -66,6 +66,7 @@ struct App {
     } editor;
 
     bool fsmWinOpen = false;   // 启动时不弹 FSM 查询窗（点工具栏「FSM 查询」再开）
+    std::string mGameIni;      // 游戏实际读取的那份 ini（<游戏目录>\nativePC\plugins\WeaponSoundEnhance\...）
     bool idWinOpen = false;    // 共享动作 ID 库窗口（点工具栏「上传ID」打开）
     char fsmQuery[160] = {};
     int fsmWeaponFilter = -1;
@@ -123,4 +124,5 @@ private:
     void SubmitIdsToGithub();
     void FetchLatestFsmDb();
     void MergeOldIni();   // 合并旧版 ini 的动作条目（升级不丢配置）
+    void SwitchToGameIni();   // 切到游戏实际读取的 ini（当前那份不是它时用）
 };
