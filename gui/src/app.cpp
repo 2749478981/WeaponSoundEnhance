@@ -135,10 +135,13 @@ static std::string TermsToExpr(const std::vector<CondTerm>& ts) {
 // ---- 内置预设：一条就是一整套"成败判定"，用户只要挑两个 wav ----
 struct JudgePreset {
     const char* name;
-    int  weapon;
+    int  weapon;              // target 为 1 时无意义
+    int  target;              // 0 = 玩家动作  1 = 怪物动作
+    const char* monster;      // target 为 1 时的怪物名
     const char* lmt;          // 逗号分隔
     int  delayMs, timeoutMs, offsetMs;
-    struct { const char* expr; bool atEnd; const char* label; } conds[3];
+    bool endOnAction;         // false = 只看时间（CheckEndOn=time）
+    struct { const char* expr; bool atEnd; const char* label; const char* chat; } conds[3];
     const char* fallbackLabel;   // 都不成立时（默认音效池）的含义
     const char* note;
 };
@@ -153,24 +156,37 @@ static const char* const kMonsters[] = {
 static const int kMonsterCount = (int)(sizeof(kMonsters) / sizeof(kMonsters[0]));
 
 static const JudgePreset kPresets[] = {
-    { "太刀 · 登龙 命中/落空", 3, "49326", 0, 2500, 150,
-      { { "dmg>0", false, "命中" }, { nullptr, false, nullptr } },
+    { "太刀 · 登龙 命中/落空", 3, 0, "", "49326", 0, 2500, 150, true,
+      { { "dmg>0", false, "命中", "" }, { nullptr, false, nullptr, nullptr } },
       "落空",
       "在登龙命中或落空时分别播放不同的wav文件。" },
 
-    { "太刀 · 大居 成功/失败", 3, "49461,49462,49463", 0, 3000, 150,
-      { { "dAura<0", false, "失败（掉刃）" }, { "dmg>0", true, "成功" }, { nullptr, false, nullptr } },
+    { "太刀 · 大居 成功/失败", 3, 0, "", "49461,49462,49463", 0, 3000, 150, true,
+      { { "dAura<0", false, "失败（掉刃）", "" }, { "dmg>0", true, "成功", "" },
+        { nullptr, false, nullptr, nullptr } },
       "失败（完全落空）",
       "大居成功需要打出伤害且不掉刃，所以在判定窗口结束时进行判定，"
       "因勾选了动作结束也作为判定时机，所以在最晚出伤时间加上余量的时候进行判定" },
 
-    { "大剑 · 真蓄 命中/落空", 0, "49298,49341,49342,49427,49428,49429", 1200, 3500, 150,
-      { { "dmg>0", false, "命中" }, { nullptr, false, nullptr } },
+    { "大剑 · 真蓄 命中/落空", 0, 0, "", "49298,49341,49342,49427,49428,49429",
+      1200, 3500, 150, true,
+      { { "dmg>0", false, "命中", "" }, { nullptr, false, nullptr, nullptr } },
       "落空",
       "真蓄两段：第一段约 0.65 秒、伤害小，第二段约 1.7~2.1 秒、伤害大。"
       "计伤起点设在 1200ms 正好卡在两段中间，只认第二段。" },
+
+    { "黑龙 · 科目三 成功", 3, 1, "黑龙", "33029", 3000, 8000, 0, false,
+      { { "dmg>0", false, "成功",
+          "<STYL MOJI_YELLOW_DEFAULT>至尊太刀侠科目三成功！全体猎人收刀敬礼！</STYL>" },
+        { nullptr, false, nullptr, nullptr } },
+      "失败",
+      "黑龙二转三相变的最后一段是 33029（约 4.7 秒），大居就顶在这里。"
+      "整个相变期间黑龙无敌、血量一点不掉，伤害要到 33029 结束之后才进得去，"
+      "所以窗口里出现伤害就说明最后那下登龙打上了。实测出伤在 5.25 秒，"
+      "判定起点 3000ms 把大居和中间的突刺挡掉，只认登龙。" },
 };
-static const int kPresetCount = 3;
+
+static const int kPresetCount = 4;
 
 void FillLmtBuf(char* buf, size_t n, const std::vector<int>& lmt) {
     std::string s;
@@ -1040,6 +1056,7 @@ void App::OpenEditorEdit(int index) {
     editor.index = index;
     const SoundEntry& e = cfg.entries[index];
     editor.target = e.target;
+    snprintf(editor.defChatBuf, sizeof(editor.defChatBuf), "%s", e.defChat.c_str());
     snprintf(editor.monsterBuf, sizeof(editor.monsterBuf), "%s", e.monsterName.c_str());
     editor.weaponType = e.weaponType;
     editor.fsmId = e.fsmId;
@@ -1062,6 +1079,7 @@ void App::OpenEditorEdit(int index) {
         r.atEnd  = c.atEnd;
         r.parsed = ParseExprToTerms(c.expr, r.terms);
         if (!r.parsed) r.rawExpr = c.expr;
+        snprintf(r.chatBuf, sizeof(r.chatBuf), "%s", c.chat.c_str());
         r.pool = c.pool.specs;
         editor.conds.push_back(std::move(r));
     }
@@ -1095,6 +1113,7 @@ void App::OpenEditorEdit(int index) {
 void App::ApplyEditor() {
     SoundEntry e;
     e.target = editor.target;
+    e.defChat = Trim(editor.defChatBuf);
     e.monsterName = Trim(editor.monsterBuf);
     e.weaponType = (editor.target == 1) ? -1 : editor.weaponType;
     e.fsmId = editor.fsmId;
@@ -1142,8 +1161,10 @@ void App::ApplyEditor() {
             CondSpec c;
             c.expr  = r.parsed ? TermsToExpr(r.terms) : r.rawExpr;
             c.atEnd = r.atEnd;
+            c.chat  = Trim(r.chatBuf);
             c.pool.specs = r.pool;
-            if (c.expr.empty() || c.pool.empty()) continue;
+            // 只配了喊话没配音效的条件也要留下
+            if (c.expr.empty() || (c.pool.empty() && c.chat.empty())) continue;
             e.conds.push_back(std::move(c));
         }
     }
@@ -1338,11 +1359,14 @@ void App::DrawEditorDetached() {
         editor.conds.clear();
         if (editor.judgePreset >= 1 && editor.judgePreset <= kPresetCount) {
             const JudgePreset& ps = kPresets[editor.judgePreset - 1];
-            editor.weaponType     = ps.weapon;
+            editor.target         = ps.target;
+            if (ps.target == 1)
+                snprintf(editor.monsterBuf, sizeof(editor.monsterBuf), "%s", ps.monster);
+            editor.weaponType     = (ps.target == 1) ? -1 : ps.weapon;
             editor.checkDelayMs   = ps.delayMs;
             editor.checkTimeoutMs = ps.timeoutMs;
             editor.checkOffsetMs  = ps.offsetMs;
-            editor.endOnAction    = true;
+            editor.endOnAction    = ps.endOnAction;
             snprintf(editor.lmtBuf, sizeof(editor.lmtBuf), "%s", ps.lmt);
             for (int i = 0; ps.conds[i].expr; ++i) {
                 CondRow r;
@@ -1350,6 +1374,8 @@ void App::DrawEditorDetached() {
                 r.label  = ps.conds[i].label;
                 r.parsed = ParseExprToTerms(ps.conds[i].expr, r.terms);
                 if (!r.parsed) r.rawExpr = ps.conds[i].expr;
+                snprintf(r.chatBuf, sizeof(r.chatBuf), "%s",
+                         ps.conds[i].chat ? ps.conds[i].chat : "");
                 if (i < (int)keep.size()) r.pool = keep[i];
                 editor.conds.push_back(r);
             }
@@ -1473,6 +1499,16 @@ void App::DrawEditorDetached() {
                     ImGui::PopID();
                 }
                 if (r.pool.empty()) ImGui::TextDisabled("(未添加音效)");
+
+                ImGui::SetNextItemWidth(430 * dpiScale);
+                ImGui::InputTextWithHint("队伍喊话", "留空=不发；命中这条时发给全队",
+                                         r.chatBuf, sizeof(r.chatBuf));
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("命中这条条件时往队伍频道发一条消息，队友都看得见。\n"
+                          "留空 = 不发。支持游戏的样式标签，例如\n"
+                          "<STYL MOJI_YELLOW_DEFAULT>文字</STYL>\n"
+                          "注意这是真的发到队伍频道，刷屏会招人烦。");
+
                 if (ImGui::Button("浏览...")) {
                     std::vector<SoundSpec> tmp;
                     if (BrowseSounds(tmp) > 0)
@@ -1495,6 +1531,15 @@ void App::DrawEditorDetached() {
                                 kPresets[editor.judgePreset - 1].fallbackLabel);
         else
             ImGui::TextDisabled("以上都不成立时，播下面的「默认音效」。");
+
+        ImGui::SetNextItemWidth(430 * dpiScale);
+        ImGui::InputTextWithHint("兜底喊话", "留空=不发；都不成立时发给全队",
+                                 editor.defChatBuf, sizeof(editor.defChatBuf));
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("命中这条条件时往队伍频道发一条消息，队友都看得见。\n"
+                          "留空 = 不发。支持游戏的样式标签，例如\n"
+                          "<STYL MOJI_YELLOW_DEFAULT>文字</STYL>\n"
+                          "注意这是真的发到队伍频道，刷屏会招人烦。");
     }
 
     ImGui::Separator();

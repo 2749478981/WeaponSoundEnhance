@@ -19,6 +19,7 @@ struct CondRow {
     bool parsed = true;
     bool atEnd = false;     // 只在窗口结束时评（写成 SoundEnd:）
     std::string label;      // 预设给的友好名，如"成功"/"失败(掉刃)"
+    char chatBuf[256] = {}; // 该条件命中时发的队伍喊话（Chat:<表达式>=）
     std::vector<SoundSpec> pool;
 };
 
@@ -68,6 +69,7 @@ struct App {
         int  checkOffsetMs = 150;
         bool endOnAction = true;
         int  checkMode = 0;          // 1 = CheckMode=final
+        char defChatBuf[256] = {};   // 兜底触发时发的队伍喊话（Chat=）
         std::vector<CondRow> conds;
     } editor;
 
