@@ -25,7 +25,8 @@
 //  Config: one [Attack...] section per trigger entry. Legacy keys
 //  (WeaponType/ActionLMT/FSMId/Sound/SoundDelay/SoundVol) behave exactly as v1.
 //  v2 additions:
-//    LMT=...            trigger on any of several LMTs (comma list)
+//    LMT=...            trigger on any of several LMTs (comma/space list);
+//                       空 / -1 / any / * / 不限 = 不限(该 FSMId 的所有动作都触发)
 //    Sound:<tag>=...    per-LS-gauge sound set (tag 0..3 or none/white/yellow/red);
 //                       missing tag falls back to the default Sound= set
 //    Group=...          logical-action id: shared by the trigger entries of one
@@ -314,7 +315,7 @@ void LogInit()
 {
     gLogPath = gDataDir + L"WeaponSoundEnhance.log";
     ::DeleteFileW(gLogPath.c_str());
-    Log("WeaponSoundEnhance 2.4 starting");
+    Log("WeaponSoundEnhance 2.5 starting");
     // 旧布局提示：wav 还在 plugins\sounds\ 时自动兼容，但建议搬进数据目录
     const std::wstring oldSounds = gModuleDir + L"sounds";
     if (gDataDir != gModuleDir && DirExistsW(oldSounds) &&
@@ -1247,13 +1248,46 @@ void LoadConfig()
             cur.fsmTarget = std::atoi(val.c_str());
         } else if (key == "ActionLMT" || key == "LMT") {
             std::vector<std::string> toks;
-            SplitList(val, toks);
-            for (const auto& t : toks) {
-                int v = std::atoi(t.c_str());
-                if (v == -1) continue;   // wildcard already covered by empty list
-                bool dup = false;
-                for (int x : cur.lmt) if (x == v) { dup = true; break; }
-                if (!dup) cur.lmt.push_back(v);
+            SplitList(val, toks);          // ';' ',' 分隔
+            for (const auto& t0 : toks) {
+                // 再按空格切一次，容忍 "LMT=49265 49256" 这种写法
+                std::string curTok;
+                std::vector<std::string> parts;
+                for (std::size_t i2 = 0; i2 <= t0.size(); ++i2) {
+                    const char cc = (i2 < t0.size()) ? t0[i2] : '\0';
+                    if (cc == '\0' || cc == ' ' || cc == '\t') {
+                        const std::string p = Trim(curTok);
+                        if (!p.empty()) parts.push_back(p);
+                        curTok.clear();
+                        if (cc == '\0') break;
+                    } else {
+                        curTok += cc;
+                    }
+                }
+                for (const auto& t : parts) {
+                    const std::string low = ToLower(Trim(t));
+                    // 不限：-1 / any / all / * / 不限 → 清空列表（空列表 = 任意 LMT）
+                    if (low == "-1" || low == "any" || low == "all" || low == "*" || low == "不限") {
+                        cur.lmt.clear();
+                        break;
+                    }
+                    // 严格整数：以前用 atoi，"49265-1" 会被静默截断成 49265，
+                    // 用户以为已经改成不限了，实际配置没变 —— 这类项直接忽略并记日志。
+                    bool digits = !t.empty();
+                    const std::size_t st = (t[0] == '+' || t[0] == '-') ? 1 : 0;
+                    if (st >= t.size()) digits = false;
+                    for (std::size_t i3 = st; i3 < t.size() && digits; ++i3)
+                        if (t[i3] < '0' || t[i3] > '9') digits = false;
+                    if (!digits) {
+                        LogD("config: LMT 项 \"%s\" 不是整数，已忽略（空或 -1 = 不限）", t.c_str());
+                        continue;
+                    }
+                    const int v = std::atoi(t.c_str());
+                    if (v < 0) continue;
+                    bool dup = false;
+                    for (int x : cur.lmt) if (x == v) { dup = true; break; }
+                    if (!dup) cur.lmt.push_back(v);
+                }
             }
         } else if (key == "Name") {
             cur.name = val;

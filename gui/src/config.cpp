@@ -269,9 +269,24 @@ bool LoadConfig(const std::string& path, Config& cfg) {
         } else if (key == "FSMId") {
             cur.fsmId = std::atoi(val.c_str());
         } else if (key == "ActionLMT" || key == "LMT") {
-            for (const auto& t : SplitList(val)) {
-                int v = std::atoi(t.c_str());
-                if (v == -1) continue;   // 不限（空列表表达）
+            // 严格解析：只认整数；-1 / any / all / * / 不限 = 不限（清空列表）
+            // （以前用 atoi，手写成 "49265-1" 会被静默截断成 49265）
+            for (const auto& t0 : SplitList(val)) {
+                std::string t = Trim(t0);
+                std::string low = t;
+                for (auto& c : low) if (c >= 'A' && c <= 'Z') c += 32;
+                if (low == "-1" || low == "any" || low == "all" || low == "*" || low == "不限") {
+                    cur.lmt.clear();
+                    break;
+                }
+                bool digits = !t.empty();
+                size_t st = (t[0] == '+' || t[0] == '-') ? 1 : 0;
+                if (st >= t.size()) digits = false;
+                for (size_t k = st; k < t.size() && digits; ++k)
+                    if (t[k] < '0' || t[k] > '9') digits = false;
+                if (!digits) continue;                  // 无法识别 → 忽略（GUI 会提示）
+                const int v = std::atoi(t.c_str());
+                if (v < 0) continue;
                 bool dup = false;
                 for (int x : cur.lmt) if (x == v) { dup = true; break; }
                 if (!dup) cur.lmt.push_back(v);
@@ -402,7 +417,8 @@ bool SaveConfig(const std::string& path, const Config& cfg) {
     o += ";    6=长枪  7=铳枪  8=斩斧  9=盾斧 10=虫棍 11=弓箭 12=轻弩 13=重弩\r\n";
     o += ";  每条 [AttackN] 代表一种派生攻击：\r\n";
     o += ";    WeaponType  ：武器类型（0..13）。-1 = 任意武器。\r\n";
-    o += ";    ActionLMT/LMT：动作 LMT。-1 = 不限；多值用逗号分隔（LMT=）。\r\n";
+    o += ";    ActionLMT/LMT：动作 LMT。不限 = 空 / -1 / any / * / 不限（该 FSMId 的所有动作都触发）；\r\n";
+    o += ";                   多个用逗号分隔（LMT=49265,49256）。只接受整数。\r\n";
     o += ";    FSMId       ：动作状态机 ID。-1 = 不限。\r\n";
     o += ";    三者 AND 关系；命中后从匹配的音效里选音效。\r\n";
     o += ";    Group=              动作组（可选）：同一招的多个触发条目填相同组名\r\n";

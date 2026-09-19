@@ -85,7 +85,7 @@ struct App {
     // 在独立编辑窗口（第二个 ImGui 上下文）中绘制编辑内容；由 main.cpp 的编辑窗渲染循环调用
     void DrawEditorDetached();
 
-private:
+public:
     unsigned long long mLastPoll = 0;
     float mSaveFlash = 0.0f;   // 保存成功提示的剩余显示时间(秒)
     void PollGame();
