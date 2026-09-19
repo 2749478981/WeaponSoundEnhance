@@ -1409,18 +1409,29 @@ void App::DrawEditorDetached() {
         editor.weaponType = wi - 1;
     }
 
-    ImGui::SetNextItemWidth(190 * dpiScale);
-    ImGui::InputInt("FSMId (-1=不限)", &editor.fsmId, 1, 100);
+    // 一行只放两个数字框。ImGui 的标签画在控件右边，标签越长占的横向空间越多，
+    // 原来这行挤了 FSMId + FSMTarget + LMT 三个，加起来一千出头，
+    // 编辑窗没那么宽，LMT 就被推出右边界看不见了。
+    // 「(-1=不限)」也从标签挪进了气泡：这句话每次都占着地方，但只有第一次看的人需要。
+    ImGui::SetNextItemWidth(150 * dpiScale);
+    ImGui::InputInt("FSMId", &editor.fsmId, 1, 100);
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("动作状态机 ID；同一招在不同 FSM 层(target)里 id 可能重号");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(180 * dpiScale);
-    ImGui::InputInt("FSMTarget (-1=不限)", &editor.fsmTarget, 1, 100);
+        ImGui::SetTooltip("动作状态机 ID；-1 = 不限。\n"
+                          "同一招在不同 FSM 层(target)里 id 可能重号");
+    ImGui::SameLine(0, 20);
+    ImGui::SetNextItemWidth(150 * dpiScale);
+    ImGui::InputInt("FSMTarget", &editor.fsmTarget, 1, 100);
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("FSM 目标层。填上可避免跨层 id 重号误触发；-1 = 只比 FSMId（旧行为）");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(280 * dpiScale);
-    ImGui::InputTextWithHint("##lmt", "LMT（逗号分隔；空/-1=不限）", editor.lmtBuf, sizeof(editor.lmtBuf));
+        ImGui::SetTooltip("FSM 目标层；-1 = 只比 FSMId（旧行为）。\n"
+                          "填上可避免跨层 id 重号误触发");
+
+    // LMT 单独一行：要填的是一串逗号分隔的数字，给足宽度
+    ImGui::SetNextItemWidth(430 * dpiScale);
+    ImGui::InputTextWithHint("LMT", "逗号分隔，如 28787,28788；留空或 -1 = 不限",
+                             editor.lmtBuf, sizeof(editor.lmtBuf));
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("动作 ID。一招有多个方向版本时几个 ID 都要填，\n"
+                          "只填一个就会漏掉一半。");
 
     // =====================================================================
     //  判定：动作匹配上只是「开窗」，接着盯一段时间，按条件挑音效池。

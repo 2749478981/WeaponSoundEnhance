@@ -44,6 +44,7 @@
 #endif
 #include <windows.h>
 #include <objbase.h>
+#include <shlobj.h>
 #include <mmsystem.h>
 
 #include <cstdint>
@@ -266,6 +267,12 @@ HMODULE gModule = nullptr;
 volatile LONG gStop = 0;
 std::wstring gModuleDir;   // DLL 所在目录（ends with '\'）
 std::wstring gDataDir;     // 数据目录：<ModuleDir>WeaponSoundEnhance\ ，旧布局回退到 ModuleDir
+// 对外露出的产品名。文件名（dll/ini/数据目录）还是 WeaponSoundEnhance —— 那些
+// 一改，所有老用户的配置就都找不着了。这里只管「给人看的名字」：桌面快捷方式、
+// 窗口标题这类。将来改名动这两行就够。
+const wchar_t* const kAppNameW = L"WeaponSoundEnhance";
+const wchar_t* const kAppDescW = L"WeaponSoundEnhance 配置工具";
+
 std::wstring gIniPath;
 std::wstring gLogPath;
 volatile int gDebug = 0;   // ini Debug=1 enables per-play / heartbeat logging
@@ -1129,6 +1136,7 @@ std::uintptr_t gQuestRoot   = 0x14500ED30ULL;  // 任务结构入口
 std::uint32_t gQuestDmgOff  = 0x17088;         // 任务累计伤害（只含你自己）
 
 volatile int g_useChatEcho = 1;
+int g_desktopShortcut = 1;        // 首次运行时在桌面建 GUI 的快捷方式
 volatile int g_useChatCommands = 1;
 volatile int g_hotkeysEnabled = 1;   // 启用/关闭热键（ini [WeaponSoundEnhance] Hotkeys=0）
 
@@ -1935,6 +1943,7 @@ void LoadConfig()
                 else if (key == "Volume") gVolumePct = ClampInt(std::atoi(val.c_str()), 0, 100);
                 else if (key == "Enabled") gEnabled = std::atoi(val.c_str()) != 0;
                 else if (key == "MoreSounds") gMoreSounds = std::atoi(val.c_str()) != 0;
+                else if (key == "DesktopShortcut") g_desktopShortcut = std::atoi(val.c_str()) != 0;
                 else if (key == "ChatEcho") g_useChatEcho = std::atoi(val.c_str()) != 0;
                 else if (key == "ChatCommands") g_useChatCommands = std::atoi(val.c_str()) != 0;
                 else if (key == "Hotkeys") g_hotkeysEnabled = std::atoi(val.c_str()) != 0;
@@ -2679,6 +2688,93 @@ void TickJudgeEntry(Attack& e, bool match, std::uint64_t nowMs,
 //  Worker threads
 // ===========================================================================
 
+
+// ===========================================================================
+//  桌面快捷方式
+//
+//  用户多半是把 zip 拖进狩技盒子这类管理器装的 —— 装完只是游戏目录里多了
+//  几个文件，没人会去 nativePC\plugins\ 里翻 GUI 在哪。所以第一次进游戏时
+//  往桌面放一个快捷方式。
+//
+//  只建一次，建完写个标记文件。用户后来把快捷方式删了，那是他不想要，
+//  不能每次开游戏又给他放回去 —— 这也是为什么标记文件不能用「快捷方式
+//  还在不在」来代替。
+//
+//  失败也照样写标记：多半是桌面目录没写权限，每次开游戏重试一遍没意义。
+//  不想要可以在 ini 里 DesktopShortcut=0。
+// ===========================================================================
+bool MakeShortcutW(const std::wstring& target, const std::wstring& lnk,
+                   const std::wstring& workDir, const std::wstring& desc)
+{
+    IShellLinkW* sl = nullptr;
+    if (FAILED(::CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER,
+                                  IID_IShellLinkW, reinterpret_cast<void**>(&sl))) ||
+        sl == nullptr)
+        return false;
+
+    sl->SetPath(target.c_str());
+    sl->SetWorkingDirectory(workDir.c_str());
+    sl->SetDescription(desc.c_str());
+    sl->SetIconLocation(target.c_str(), 0);
+
+    bool ok = false;
+    IPersistFile* pf = nullptr;
+    if (SUCCEEDED(sl->QueryInterface(IID_IPersistFile, reinterpret_cast<void**>(&pf))) &&
+        pf != nullptr) {
+        ok = SUCCEEDED(pf->Save(lnk.c_str(), TRUE));
+        pf->Release();
+    }
+    sl->Release();
+    return ok;
+}
+
+void EnsureDesktopShortcut()
+{
+    if (g_desktopShortcut == 0) return;
+
+    const std::wstring marker = gDataDir + L"shortcut.done";
+    if (FileExistsW(marker)) return;
+
+    // v2.3 之后 GUI 在数据子目录里；旧布局还在 DLL 同目录
+    std::wstring exe = gDataDir + L"WeaponSoundEnhanceGUI.exe";
+    std::wstring dir = gDataDir;
+    if (!FileExistsW(exe)) {
+        exe = gModuleDir + L"WeaponSoundEnhanceGUI.exe";
+        dir = gModuleDir;
+    }
+    if (!FileExistsW(exe)) {
+        Log("desktop shortcut: 没找到 GUI，跳过");
+        return;
+    }
+
+    wchar_t desktop[MAX_PATH] = {};
+    if (FAILED(::SHGetFolderPathW(nullptr, CSIDL_DESKTOPDIRECTORY, nullptr,
+                                  SHGFP_TYPE_CURRENT, desktop))) {
+        Log("desktop shortcut: 取不到桌面目录，跳过");
+        return;
+    }
+    const std::wstring lnk = std::wstring(desktop) + L"\\" + kAppNameW + L".lnk";
+
+    // 先落标记再动手：失败多半是权限问题，重试也没用，别每次开游戏都折腾一遍
+    HANDLE h = ::CreateFileW(marker.c_str(), GENERIC_WRITE, 0, nullptr,
+                             CREATE_ALWAYS, FILE_ATTRIBUTE_HIDDEN, nullptr);
+    if (h != INVALID_HANDLE_VALUE) ::CloseHandle(h);
+
+    if (FileExistsW(lnk)) {
+        Log("desktop shortcut: 桌面上已经有了，不覆盖");
+        return;
+    }
+
+    // audio::Engine::Init() 已经在这个线程上 CoInitializeEx 过了；这里再来一次
+    // 会返回 S_FALSE，配对的 CoUninitialize 只是把计数减回去，不会把 COM 关掉。
+    const HRESULT hrCo = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    const bool ok = MakeShortcutW(exe, lnk, dir, kAppDescW);
+    if (SUCCEEDED(hrCo)) ::CoUninitialize();
+
+    if (ok) Log("desktop shortcut created: %s", strconv::ToUtf8(lnk).c_str());
+    else    Log("desktop shortcut: 创建失败（桌面目录可能不可写）");
+}
+
 DWORD WINAPI WorkerProc(LPVOID)
 {
     while (::GetModuleHandleW(L"MonsterHunterWorld.exe") == nullptr &&
@@ -2690,6 +2786,7 @@ DWORD WINAPI WorkerProc(LPVOID)
     ResolveGameBase();
     audio::g_audio.Init();
     PreloadSounds();
+    EnsureDesktopShortcut();
 
     std::mt19937 rng(static_cast<unsigned>(::GetTickCount64() ^ 0x9E3779B9u));
     std::uint64_t lastHeartbeat = 0;

@@ -20,7 +20,7 @@ if [ "$WHAT" = "dll" ] || [ "$WHAT" = "all" ]; then
     mkdir -p out
     g++ -shared $COMMON -D_WINDOWS -D_USRDLL \
         -o out/WeaponSoundEnhance.dll WeaponSoundEnhance.cpp \
-        -lole32 -lwinmm
+        -lole32 -luuid -lshell32 -lwinmm
     ls -l out/WeaponSoundEnhance.dll
 fi
 
