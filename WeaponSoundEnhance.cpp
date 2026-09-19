@@ -358,6 +358,566 @@ void LogD(const char* fmt, ...)
 } // namespace plugin
 
 // ===========================================================================
+//  怪物探针 —— 纯数据采集，默认关闭（ini [WeaponSoundEnhance] MonsterProbe=1）
+//
+//  为什么是扫内存而不是挂钩子：
+//  游戏没有「怪物列表」这种全局变量可读。LuaEngine 的做法是 inline hook 怪物
+//  构造/析构函数（0x141CA1F00 / 0x141CA47E0）自己维护一张表。我们要在同一个
+//  地址上再挂一层，就得和它的 hook 链式共存 —— 能work，但崩的是游戏进程，
+//  采集阶段不值得冒这个险。
+//
+//  这里改成：按热键扫一遍游戏的私有堆，用「实体布局」把怪物认出来，之后只
+//  轮询扫到的那几个指针。扫描一次性，轮询纯读 —— 全程不写游戏内存、不改游戏
+//  代码、不碰任何已有的 hook。
+//
+//  偏移来自 LuaEngine 的 Engine_monster.lua，怪物和玩家共用同一套实体布局
+//  （插件读玩家用的就是其中几个）。
+// ===========================================================================
+namespace plugin { void ShowMessage(const char* utf8, bool emphasized); }
+
+namespace monster {
+
+const std::uint32_t OFF_ACT     = 0x468;    // *(m+0x468) -> 动作对象
+const std::uint32_t OFF_LMT     = 0xE9C4;   //    +0xE9C4  动作 LMT (int)
+const std::uint32_t OFF_FRAME   = 0x10C;    //    +0x10C   当前帧 (float)
+const std::uint32_t OFF_FRAMEND = 0x114;    //    +0x114   总帧   (float)
+const std::uint32_t OFF_FSMTGT  = 0x6274;   // m+0x6274 fsmTarget (int)
+const std::uint32_t OFF_FSMID   = 0x6278;   // m+0x6278 fsmID     (int)
+const std::uint32_t OFF_HPOBJ   = 0x7670;   // *(m+0x7670) -> 血量对象
+const std::uint32_t OFF_HPMAX   = 0x60;     //    +0x60 (float)
+const std::uint32_t OFF_HPCUR   = 0x64;     //    +0x64 (float)
+
+// 认怪物的门槛。玩家血上限撑死 200 出头，怪物动辄上千。
+float gHpMin = 500.0f;
+float gHpMaxCap = 1000000.0f;
+int   gScanBudgetMs = 1500;     // 扫描时间上限，宁可扫不全也不能卡死游戏
+
+struct Snap {
+    float        hpMax = 0.0f, hp = 0.0f, frame = 0.0f, frameEnd = 0.0f;
+    std::int32_t lmt = -1, fsm = -1, fsmTgt = -1;
+};
+
+struct Mon {
+    std::uintptr_t ptr = 0;
+    Snap           last;
+    std::uint64_t  actStart = 0;
+    float          hpAtStart = 0.0f;
+    int            changes = 0;
+    bool           alive = true;
+};
+
+volatile int  gEnabled  = 0;
+volatile LONG gScanReq  = 0;        // 热键只置这个标志，真正的扫描在轮询线程做
+std::vector<Mon> gList;             // 只有轮询线程碰它
+
+// 自动扫描：进任务后自己扫，不用按键。ini MonsterAutoScan=0 可关。
+int gAutoScan     = 1;
+int gAutoFirstMs  = 5000;    // 进场景后等这么久再扫，给怪物生成留时间
+int gAutoRetryMs  = 15000;  // 没扫到时的重试间隔
+int gAutoMaxTries = 20;     // 重试上限（单次扫描已经只要几百毫秒，可以放开）
+std::uint64_t gNextAutoAt = 0;
+volatile int gHud = 0;          // 把怪物当前动作显示在屏幕上（ini MonsterHud / Ctrl+F7）
+std::uint64_t gHudLastMs = 0;
+int gHudMinGapMs = 200;         // 屏显最小间隔，免得动作连切时刷屏
+
+// 动作 ID 小于这个值的一律当过渡噪声丢掉。实测这些只持续一个轮询周期
+// （60ms 出头），是动画对象切换的瞬间被读到的中间态，不是真招式。
+int gMinActionId = 100;
+
+long long gDeepProbes = 0;   // 真正下到 VirtualQuery 的候选数，用来看预筛好不好使
+int  gAutoTries  = 0;
+bool gWasInScene = false;
+
+// 一次进程内读取。比 mem::ReadVal 强的地方在于读失败只是返回 false，
+// 而且一次调用能取一整块，不像 IsReadable 每个字段都要一次 VirtualQuery。
+inline bool Rpm(std::uintptr_t a, void* out, std::size_t n)
+{
+    SIZE_T got = 0;
+    return ::ReadProcessMemory(::GetCurrentProcess(), reinterpret_cast<LPCVOID>(a),
+                               out, n, &got) && got == n;
+}
+
+// 已知 act/hpo/fsm 时的校验。顺序按「最挑剔的先读」排 —— 绝大多数候选
+// 在第一次调用就被血量范围否掉，不会走到后面。
+// （之前每个候选固定九次 VirtualQuery，实测 175 次/MB，直接把游戏拖死。）
+bool Validate(std::uintptr_t act, std::uintptr_t hpo,
+              std::int32_t fsm, std::int32_t fsmTgt, Snap& o)
+{
+    float hpv[2];                        // +0x60 上限, +0x64 当前
+    if (!Rpm(hpo + OFF_HPMAX, hpv, sizeof(hpv))) return false;
+    if (!(hpv[0] > gHpMin && hpv[0] < gHpMaxCap)) return false;
+    if (!(hpv[1] >= 1.0f && hpv[1] <= hpv[0]))    return false;   // 血量不足 1 的基本是垃圾
+
+    float fb[3];                         // +0x10C 当前帧 … +0x114 总帧
+    if (!Rpm(act + OFF_FRAME, fb, sizeof(fb))) return false;
+    const float frame = fb[0], frameEnd = fb[2];
+    // 真实动作的总帧是几十到几百。之前门槛是 >0，把「帧 0.0/0.2」这种
+    // 垃圾全放进来了。
+    if (!(frameEnd > 1.0f && frameEnd < 3000.0f)) return false;   // 真实动作总帧几十到几百
+    if (!(frame >= 0.0f && frame <= frameEnd + 1.0f)) return false;
+
+    std::int32_t lmt = 0;
+    if (!Rpm(act + OFF_LMT, &lmt, sizeof(lmt))) return false;
+    if (lmt < gMinActionId || lmt > 200000) return false;
+
+    o.hpMax = hpv[0]; o.hp = hpv[1];
+    o.frame = frame;  o.frameEnd = frameEnd;
+    o.lmt = lmt;      o.fsm = fsm;  o.fsmTgt = fsmTgt;
+    return true;
+}
+
+// 只有指针时的完整读取（跟踪阶段用）
+bool Read(std::uintptr_t m, Snap& o)
+{
+    std::uintptr_t act = 0, hpo = 0;
+    if (!Rpm(m + OFF_ACT,   &act, sizeof(act)) || act < 0x10000) return false;
+    if (!Rpm(m + OFF_HPOBJ, &hpo, sizeof(hpo)) || hpo < 0x10000) return false;
+    std::int32_t f1 = 0, f2 = 0;
+    if (!Rpm(m + OFF_FSMID,  &f1, sizeof(f1))) return false;
+    if (!Rpm(m + OFF_FSMTGT, &f2, sizeof(f2))) return false;
+    if (f1 < 0 || f1 > 100000 || f2 < 0 || f2 > 100000) return false;
+    return Validate(act, hpo, f1, f2, o);
+}
+
+// 扫一段地址范围。返回是否因为超时而中断。
+bool ScanRange(std::vector<Mon>& out,
+               std::uintptr_t lo, std::uintptr_t hi, std::uintptr_t selfEnt,
+               std::vector<unsigned char>& buf, std::uint64_t deadline,
+               int& regions, std::uint64_t& bytes)
+{
+    const std::uintptr_t TAIL  = OFF_HPOBJ + 0x10;
+    const std::uintptr_t CHUNK = 4u << 20;
+    std::uintptr_t addr = lo;
+    MEMORY_BASIC_INFORMATION mbi;
+
+    while (addr < hi && ::VirtualQuery(reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi)) == sizeof(mbi)) {
+        const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress);
+        const std::uintptr_t size = static_cast<std::uintptr_t>(mbi.RegionSize);
+        if (size == 0) break;
+
+        const bool usable =
+            mbi.State == MEM_COMMIT &&
+            mbi.Type  == MEM_PRIVATE &&
+            (mbi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE)) != 0 &&
+            (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) == 0;
+
+        if (usable && size > TAIL) {
+            ++regions;
+            bytes += size;
+            std::uintptr_t off = 0;
+            while (off + TAIL < size) {
+                if (::GetTickCount64() > deadline) return true;
+
+                const std::uintptr_t left = size - off;
+                const std::size_t want = static_cast<std::size_t>(left < CHUNK ? left : CHUNK);
+                if (buf.size() < want) buf.resize(want);
+
+                SIZE_T got = 0;
+                // 不直接解引用：扫的时候别的线程可能正好释放这块内存。
+                if (!::ReadProcessMemory(::GetCurrentProcess(),
+                                         reinterpret_cast<LPCVOID>(base + off),
+                                         buf.data(), want, &got) || got <= TAIL)
+                    break;
+
+                const std::size_t lim = static_cast<std::size_t>(got) - TAIL;
+                // 实体对象至少 16 字节对齐，按 16 步进，省一半时间。
+                //
+                // 这里的筛选顺序是性能命门：Read() 要读 9 个字段，而每次
+                // mem::ReadVal 都要过一遍 IsReadable，也就是一次 VirtualQuery
+                // 系统调用 —— 一个候选就是九次陷内核。之前只用「两个字段长得
+                // 像指针」预筛，在堆里几十分之一都能过，上百万个候选乘九次
+                // 系统调用，直接把游戏卡死（用户那边表现为崩溃）。
+                //
+                // 所以能在缓冲区里判的一律先判完：fsmID / fsmTarget 都在对象
+                // 自己身上（偏移 < TAIL，一定在缓冲区内），范围检查极便宜又
+                // 极有区分度。只有全过了才去碰真内存。
+                for (std::size_t k = 0; k < lim; k += 16) {
+                    if ((k & 0xFFFF) == 0 && ::GetTickCount64() > deadline) return true;
+
+                    std::int32_t f1 = 0, f2 = 0;
+                    std::memcpy(&f1, buf.data() + k + OFF_FSMID, sizeof(f1));
+                    if (f1 < 0 || f1 > 100000) continue;
+                    std::memcpy(&f2, buf.data() + k + OFF_FSMTGT, sizeof(f2));
+                    if (f2 < 0 || f2 > 100000) continue;
+
+                    std::uintptr_t a = 0, h = 0;
+                    std::memcpy(&a, buf.data() + k + OFF_ACT, sizeof(a));
+                    if (a < 0x10000 || a > 0x7FFFFFFFFFFFULL || (a & 15)) continue;
+                    std::memcpy(&h, buf.data() + k + OFF_HPOBJ, sizeof(h));
+                    if (h < 0x10000 || h > 0x7FFFFFFFFFFFULL || (h & 15)) continue;
+
+                    const std::uintptr_t m = base + off + k;
+                    if (m == selfEnt) continue;
+
+                    ++gDeepProbes;          // 走到这一步才开始花系统调用
+                    // act/hpo/fsm 已经从缓冲区里拿到了，别再读一遍
+                    Snap sp;
+                    if (!Validate(a, h, f1, f2, sp)) continue;
+
+                    bool dup = false;
+                    for (std::size_t q = 0; q < out.size(); ++q)
+                        if (out[q].ptr == m) { dup = true; break; }
+                    if (dup) continue;
+
+                    Mon mo;
+                    mo.ptr = m; mo.last = sp;
+                    mo.actStart = ::GetTickCount64();
+                    mo.hpAtStart = sp.hp;
+                    out.push_back(mo);
+                    if (out.size() >= 16) return false;
+                }
+                if (left <= CHUNK) break;
+                off += CHUNK - TAIL;      // 重叠，免得跨块对象被漏掉
+            }
+        }
+        addr = base + size;
+    }
+    return false;
+}
+
+// 扫描线程和轮询线程之间的交接。扫描全程只碰自己的局部容器，
+// 扫完才在锁里把结果换给轮询线程 —— 两边不会同时动同一个 vector。
+std::mutex gResultMx;
+std::vector<Mon> gPending;
+volatile LONG gHasPending = 0;
+volatile LONG gScanBusy   = 0;
+
+void ScanBody()
+{
+    std::vector<Mon> found;
+    gDeepProbes = 0;
+    const std::uint64_t t0 = ::GetTickCount64();
+    const std::uint64_t deadline = t0 + (std::uint64_t)gScanBudgetMs;
+    plugin::Log("[怪物扫描] 开始（预算 %d ms）", gScanBudgetMs);
+
+    // 玩家实体也符合布局，先拿到好排除掉；顺便拿它当锚点
+    std::uintptr_t selfEnt = 0;
+    {
+        std::uintptr_t mgr = 0;
+        if (mem::ReadVal(player::gRoot, mgr) && mgr != 0) {
+            const std::uint32_t c0[1] = { 0x50 };
+            selfEnt = mem::Walk(mgr, c0, 1);
+        }
+    }
+
+    std::vector<unsigned char> buf;
+    int regions = 0;
+    std::uint64_t bytes = 0;
+    bool timedOut = false;
+    const char* how = "全量";
+
+    SYSTEM_INFO si;
+    ::GetSystemInfo(&si);
+    const std::uintptr_t loAddr = reinterpret_cast<std::uintptr_t>(si.lpMinimumApplicationAddress);
+    const std::uintptr_t hiAddr = reinterpret_cast<std::uintptr_t>(si.lpMaximumApplicationAddress);
+
+    HMODULE hmod = ::GetModuleHandleW(L"MonsterHunterWorld.exe");
+    const std::uintptr_t modBase = hmod ? reinterpret_cast<std::uintptr_t>(hmod)
+                                        : 0x140000000ULL;
+
+    // 第一轮：模块基址往上。地址探针实测玩家实体在 0x14A1D0080，也就是
+    // 模块上方的私有堆里 —— 实体都在这一带。
+    // 之前从最低地址往上扫，1.5 秒预算全耗在低端那些无关区域上，根本没
+    // 走到这儿就超时了，扫出来的候选全是低 64MB 的垃圾。
+    timedOut = ScanRange(found, modBase, hiAddr, selfEnt, buf, deadline, regions, bytes);
+    plugin::Log("[怪物扫描]   第一轮 模块上方: %d 个区域 / %.0f MB, 深度校验 %.0f 次, 命中 %d 个%s",
+                regions, (double)(bytes >> 20), (double)gDeepProbes,
+                (int)found.size(), timedOut ? " (超时)" : "");
+    how = "模块上方";
+
+    // 还没有就再扫模块下方，一样受同一个截止时间约束
+    if (found.empty() && !timedOut) {
+        regions = 0; bytes = 0;
+        timedOut = ScanRange(found, loAddr, modBase, selfEnt, buf, deadline, regions, bytes);
+        plugin::Log("[怪物扫描]   第二轮 模块下方: %d 个区域 / %.0f MB, 深度校验 %.0f 次, 命中 %d 个%s",
+                    regions, (double)(bytes >> 20), (double)gDeepProbes,
+                    (int)found.size(), timedOut ? " (超时)" : "");
+        how = "模块下方";
+    }
+
+    plugin::Log("[怪物扫描] %s: %d 个区域 / %.0f MB, 用时 %.0fms%s, "
+                "深度校验 %.0f 次, 找到 %d 个候选",
+                how, regions, (double)(bytes >> 20),
+                (double)(::GetTickCount64() - t0),
+                timedOut ? "(超时中断)" : "", (double)gDeepProbes, (int)found.size());
+
+    // 复核：等一小会儿再读一遍。真怪物的动作帧一定在走，纯属撞上布局的
+    // 垃圾数据基本是死的 —— 这一步把误报标出来。
+    if (!found.empty()) {
+        ::Sleep(300);
+        for (std::size_t i = 0; i < found.size(); ++i) {
+            Mon& mo = found[i];
+            Snap sp;
+            if (!Read(mo.ptr, sp)) {
+                mo.alive = false;
+                plugin::Log("[怪物扫描]   #%d ptr=%p  复核失败，已丢弃",
+                            (int)i, reinterpret_cast<void*>(mo.ptr));
+                continue;
+            }
+            const bool moving = (sp.frame != mo.last.frame) || (sp.lmt != mo.last.lmt) ||
+                                (sp.fsm != mo.last.fsm) || (sp.hp != mo.last.hp);
+            plugin::Log("[怪物扫描]   #%d ptr=%p  HP %.0f/%.0f  动作 %d  fsm %d/%d  帧 %.1f/%.1f  %s",
+                        (int)i, reinterpret_cast<void*>(mo.ptr), sp.hp, sp.hpMax,
+                        sp.lmt, sp.fsmTgt, sp.fsm, sp.frame, sp.frameEnd,
+                        moving ? "<-- 在动，像真的" : "(300ms 内没动静，可能是误报)");
+            mo.last = sp;
+            mo.hpAtStart = sp.hp;
+            mo.actStart = ::GetTickCount64();
+        }
+    } else {
+        plugin::Log("[怪物扫描] 没找到。确认已经进任务、怪物已经出现，再按一次。");
+    }
+
+    // 交接：换给轮询线程，自己不再碰
+    {
+        std::lock_guard<std::mutex> lk(gResultMx);
+        gPending.swap(found);
+    }
+    ::InterlockedExchange(&gHasPending, 1);
+}
+
+DWORD WINAPI ScanThreadProc(LPVOID)
+{
+    ScanBody();
+    ::InterlockedExchange(&gScanBusy, 0);
+    return 0;
+}
+
+// 起一次后台扫描。已经在扫就不重复起。
+void Scan()
+{
+    if (::InterlockedCompareExchange(&gScanBusy, 1, 0) != 0) return;
+    HANDLE h = ::CreateThread(nullptr, 0, &ScanThreadProc, nullptr, 0, nullptr);
+    if (h == nullptr) { ::InterlockedExchange(&gScanBusy, 0); return; }
+    ::CloseHandle(h);
+}
+// 地址探针：纯读，不挂钩、不扫描，跑一次就完。
+// 在动手挂钩子之前先确认两件事：候选函数地址处是不是正常的函数开头，
+// 以及实体布局里还没被证明的那几个偏移（血量、动作帧）对不对。
+// 动作/fsm 那几个偏移 player::Refresh 一直在用且读数正常，已经不用验。
+void AddrProbe()
+{
+    static bool done = false;
+    if (done) return;
+    done = true;
+
+    plugin::Log("========== 地址探针 ==========");
+
+    HMODULE hm = ::GetModuleHandleW(L"MonsterHunterWorld.exe");
+    plugin::Log("[探针] 模块基址 = %p   (ghidra 导出假定 0x140000000)", (void*)hm);
+
+    // ---- 玩家实体：已知正确的实体，拿它当标尺 ----
+    std::uintptr_t mgr = 0, ent = 0;
+    if (mem::ReadVal(player::gRoot, mgr) && mgr) {
+        const std::uint32_t c0[1] = { 0x50 };
+        ent = mem::Walk(mgr, c0, 1);
+    }
+    plugin::Log("[探针] 玩家实体 = %p", (void*)ent);
+
+    if (ent) {
+        MEMORY_BASIC_INFORMATION mbi;
+        if (::VirtualQuery(reinterpret_cast<LPCVOID>(ent), &mbi, sizeof(mbi)) == sizeof(mbi))
+            plugin::Log("[探针]   所在区域 base=%p 大小=%.2f MB 分配基址=%p type=%lx prot=%lx",
+                        mbi.BaseAddress, (double)mbi.RegionSize / 1048576.0,
+                        mbi.AllocationBase, (unsigned long)mbi.Type,
+                        (unsigned long)mbi.Protect);
+
+        std::uintptr_t act = 0, hpo = 0;
+        mem::ReadVal(ent + OFF_ACT,   act);
+        mem::ReadVal(ent + OFF_HPOBJ, hpo);
+        plugin::Log("[探针]   动作对象 *(e+0x468)=%p   血量对象 *(e+0x7670)=%p",
+                    (void*)act, (void*)hpo);
+        plugin::Log("[探针]   fsm=%d fsmTarget=%d   (插件自己读到 %d/%d，应该一致)",
+                    mem::ReadI32(ent + OFF_FSMID, -1), mem::ReadI32(ent + OFF_FSMTGT, -1),
+                    (int)player::gFsm, (int)player::gFsmTarget);
+
+        if (act) {
+            float fr = -1.0f, fe = -1.0f;
+            mem::ReadVal(act + OFF_FRAME,   fr);
+            mem::ReadVal(act + OFF_FRAMEND, fe);
+            plugin::Log("[探针]   lmt=%d (插件读到 %d)   当前帧=%.2f   总帧=%.2f"
+                        "   <== 真实动作帧的数量级，用来收紧怪物判定",
+                        mem::ReadI32(act + OFF_LMT, -1), (int)player::gLmt,
+                        (double)fr, (double)fe);
+        }
+        if (hpo) {
+            float hp = -1.0f, mx = -1.0f;
+            mem::ReadVal(hpo + OFF_HPCUR, hp);
+            mem::ReadVal(hpo + OFF_HPMAX, mx);
+            plugin::Log("[探针]   玩家血量 %.2f / %.2f   <== 验证血量偏移，顺便定怪物门槛",
+                        (double)hp, (double)mx);
+        }
+    } else {
+        plugin::Log("[探针]   玩家实体取不到 —— 可能还没进场景");
+    }
+
+    // ---- 候选函数地址 ----
+    // ctor/dtor 是 LuaEngine 挂过钩子的：如果这两处读到的是一条 jmp
+    // (E9 / FF 25)，那就同时证明了地址正确、且钩子确实在那儿。
+    struct Cand { const char* name; std::uintptr_t va; const char* note; };
+    static const Cand cands[] = {
+        { "Monster::ctor",         0x141CA1F00ULL, "LuaEngine 挂了，应看到 jmp" },
+        { "Monster::dtor",         0x141CA47E0ULL, "LuaEngine 挂了，应看到 jmp" },
+        { "Monster::LaunchAction", 0x141CC5360ULL, "想挂的就是它，应是原始函数开头" },
+        { "Monster::MotionFromId", 0x141BFF880ULL, "备选" },
+        { "Player::GetPlayer",     0x141B8DBB0ULL, "对照组，同一份导出里的另一个地址" },
+    };
+    for (std::size_t i = 0; i < sizeof(cands) / sizeof(cands[0]); ++i) {
+        const Cand& c = cands[i];
+        unsigned long prot = 0;
+        bool exec = false;
+        MEMORY_BASIC_INFORMATION mbi;
+        if (::VirtualQuery(reinterpret_cast<LPCVOID>(c.va), &mbi, sizeof(mbi)) == sizeof(mbi)) {
+            prot = (unsigned long)mbi.Protect;
+            exec = (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ |
+                                   PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+        }
+        char hex[96];
+        hex[0] = 0;
+        if (mem::IsReadable(c.va, 16)) {
+            const unsigned char* p = reinterpret_cast<const unsigned char*>(c.va);
+            int w = 0;
+            for (int k = 0; k < 16 && w < (int)sizeof(hex) - 4; ++k)
+                w += snprintf(hex + w, sizeof(hex) - (std::size_t)w, "%02X ", p[k]);
+        } else {
+            snprintf(hex, sizeof(hex), "(读不出来)");
+        }
+        plugin::Log("[探针] %-22s %p prot=%lx %s : %s   | %s",
+                    c.name, (void*)c.va, prot,
+                    exec ? "可执行" : "不可执行!!", hex, c.note);
+    }
+    plugin::Log("========== 探针结束 ==========");
+}
+
+// 当前的主要怪物。同屏多只时取血量上限最大的那只 —— 任务目标通常
+// 比环境生物血厚得多。
+const Mon* Primary()
+{
+    const Mon* best = nullptr;
+    for (std::size_t i = 0; i < gList.size(); ++i) {
+        const Mon& m = gList[i];
+        if (!m.alive) continue;
+        if (best == nullptr || m.last.hpMax > best->last.hpMax) best = &m;
+    }
+    return best;
+}
+
+// 每轮轮询调一次。扫描也在这儿做，和 Tick 同一个线程 —— gList 不存在并发。
+void Tick()
+{
+    if (gEnabled == 0) return;
+    const std::uint64_t now = ::GetTickCount64();
+
+    // 进任务自动安排一次扫描，离开就把跟踪列表清掉（指针全失效了）
+    const bool inScene = player::RefreshIsInScene();
+    if (!inScene) {
+        if (gWasInScene) {
+            plugin::Log("[怪物] 离开场景，清空跟踪列表");
+            gList.clear();
+        }
+        gWasInScene = false;
+        gNextAutoAt = 0;
+        gAutoTries  = 0;
+        ::InterlockedExchange(&gScanReq, 0);   // 场景外按的热键直接丢掉
+        return;
+    }
+    if (!gWasInScene) {
+        gWasInScene = true;
+        gList.clear();
+        gAutoTries  = 0;
+        gNextAutoAt = now + (std::uint64_t)gAutoFirstMs;
+        AddrProbe();
+        if (gAutoScan != 0)
+            plugin::Log("[怪物] 进入场景，%.1f 秒后自动扫描", gAutoFirstMs / 1000.0);
+    }
+
+    bool anyAlive = false;
+    for (std::size_t q = 0; q < gList.size(); ++q)
+        if (gList[q].alive) { anyAlive = true; break; }
+
+    // 后台扫描的结果到了就接过来
+    if (::InterlockedCompareExchange(&gHasPending, 0, 0) != 0) {
+        std::lock_guard<std::mutex> lk(gResultMx);
+        gList.swap(gPending);
+        gPending.clear();
+        ::InterlockedExchange(&gHasPending, 0);
+        plugin::Log("[怪物扫描] 结果已接收，开始跟踪 %d 个", (int)gList.size());
+        int live = 0;
+        for (std::size_t q = 0; q < gList.size(); ++q) if (gList[q].alive) ++live;
+        if (live > 0) {
+            gAutoTries = 0;          // 扫到了就把重试计数清零
+            char m[0x100] = {};
+            snprintf(m, sizeof(m), "wse: 开始跟踪 %d 个怪物", live);
+            plugin::ShowMessage(m, true);
+        }
+    }
+
+    const bool manual  = (::InterlockedExchange(&gScanReq, 0) != 0);
+    const bool autoDue = (gAutoScan != 0) && !manual && !anyAlive &&
+                         gNextAutoAt != 0 && now >= gNextAutoAt &&
+                         gAutoTries < gAutoMaxTries;
+    if (manual || autoDue) {
+        gAutoTries = manual ? 0 : (gAutoTries + 1);
+        // Scan() 现在只是起一个后台线程，立刻就返回。
+        // 结果要等下一轮（或几轮之后）在上面那个「结果已接收」分支里拿，
+        // 所以这里不能再去数 gList —— 那时候它还是旧的。
+        Scan();
+        gNextAutoAt = ::GetTickCount64() + (std::uint64_t)gAutoRetryMs;
+        if (gAutoTries >= gAutoMaxTries) {
+            plugin::Log("[怪物] 自动扫了 %d 次都没找到，先不试了。"
+                        "怪物出现后按 Ctrl+F6 可以手动补一次。", gAutoTries);
+        }
+        return;
+    }
+    if (gList.empty()) return;
+    for (std::size_t i = 0; i < gList.size(); ++i) {
+        Mon& mo = gList[i];
+        if (!mo.alive) continue;
+
+        Snap sp;
+        if (!Read(mo.ptr, sp)) {
+            mo.alive = false;
+            plugin::Log("[怪物%d] 读不出来了，停止跟踪（怪物已销毁或内存被回收）。"
+                        "共记录 %d 次动作切换。", (int)i, mo.changes);
+            continue;
+        }
+
+        // 误报不能赖着不走：一个一直不动的候选会让 anyAlive 恒为真，
+        // 把后续的自动重扫全堵死（实测整把任务只扫了两次就再没扫过）。
+        // 真怪物不可能十秒一个动作都不换。
+        if (mo.changes == 0 && (now - mo.actStart) > 10000) {
+            mo.alive = false;
+            plugin::Log("[怪物%d] ptr=%p 十秒内一个动作都没换，判为误报，丢弃",
+                        (int)i, reinterpret_cast<void*>(mo.ptr));
+            continue;
+        }
+
+        if (sp.lmt != mo.last.lmt || sp.fsm != mo.last.fsm || sp.fsmTgt != mo.last.fsmTgt) {
+            const double dur = (mo.actStart == 0) ? 0.0 : (double)(now - mo.actStart);
+            ++mo.changes;
+            if (gHud != 0 && (now - gHudLastMs) >= (std::uint64_t)gHudMinGapMs) {
+                gHudLastMs = now;
+                char hud[192];
+                snprintf(hud, sizeof(hud), "怪物动作 %d   (上一个 %d 持续 %.1fs)   帧%d   HP %.0f%%",
+                         sp.lmt, mo.last.lmt, dur / 1000.0, (int)sp.frameEnd,
+                         sp.hpMax > 0.0f ? (sp.hp * 100.0f / sp.hpMax) : 0.0f);
+                plugin::ShowMessage(hud, false);
+            }
+            plugin::Log("[怪物%d] 动作 %d -> %d | fsm %d/%d -> %d/%d | 上一动作 %.0fms 掉血 %.0f "
+                        "| HP %.0f/%.0f (%.1f%%) | 总帧 %.0f",
+                        (int)i, mo.last.lmt, sp.lmt, mo.last.fsmTgt, mo.last.fsm,
+                        sp.fsmTgt, sp.fsm, dur, mo.hpAtStart - sp.hp, sp.hp, sp.hpMax,
+                        sp.hpMax > 0.0f ? (sp.hp * 100.0f / sp.hpMax) : 0.0f, sp.frameEnd);
+            mo.actStart = now;
+            mo.hpAtStart = sp.hp;
+        }
+        mo.last = sp;
+    }
+}
+
+} // namespace monster
+
+// ===========================================================================
 //  Standalone WAV player: winmm waveOut, one handle per voice, concurrency cap
 // ===========================================================================
 namespace audio {
@@ -581,6 +1141,8 @@ int gSetVolKey   = VK_F8;
 int gToggleKey   = VK_F9;
 int gMoreKey     = VK_F10;
 int gComboKey    = VK_F11;   // 切换当前武器配置组合
+int gMonScanKey  = VK_F6;    // 扫描怪物（仅 MonsterProbe=1 时有用）
+int gMonHudKey   = VK_F7;    // 开关「怪物动作屏显」
 int gSetVolValue = 50;
 
 // --- game module addresses (15.23.00) ---
@@ -594,6 +1156,164 @@ SystemMessageFn g_systemMessage = nullptr;
 const std::uintptr_t kMessageBaseRva = 0x4F87FF0;
 const std::uintptr_t kMessageLenOff  = 0xBC;
 const std::uintptr_t kMessageBodyOff = 0xC0;
+
+// ===========================================================================
+//  队伍聊天发送
+//
+//  做法来自 eigeen/mhw-toolkit 的 send_chat_message，并和 LuaEngine 的
+//  ghidra 导出交叉验证过 —— 两边的 uGuiChatBase 都是 0x1451C4640，
+//  插件自己的 kSystemMessageMgrRva 也和它的 CHAT_MAIN_PTR 一致，
+//  说明三份资料指的是同一个游戏版本。
+//
+//  不调游戏函数：把文字写进聊天输入缓冲区，再把发送标志置 true，游戏
+//  自己会在下一帧发出去。比从后台线程调 UI 函数安全得多。
+//
+//  指针链（语义是「先解引用，再加偏移」，逐级如此）：
+//      b = *(模块基址 + 0x51C4640)
+//      p = *(b + 0x13FD0)
+//      聊天缓冲区 = p + 0x28F8 + 0x165   （UGUIChat.chat_buffer，128 字节）
+//      发送标志   = p + 0x325E           （bool：false 才能发）
+//      发送目标   = b + 0x14748          （int，0 = 任务频道）
+// ===========================================================================
+namespace teamchat {
+
+const std::uintptr_t kBaseRva   = 0x51C4640;
+const std::uintptr_t kOff1      = 0x13FD0;
+const std::uintptr_t kBufOff    = 0x28F8 + 0x165;
+const std::uintptr_t kSendOff   = 0x325E;
+const std::uintptr_t kTargetOff = 0x14748;
+
+volatile int gEnabled = 0;        // 有条目配了 Chat= 就自动打开
+int gMinGapMs = 1200;             // 两条之间的最小间隔
+std::mutex gMx;
+std::vector<std::string> gQueue;
+std::uint64_t gLastSentMs = 0;
+
+bool Ptrs(std::uintptr_t& buf, std::uintptr_t& flag)
+{
+    if (gGameBase == 0) return false;
+    std::uintptr_t b = 0;
+    if (!mem::ReadVal(gGameBase + kBaseRva, b) || b <= 0x10000) return false;
+    std::uintptr_t p = 0;
+    if (!mem::ReadVal(b + kOff1, p) || p <= 0x10000) return false;
+    buf  = p + kBufOff;
+    flag = p + kSendOff;
+    return true;
+}
+
+
+// 游戏的聊天缓冲区只有 128 字节。直接 _TRUNCATE 会把多字节汉字劈成半个，
+// 更糟的是会把结尾的 </STYL> 切掉 —— 少了闭合标签，整句在聊天框里会连同
+// 标签原文一起显示出来，发给全队就很难看。所以自己按字符边界截，
+// 截完把闭合标签补回去。
+std::string ClampForChat(const std::string& in, std::size_t n)
+{
+    if (in.size() <= n) return in;
+
+    const std::string kEnd = "</STYL>";
+    const bool styled = in.size() > kEnd.size() &&
+                        in.compare(0, 6, "<STYL ") == 0 &&
+                        in.compare(in.size() - kEnd.size(), kEnd.size(), kEnd) == 0;
+    const std::size_t gt = styled ? in.find('>') : std::string::npos;
+
+    std::size_t lim = (styled && n > kEnd.size()) ? (n - kEnd.size()) : n;
+    if (lim > in.size()) lim = in.size();
+    // 退到 UTF-8 字符边界：续字节都是 10xxxxxx
+    while (lim > 0 && ((unsigned char)in[lim] & 0xC0) == 0x80) --lim;
+
+    // 万一短到连开标签都放不下，就别拼半截标签了，直接退化成纯文本截断
+    if (styled && (gt == std::string::npos || lim <= gt))
+        return in.substr(0, n > 0 ? n : 0);
+
+    std::string out = in.substr(0, lim);
+    if (styled) out += kEnd;
+    return out;
+}
+
+void Queue(const std::string& msg)
+{
+    if (msg.empty()) return;
+    std::lock_guard<std::mutex> lk(gMx);
+    if (gQueue.size() >= 8) return;      // 别攒太多，过时的喊话没意义
+    gQueue.push_back(msg);
+}
+
+
+// GUI 颜色下拉里的候选样式名，顺序必须和 gui/src/config.cpp 的 kChatColors 一致。
+// 其中只有 MOJI_YELLOW_DEFAULT / MOJI_RED_DEFAULT 是从游戏自带的 gmd 文本里
+// 挖出来、确认存在的；其余是按同样的命名规律推的。/wse 颜色 就是拿来验它们的：
+// 每种各发一条样例，哪条真变了色，哪条才是能用的。
+struct ChatColorProbe { const char* styl; const char* label; };
+const ChatColorProbe kColorProbe[] = {
+    { "MOJI_YELLOW_DEFAULT",     "1黄" },
+    { "MOJI_RED_DEFAULT",        "2红" },
+    { "MOJI_ORANGE_DEFAULT",     "3橙" },
+    { "MOJI_LIGHTGREEN_DEFAULT", "4绿" },
+    { "MOJI_LIGHTBLUE_DEFAULT",  "5蓝" },
+    { "MOJI_PURPLE_DEFAULT",     "6紫" },
+    { "MOJI_GRAY_DEFAULT",       "7灰" },
+};
+
+// 把候选颜色拼成几条样例塞进发送队列。一条最多 127 字节，一个样例约 37 字节，
+// 所以三个一组。注意这是真的发到当前聊天频道 —— 要在单人任务里试。
+void QueueColorProbe()
+{
+    gEnabled = 1;      // 用户主动要发，就临时打开
+    std::string line;
+    int inLine = 0;
+    for (std::size_t i = 0; i < sizeof(kColorProbe) / sizeof(kColorProbe[0]); ++i) {
+        line += std::string("<STYL ") + kColorProbe[i].styl + ">" +
+                kColorProbe[i].label + "</STYL>";
+        if (++inLine == 3) { Queue(line); line.clear(); inLine = 0; }
+    }
+    if (!line.empty()) Queue(line);
+    Queue("0白 <- 这条没加标签，是默认色");
+}
+
+// 每轮轮询调一次，一次最多发一条
+void Pump()
+{
+    if (gEnabled == 0) return;
+    if (!player::RefreshIsInScene()) return;
+
+    const std::uint64_t now = ::GetTickCount64();
+    if (now - gLastSentMs < (std::uint64_t)gMinGapMs) return;
+
+    std::string msg;
+    {
+        std::lock_guard<std::mutex> lk(gMx);
+        if (gQueue.empty()) return;
+        msg = gQueue.front();
+    }
+
+    std::uintptr_t buf = 0, flag = 0;
+    if (!Ptrs(buf, flag)) return;
+
+    unsigned char busy = 1;
+    if (!mem::ReadVal(flag, busy)) return;
+    if (busy != 0) return;               // 上一条还没被游戏取走
+
+    if (!mem::IsWritable(buf, 128) || !mem::IsWritable(flag, 1)) return;
+
+    char tmp[128] = {};
+    const std::string fit = ClampForChat(msg, sizeof(tmp) - 1);
+    if (fit.size() != msg.size())
+        Log("[队伍聊天] 超长，已截到 %d 字节: %s", (int)fit.size(), fit.c_str());
+    std::memcpy(tmp, fit.c_str(), fit.size());        // 余下的本来就是 0，NUL 自带
+    std::memcpy(reinterpret_cast<void*>(buf), tmp, sizeof(tmp));
+    const unsigned char one = 1;
+    std::memcpy(reinterpret_cast<void*>(flag), &one, 1);
+
+    gLastSentMs = now;
+    {
+        std::lock_guard<std::mutex> lk(gMx);
+        if (!gQueue.empty()) gQueue.erase(gQueue.begin());
+    }
+    Log("[队伍聊天] 已发送: %s", msg.c_str());
+}
+
+} // namespace teamchat
+
 
 // ===========================================================================
 //  Data model
@@ -777,6 +1497,7 @@ struct Pool
 // 一条「条件 -> 音效池」。按书写顺序求值，第一个成立的那条播。
 struct CondPool
 {
+    std::string chat;    // Chat:<表达式>= 条件成立时顺带喊一句
     std::string text;    // 原始表达式，写回 ini / 日志用
     cond::Expr  expr;
     Pool        pool;
@@ -793,6 +1514,12 @@ struct CondPool
 // One ini [Attack...] section: trigger conditions + sound pools.
 struct Attack
 {
+    // 0 = 玩家自己的动作（原来的唯一行为）  1 = 怪物的动作
+    // 指向怪物时 weaponType 无意义，fsmId / lmt 拿当前跟踪的怪物来比。
+    int target = 0;
+    std::string monsterName;      // MonsterName=，仅用于在 GUI 里分组，匹配不看它
+    std::string defChat;          // Chat=，兜底触发时喊的话
+
     int weaponType = -1;          // -1 = any weapon
     int fsmId = -1;               // -1 = any FSM
     int fsmTarget = -1;           // FSMTarget= 目标层；-1 = 不限定（只比 id，旧行为）
@@ -1211,6 +1938,9 @@ void LoadConfig()
                 else if (key == "ChatEcho") g_useChatEcho = std::atoi(val.c_str()) != 0;
                 else if (key == "ChatCommands") g_useChatCommands = std::atoi(val.c_str()) != 0;
                 else if (key == "Hotkeys") g_hotkeysEnabled = std::atoi(val.c_str()) != 0;
+                else if (key == "MonsterProbe") monster::gEnabled = std::atoi(val.c_str()) != 0;
+                else if (key == "MonsterAutoScan") monster::gAutoScan = std::atoi(val.c_str()) != 0;
+                else if (key == "MonsterHud") monster::gHud = std::atoi(val.c_str()) != 0;
                 else if (key == "Debug") gDebug = std::atoi(val.c_str()) != 0;
                 else if (key == "GaugePtrOff") { std::uintptr_t v = ParseHex(val); if (v) gGaugePtrOff = (std::uint32_t)v; }
                 else if (key == "GaugeValOff") { std::uintptr_t v = ParseHex(val); if (v) gGaugeValOff = (std::uint32_t)v; }
@@ -1255,6 +1985,25 @@ void LoadConfig()
                 for (int x : cur.lmt) if (x == v) { dup = true; break; }
                 if (!dup) cur.lmt.push_back(v);
             }
+        } else if (key == "Chat") {
+            cur.defChat = val;
+        } else if (key.rfind("Chat:", 0) == 0) {
+            // Chat:<表达式>= ：和 Sound:<表达式>= 用同一套条件
+            const std::string expr = Trim(key.substr(5));
+            bool found = false;
+            for (auto& c : cur.conds)
+                if (c.text == expr) { c.chat = val; found = true; break; }
+            if (!found) {
+                CondPool cp;
+                cp.text = expr;
+                cp.atEnd = false;
+                if (cond::Parse(expr, cp.expr)) { cp.chat = val; cur.conds.push_back(cp); }
+            }
+        } else if (key == "Target") {
+            // Target=monster 让这条目改用怪物的动作来匹配
+            cur.target = (val == "monster" || val == "Monster" || val == "1") ? 1 : 0;
+        } else if (key == "MonsterName") {
+            cur.monsterName = val;
         } else if (key == "Name") {
             cur.name = val;
         } else if (key == "Group") {
@@ -1288,13 +2037,24 @@ void LoadConfig()
                 // Pool* ，而 conds 是 vector，push_back 扩容会让指针失效。
                 // 代价是旧式的 SoundDelay=/SoundVol= 对条件池不生效，
                 // 用新式的 路径|延时|音量|F 内联写法即可。
-                CondPool cp;
-                cp.text  = cond::Trim(tag);
-                cp.expr  = ex;
-                cp.atEnd = atEnd;
+                // 同一个表达式可能已经被 Chat:<表达式>= 先建出来了，
+                // 那就往它身上补音效，别再建一条 —— 否则会出现两条同表达式
+                // 的条件，先评到的那条音效池是空的，行为跟写的顺序有关。
+                const std::string txt = cond::Trim(tag);
+                CondPool* slot = nullptr;
+                for (auto& c : cur.conds)
+                    if (c.text == txt && c.atEnd == atEnd) { slot = &c; break; }
                 std::vector<std::pair<Pool*, int>> scratch;
-                AppendSpecs(cp.pool, val, scratch);
-                cur.conds.push_back(std::move(cp));
+                if (slot != nullptr) {
+                    AppendSpecs(slot->pool, val, scratch);
+                } else {
+                    CondPool cp;
+                    cp.text  = txt;
+                    cp.expr  = ex;
+                    cp.atEnd = atEnd;
+                    AppendSpecs(cp.pool, val, scratch);
+                    cur.conds.push_back(std::move(cp));
+                }
             } else {
                 const int lvl = GaugeTagToLevel(ToLower(tag));
                 if (lvl >= 0 && lvl < 4)
@@ -1363,7 +2123,26 @@ void LoadConfig()
     g_activeCombo = activeMap;
 
     RebuildActiveAttacks();
-    Log("config: combos=%zu attacks=%zu", g_combos.size(), gAttacks.size());
+
+    // 配了怪物条目就自动把探针打开 —— 不然条目写了也永远匹配不上，
+    // 还得让人去 ini 里再开一个开关，纯属坑人。
+    int monEntries = 0, chatEntries = 0;
+    for (const auto& e : gAttacks) {
+        if (e.target == 1) ++monEntries;
+        if (!e.defChat.empty()) ++chatEntries;
+        for (const auto& c : e.conds) if (!c.chat.empty()) ++chatEntries;
+    }
+    if (chatEntries > 0 && teamchat::gEnabled == 0) {
+        teamchat::gEnabled = 1;
+        Log("config: 有 %d 处配了 Chat=，已启用队伍聊天发送", chatEntries);
+    }
+    if (monEntries > 0 && monster::gEnabled == 0) {
+        monster::gEnabled = 1;
+        Log("config: 有 %d 条怪物条目，已自动启用怪物探针", monEntries);
+    }
+
+    Log("config: combos=%zu attacks=%zu (其中怪物条目 %d)",
+        g_combos.size(), gAttacks.size(), monEntries);
 }
 
 void PreloadSounds();   // defined below
@@ -1537,8 +2316,12 @@ inline bool HandleWseCommand(const std::string& rest, bool& used)
         gMoreSounds = 1; ShowMessage("wse extra sounds ON", true);
     } else if (rest == "one" || rest == "single") {
         gMoreSounds = 0; ShowMessage("wse extra sounds OFF (single)", true);
+    } else if (rest == "颜色" || rest == "color" || rest == "colors") {
+        // 颜色自检：每种候选颜色各发一条样例，看哪几种游戏真的认
+        teamchat::QueueColorProbe();
+        ShowMessage("wse: 已发送颜色样例，变了色的才是能用的（请在单人任务里试）", true);
     } else if (rest == "help" || rest == "h") {
-        ShowMessage("/wse reload(重载ini+音效) | on | off | more | one | vol N | vol+ | vol-");
+        ShowMessage("/wse reload(重载ini+音效) | on | off | more | one | vol N | vol+ | vol- | 颜色");
     } else if (rest == "vol+" || rest == "up") {
         gVolumePct += 5; if (gVolumePct > 100) gVolumePct = 100;
         char msg[0x180] = {}; _snprintf_s(msg, _TRUNCATE, "wse volume=%d", (int)gVolumePct);
@@ -1866,7 +2649,8 @@ void TickJudgeEntry(Attack& e, bool match, std::uint64_t nowMs,
     // CheckMode=final 等价于把所有条件都标成 SoundEnd。
     for (std::size_t i = 0; i < e.conds.size(); ++i) {
         const CondPool& c = e.conds[i];
-        if (c.pool.empty()) continue;
+        // 只配了 Chat= 没配音效的条件也算数，不能当成「没配」跳过
+        if (c.pool.empty() && c.chat.empty()) continue;
         const bool waitEnd = c.atEnd || e.checkMode == 1;
         if (waitEnd && !timeUp) continue;          // 还没到点，这条先不评
         if (!cond::Eval(c.expr, v)) continue;
@@ -1874,6 +2658,7 @@ void TickJudgeEntry(Attack& e, bool match, std::uint64_t nowMs,
              tag.c_str(), c.text.c_str(), waitEnd ? " (end)" : "",
              v.v[cond::V_DMG], v.v[cond::V_DAURA], v.v[cond::V_MS]);
         FirePool(&c.pool, rng, nowMs, tag + " [" + c.text + "]");
+        teamchat::Queue(c.chat);
         e.winOpen = false;
         return;
     }
@@ -1883,9 +2668,12 @@ void TickJudgeEntry(Attack& e, bool match, std::uint64_t nowMs,
         LogD("%s judge: timeout, fallback (dmg=%d dAura=%d)",
              tag.c_str(), v.v[cond::V_DMG], v.v[cond::V_DAURA]);
         FirePool(&e.defPool, rng, nowMs, tag + " [timeout]");
+        teamchat::Queue(e.defChat);
         e.winOpen = false;
     }
 }
+
+
 
 // ===========================================================================
 //  Worker threads
@@ -1912,6 +2700,8 @@ DWORD WINAPI WorkerProc(LPVOID)
         if (::InterlockedCompareExchange(&gStop, 0, 0) != 0) break;
 
         player::Refresh();
+        monster::Tick();
+        teamchat::Pump();
         const int lmt = player::gLmt;
         const int fsm = player::gFsm;
         const int weapon = player::gWeapon;
@@ -1943,14 +2733,30 @@ DWORD WINAPI WorkerProc(LPVOID)
             }
 
             for (auto& e : gAttacks) {
+                // 动作来源：默认是玩家自己，Target=monster 的条目改用当前跟踪的怪物。
+                // 怪物实体和玩家实体是同一套内存布局，所以 fsm / fsmTarget / lmt
+                // 三样都能照搬，FSMTarget 那层匹配对怪物条目一样有效。
+                int sFsm = fsm, sLmt = lmt, sWeapon = weapon;
+                int sFsmTarget = player::gFsmTarget;
+                bool sOk = true;
+                if (e.target == 1) {
+                    const monster::Mon* mo = monster::Primary();
+                    if (mo != nullptr) {
+                        sFsm = mo->last.fsm; sLmt = mo->last.lmt; sWeapon = -1;
+                        sFsmTarget = mo->last.fsmTgt;
+                    } else {
+                        sOk = false;      // 还没扫到怪物，这条目直接不匹配
+                    }
+                }
+
                 bool lmtOk = e.lmt.empty();
                 if (!lmtOk)
-                    for (int x : e.lmt) if (x == lmt) { lmtOk = true; break; }
+                    for (int x : e.lmt) if (x == sLmt) { lmtOk = true; break; }
 
-                const bool match =
-                    (e.weaponType < 0 || e.weaponType == weapon) &&
-                    (e.fsmId < 0 || e.fsmId == fsm) &&
-                    (e.fsmTarget < 0 || e.fsmTarget == player::gFsmTarget) &&
+                const bool match = sOk &&
+                    (e.target == 1 || e.weaponType < 0 || e.weaponType == sWeapon) &&
+                    (e.fsmId < 0 || e.fsmId == sFsm) &&
+                    (e.fsmTarget < 0 || e.fsmTarget == sFsmTarget) &&
                     lmtOk &&
                     e.HasSounds();
 
@@ -1998,17 +2804,17 @@ DWORD WINAPI WorkerProc(LPVOID)
 DWORD WINAPI HotkeyProc(LPVOID)
 {
     bool reloadWas=false, upWas=false, downWas=false,
-         setWas=false, togWas=false, moreWas=false, comboWas=false;
+         setWas=false, togWas=false, moreWas=false, comboWas=false, monWas=false, hudWas=false;
     while (::InterlockedCompareExchange(&gStop, 0, 0) == 0) {
         ::Sleep(30);
         if (g_hotkeysEnabled == 0) {
-            reloadWas = upWas = downWas = setWas = togWas = moreWas = comboWas = false;
+            reloadWas = upWas = downWas = setWas = togWas = moreWas = comboWas = monWas = hudWas = false;
             continue;
         }
         const bool mod = (gModifierKey == 0) ||
                          ((::GetAsyncKeyState(gModifierKey) & 0x8000) != 0);
         if (!mod) {
-            reloadWas = upWas = downWas = setWas = togWas = moreWas = comboWas = false;
+            reloadWas = upWas = downWas = setWas = togWas = moreWas = comboWas = monWas = hudWas = false;
             continue;
         }
         const bool reloadDown = (::GetAsyncKeyState(gReloadKey) & 0x8000) != 0;
@@ -2018,6 +2824,27 @@ DWORD WINAPI HotkeyProc(LPVOID)
         const bool togDown    = (::GetAsyncKeyState(gToggleKey) & 0x8000) != 0;
         const bool moreDown   = (::GetAsyncKeyState(gMoreKey)   & 0x8000) != 0;
         const bool comboDown  = (::GetAsyncKeyState(gComboKey)  & 0x8000) != 0;
+        const bool monDown    = (::GetAsyncKeyState(gMonScanKey)& 0x8000) != 0;
+
+        if (monDown && !monWas) {
+            if (monster::gEnabled) {
+                // 只置标志，真正的扫描交给轮询线程 —— 两个线程同时动 gList
+                // 会在 vector 扩容时把游戏搞崩（已经犯过一次）。
+                ::InterlockedExchange(&monster::gScanReq, 1);
+                ShowMessage("wse: 手动扫描已排队", true);
+            } else {
+                ShowMessage("wse: MonsterProbe=0, 怪物探针没开", true);
+            }
+        }
+        monWas = monDown;
+
+        const bool hudDown = (::GetAsyncKeyState(gMonHudKey) & 0x8000) != 0;
+        if (hudDown && !hudWas) {
+            monster::gHud = (monster::gHud != 0) ? 0 : 1;
+            ShowMessage(monster::gHud ? "wse: 怪物动作屏显 开"
+                                      : "wse: 怪物动作屏显 关", true);
+        }
+        hudWas = hudDown;
 
         if (reloadDown && !reloadWas) {
             ReloadConfig();

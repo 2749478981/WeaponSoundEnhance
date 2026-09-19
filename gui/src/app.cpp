@@ -135,32 +135,55 @@ static std::string TermsToExpr(const std::vector<CondTerm>& ts) {
 // ---- 内置预设：一条就是一整套"成败判定"，用户只要挑两个 wav ----
 struct JudgePreset {
     const char* name;
-    int  weapon;
+    int  weapon;              // target 为 1 时无意义
+    int  target;              // 0 = 玩家动作  1 = 怪物动作
+    const char* monster;      // target 为 1 时的怪物名
     const char* lmt;          // 逗号分隔
     int  delayMs, timeoutMs, offsetMs;
-    struct { const char* expr; bool atEnd; const char* label; } conds[3];
+    bool endOnAction;         // false = 只看时间（CheckEndOn=time）
+    struct { const char* expr; bool atEnd; const char* label; const char* chat; } conds[3];
     const char* fallbackLabel;   // 都不成立时（默认音效池）的含义
     const char* note;
 };
+// 界面上列出来的怪物。纯粹是给条目归类用的标签 —— 插件匹配只看动作 ID，
+// 不看这个名字（目前还没法从内存里读出怪物种类）。列表不全也不影响使用，
+// 条目里的名字可以手填。
+static const char* const kMonsters[] = {
+    "黑龙", "煌黑龙", "冰呪龙", "灭尽龙", "炎王龙", "炎妃龙",
+    "钢龙", "霜刃冰牙龙", "斩龙", "惨爪龙", "角龙", "恐暴龙",
+    "麒麟", "风漂龙", "土砂龙", "泥鱼龙",
+};
+static const int kMonsterCount = (int)(sizeof(kMonsters) / sizeof(kMonsters[0]));
+
 static const JudgePreset kPresets[] = {
-    { "太刀 · 登龙 命中/落空", 3, "49326", 0, 2500, 150,
-      { { "dmg>0", false, "命中" }, { nullptr, false, nullptr } },
+    { "太刀 · 登龙 命中/落空", 3, 0, "", "49326", 0, 2500, 150, true,
+      { { "dmg>0", false, "命中", "" }, { nullptr, false, nullptr, nullptr } },
       "落空",
       "在登龙命中或落空时分别播放不同的wav文件。" },
 
-    { "太刀 · 大居 成功/失败", 3, "49461,49462,49463", 0, 3000, 150,
-      { { "dAura<0", false, "失败（掉刃）" }, { "dmg>0", true, "成功" }, { nullptr, false, nullptr } },
+    { "太刀 · 大居 成功/失败", 3, 0, "", "49461,49462,49463", 0, 3000, 150, true,
+      { { "dAura<0", false, "失败（掉刃）", "" }, { "dmg>0", true, "成功", "" },
+        { nullptr, false, nullptr, nullptr } },
       "失败（完全落空）",
       "大居成功需要打出伤害且不掉刃，所以在判定窗口结束时进行判定，"
       "因勾选了动作结束也作为判定时机，所以在最晚出伤时间加上余量的时候进行判定" },
 
-    { "大剑 · 真蓄 命中/落空", 0, "49298,49341,49342,49427,49428,49429", 1200, 3500, 150,
-      { { "dmg>0", false, "命中" }, { nullptr, false, nullptr } },
+    { "大剑 · 真蓄 命中/落空", 0, 0, "", "49298,49341,49342,49427,49428,49429",
+      1200, 3500, 150, true,
+      { { "dmg>0", false, "命中", "" }, { nullptr, false, nullptr, nullptr } },
       "落空",
       "真蓄两段：第一段约 0.65 秒、伤害小，第二段约 1.7~2.1 秒、伤害大。"
       "计伤起点设在 1200ms 正好卡在两段中间，只认第二段。" },
+
+    { "黑龙·科目三 成功", 3, 1, "黑龙", "33029", 3000, 8000, 0, false,
+      { { "dmg>0 & lmt==49326", false, "成功",
+          "<STYL MOJI_YELLOW_DEFAULT>至尊太刀侠科目三成功！全体猎人收刀敬礼！</STYL>" },
+        { nullptr, false, nullptr, nullptr } },
+      "失败",
+      "太刀黑龙科目三成功后触发" },
 };
-static const int kPresetCount = 3;
+
+static const int kPresetCount = 4;
 
 void FillLmtBuf(char* buf, size_t n, const std::vector<int>& lmt) {
     std::string s;
@@ -384,6 +407,84 @@ static void PlayPreviewFile(const std::wstring& path, float gain, unsigned delay
 
 } // namespace
 
+// 颜色表、ChatSet/ChatGet 在 config.cpp —— 它们是 ini 文本格式的一部分，
+// 放那边才能被 cfg_roundtrip 测到。这里只负责画。
+
+namespace {
+
+// 一整块「队伍喊话」控件：颜色下拉 + 文字框 + 深底预览条。
+void DrawChatLine(const char* label, const char* hint, ChatLine& cl, float dpi)
+{
+    ImGui::PushID(label);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(label);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("触发判定后在队伍频道发一条消息。\n"
+                          "文字框留空：不发。");
+    ImGui::SameLine(0, 10);
+
+    if (cl.raw) {
+        // 用户手写了我们解析不了的标签：原样显示、原样保存，不擅自改写
+        ImGui::SetNextItemWidth(430 * dpi);
+        ImGui::InputText("##raw", cl.rawBuf, sizeof(cl.rawBuf));
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("这句里有本界面看不懂的标签，所以原样保留着。\n"
+                              "把标签手动删掉，下次打开就能用颜色下拉了。");
+        ImGui::PopID();
+        return;
+    }
+
+    // 颜色下拉：每项前面一个色块
+    const ChatColorDef& cur = ChatColorAt(cl.color);
+    ImGui::SetNextItemWidth(118 * dpi);
+    if (ImGui::BeginCombo("##color", cur.ui)) {
+        for (int i = 0; i < ChatColorCount(); ++i) {
+            const ChatColorDef& cd = ChatColorAt(i);
+            ImGui::PushID(i);
+            ImGui::TextColored(ImVec4(cd.chip[0], cd.chip[1], cd.chip[2], cd.chip[3]),
+                               "\xe2\x96\xa0");   // ■
+            ImGui::SameLine(0, 6);
+            if (ImGui::Selectable(cd.ui, i == cl.color)) cl.color = i;
+            ImGui::PopID();
+        }
+        ImGui::EndCombo();
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("颜色选择\n"
+                          "只有「默认/黄/红」是确认过的，其余几种是按同样的\n"
+                          "命名规律推出来的，还没在游戏里验过。\n"
+                          "进游戏打一句  /wse 颜色  会把每种各发一条样例，\n"
+                          "哪条真的变了色，哪条就是能用的。");
+    ImGui::SameLine(0, 8);
+    ImGui::SetNextItemWidth(304 * dpi);
+    ImGui::InputTextWithHint("##txt", hint, cl.text, sizeof(cl.text));
+
+    // 预览条：深底，尽量还原游戏里聊天框的观感
+    if (cl.text[0]) {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+        const float w = 440.0f * dpi;
+        const float h = ImGui::GetTextLineHeight() + 10.0f * dpi;
+        dl->AddRectFilled(p0, ImVec2(p0.x + w, p0.y + h), IM_COL32(28, 28, 34, 255), 4.0f * dpi);
+        ImGui::SetCursorScreenPos(ImVec2(p0.x + 8.0f * dpi, p0.y + 5.0f * dpi));
+        ImGui::TextColored(ImVec4(cur.game[0], cur.game[1], cur.game[2], cur.game[3]),
+                           "%s", cl.text);
+        ImGui::SetCursorScreenPos(ImVec2(p0.x, p0.y + h + 3.0f * dpi));
+
+        // 长度余量。游戏的聊天缓冲区只有 128 字节，颜色标签本身就要吃掉 32 字节，
+        // 超了会被截断，界面上必须让人看得见还剩多少，不能等发出去才发现被切一半。
+        const int used = (int)ChatGet(cl).size();
+        const bool over = (used > 127);
+        ImGui::TextColored(over ? C_RED : C_GRAY,
+                           over ? "长度 %d/127 字节 —— 超出可用长度，强行使用会被截断"
+                                : "长度 %d/127 字节（一个汉字算 3 个；颜色标签本身占 32 个）",
+                           used);
+    }
+    ImGui::PopID();
+}
+
+} // namespace
+
 App::App() {
     // 数据目录优先：<exe目录>\WeaponSoundEnhance\ ；旧布局(与 exe 同目录)兼容
     std::vector<std::string> cand;
@@ -573,6 +674,15 @@ void App::DrawToolbar() {
     }
 }
 
+// 下拉里第 idx 个怪物的名字。内置列表之后接 ini 里手填过、但不在列表里的名字。
+std::string App::MonsterNameAt(int idx) const
+{
+    if (idx >= 0 && idx < kMonsterCount) return kMonsters[idx];
+    const int k = idx - kMonsterCount;
+    if (k >= 0 && k < (int)extraMonsters.size()) return extraMonsters[k];
+    return std::string();
+}
+
 void App::DrawWeaponTree() {
     ImGui::TextDisabled("武器分类");
     ImGui::Separator();
@@ -589,14 +699,71 @@ void App::DrawWeaponTree() {
         if (sel) ImGui::PopStyleColor(3);
         if (clicked) weaponFilter = filter;
     };
-    int totalActive = 0;
-    for (const auto& e : cfg.entries) if (EntryActive(e)) ++totalActive;
-    item("全部条目", -1, totalActive);
-    for (int w = 0; w <= 13; ++w)
-        item(WeaponName(w), w, CountFor(w));
-    int any = 0;
-    for (const auto& e : cfg.entries) if (e.weaponType < 0 && e.combo.empty()) ++any;
-    if (any > 0) item("通用(任意)", -2, any);
+    // ---- 武器 ----
+    // 和下面的「怪物」同一个格式：一个可折叠栏，里面才是具体分类。
+    //
+    // 这里只数武器条目（target==0）。原来外面还有一个「全部条目」数的是
+    // 武器+怪物的合计，但 DrawEntries 在 weaponFilter==-1 时会把怪物条目
+    // 全跳掉，点进去只看得到武器条目 —— 数字和内容对不上。两边本来就是
+    // 两套东西，合计数没有意义，去掉了。
+    ImGui::Spacing();
+    int wpnTotal = 0;
+    for (const auto& e : cfg.entries) if (e.target == 0 && EntryActive(e)) ++wpnTotal;
+    char wpnHdr[64];
+    snprintf(wpnHdr, sizeof(wpnHdr), "武器   %d", wpnTotal);
+    if (ImGui::CollapsingHeader(wpnHdr, weaponTreeOpen ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
+        weaponTreeOpen = true;
+        ImGui::Indent();
+        item("全部武器条目", -1, wpnTotal);
+        for (int w = 0; w <= 13; ++w)
+            item(WeaponName(w), w, CountFor(w));
+        int any = 0;
+        for (const auto& e : cfg.entries)
+            if (e.target == 0 && e.weaponType < 0 && e.combo.empty()) ++any;
+        if (any > 0) item("通用(任意)", -2, any);
+        ImGui::Unindent();
+    } else {
+        weaponTreeOpen = false;
+    }
+
+    // ---- 怪物 ----
+    // 单开一栏，跟武器分开。条目绑的是怪物的动作 ID，不是玩家的。
+    ImGui::Spacing();
+    int monTotal = 0;
+    for (const auto& e : cfg.entries) if (e.target == 1) ++monTotal;
+    char monHdr[64];
+    snprintf(monHdr, sizeof(monHdr), "怪物   %d", monTotal);
+    if (ImGui::CollapsingHeader(monHdr, monsterTreeOpen ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
+        monsterTreeOpen = true;
+        ImGui::Indent();
+        item("全部怪物条目", -3, monTotal);
+        for (int i = 0; i < kMonsterCount; ++i) {
+            int n = 0;
+            for (const auto& e : cfg.entries)
+                if (e.target == 1 && e.monsterName == kMonsters[i]) ++n;
+            item(kMonsters[i], -10 - i, n);
+        }
+        // ini 里手填了、但不在内置列表里的名字也要能看到
+        for (const auto& e : cfg.entries) {
+            if (e.target != 1 || e.monsterName.empty()) continue;
+            bool known = false;
+            for (int i = 0; i < kMonsterCount; ++i)
+                if (e.monsterName == kMonsters[i]) { known = true; break; }
+            if (known) continue;
+            bool shown = false;
+            for (const auto& o : extraMonsters) if (o == e.monsterName) { shown = true; break; }
+            if (!shown) extraMonsters.push_back(e.monsterName);
+        }
+        for (size_t k = 0; k < extraMonsters.size(); ++k) {
+            int n = 0;
+            for (const auto& e : cfg.entries)
+                if (e.target == 1 && e.monsterName == extraMonsters[k]) ++n;
+            item(extraMonsters[k].c_str(), -10 - kMonsterCount - (int)k, n);
+        }
+        ImGui::Unindent();
+    } else {
+        monsterTreeOpen = false;
+    }
 
     // ---- 组合切换（仅对具体武器；不影响其它武器）----
     if (weaponFilter >= 0 && weaponFilter <= 13) {
@@ -788,16 +955,35 @@ void App::DrawEntries() {
     ImGui::SetNextItemWidth(230 * dpiScale);
     ImGui::InputTextWithHint("##search", "搜索 FSM / LMT / 音效名...", searchBuf, sizeof(searchBuf));
     ImGui::SameLine(0, 10);
-    if (PrimaryButton("+ 新增条目"))
-        OpenEditorNew(weaponFilter >= 0 ? weaponFilter : -1);
+    if (PrimaryButton("+ 新增条目")) {
+        if (weaponFilter <= -3) {
+            OpenEditorNew(-1);
+            editor.target = 1;
+            const std::string mn = (weaponFilter <= -10) ? MonsterNameAt(-10 - weaponFilter)
+                                                         : std::string();
+            snprintf(editor.monsterBuf, sizeof(editor.monsterBuf), "%s", mn.c_str());
+        } else {
+            OpenEditorNew(weaponFilter >= 0 ? weaponFilter : -1);
+        }
+    }
     ImGui::Separator();
 
     std::string q = Trim(searchBuf);
     std::vector<int> idx;
     for (int i = 0; i < (int)cfg.entries.size(); ++i) {
         const SoundEntry& e = cfg.entries[i];
-        if (weaponFilter == -2 && e.weaponType >= 0) continue;
-        if (weaponFilter >= 0 && e.weaponType != weaponFilter) continue;
+        // 怪物条目和武器条目分开显示，互不串台
+        if (weaponFilter <= -3) {
+            if (e.target != 1) continue;
+            if (weaponFilter <= -10) {
+                const std::string want = MonsterNameAt(-10 - weaponFilter);
+                if (!want.empty() && e.monsterName != want) continue;
+            }
+        } else {
+            if (e.target == 1) continue;
+            if (weaponFilter == -2 && e.weaponType >= 0) continue;
+            if (weaponFilter >= 0 && e.weaponType != weaponFilter) continue;
+        }
         if (!EntryActive(e)) continue;   // 只显示当前激活组合的条目
         if (!q.empty()) {
             bool hit = false;
@@ -854,12 +1040,19 @@ void App::DrawEntries() {
 
             ImGui::TableSetColumnIndex(0);
             std::string nm = e.name;
-            if (nm.empty()) nm = LookupFsmName(e.weaponType, e.fsmId, e.LmtAny());
+            if (nm.empty() && e.target == 1)
+                nm = LookupMonsterAction(e.monsterName, e.LmtAny());
+            if (nm.empty() && e.target == 0)
+                nm = LookupFsmName(e.weaponType, e.fsmId, e.LmtAny());
             if (nm.empty()) nm = "条目";
             ImGui::Text("%s", nm.c_str());
 
             ImGui::TableSetColumnIndex(1);
-            ImGui::TextColored(C_GREEN, "%s", WeaponName(e.weaponType));
+            if (e.target == 1)
+                ImGui::TextColored(C_AMBER, "%s",
+                    e.monsterName.empty() ? "怪物" : e.monsterName.c_str());
+            else
+                ImGui::TextColored(C_GREEN, "%s", WeaponName(e.weaponType));
 
             ImGui::TableSetColumnIndex(2);
             ImGui::TextColored(C_ACCENT, "%s", LmtText(e).c_str());
@@ -953,6 +1146,9 @@ void App::OpenEditorEdit(int index) {
     editor.isNew = false;
     editor.index = index;
     const SoundEntry& e = cfg.entries[index];
+    editor.target = e.target;
+    ChatSet(editor.defChat, e.defChat);
+    snprintf(editor.monsterBuf, sizeof(editor.monsterBuf), "%s", e.monsterName.c_str());
     editor.weaponType = e.weaponType;
     editor.fsmId = e.fsmId;
     editor.fsmTarget = e.fsmTarget;
@@ -974,6 +1170,7 @@ void App::OpenEditorEdit(int index) {
         r.atEnd  = c.atEnd;
         r.parsed = ParseExprToTerms(c.expr, r.terms);
         if (!r.parsed) r.rawExpr = c.expr;
+        ChatSet(r.chat, c.chat);
         r.pool = c.pool.specs;
         editor.conds.push_back(std::move(r));
     }
@@ -1006,13 +1203,17 @@ void App::OpenEditorEdit(int index) {
 
 void App::ApplyEditor() {
     SoundEntry e;
-    e.weaponType = editor.weaponType;
+    e.target = editor.target;
+    e.defChat = ChatGet(editor.defChat);
+    e.monsterName = Trim(editor.monsterBuf);
+    e.weaponType = (editor.target == 1) ? -1 : editor.weaponType;
     e.fsmId = editor.fsmId;
     e.fsmTarget = editor.fsmTarget;
     e.name = Trim(editor.name);
     e.group = Trim(editor.groupBuf);
     // 组合归属：新条目加入当前武器的激活组合；编辑已有条目保持其原组合
-    e.combo = editor.isNew
+    e.combo = (editor.target == 1) ? std::string()
+              : editor.isNew
                   ? ((editor.weaponType >= 0) ? ActiveCombo(editor.weaponType) : std::string())
                   : ((editor.index >= 0 && editor.index < (int)cfg.entries.size())
                          ? cfg.entries[editor.index].combo
@@ -1051,8 +1252,10 @@ void App::ApplyEditor() {
             CondSpec c;
             c.expr  = r.parsed ? TermsToExpr(r.terms) : r.rawExpr;
             c.atEnd = r.atEnd;
+            c.chat  = ChatGet(r.chat);
             c.pool.specs = r.pool;
-            if (c.expr.empty() || c.pool.empty()) continue;
+            // 只配了喊话没配音效的条件也要留下
+            if (c.expr.empty() || (c.pool.empty() && c.chat.empty())) continue;
             e.conds.push_back(std::move(c));
         }
     }
@@ -1115,12 +1318,96 @@ void App::DrawEditorDetached() {
         "任意 (-1)", "0 大剑", "1 片手", "2 双刀", "3 太刀", "4 大锤", "5 笛子",
         "6 长枪", "7 铳枪", "8 斩斧", "9 盾斧", "10 虫棍", "11 弓箭", "12 轻弩", "13 重弩"
     };
-    int wi = editor.weaponType + 1;
-    if (wi < 0) wi = 0;
-    if (wi > 14) wi = 0;
-    ImGui::SetNextItemWidth(200 * dpiScale);
-    ImGui::Combo("武器", &wi, wItems, 15);
-    editor.weaponType = wi - 1;
+    // 触发目标：决定 fsm/LMT 是拿玩家的动作比还是拿怪物的动作比
+    static const char* tItems[] = { "玩家动作", "怪物动作" };
+    ImGui::SetNextItemWidth(140 * dpiScale);
+    ImGui::Combo("触发目标", &editor.target, tItems, 2);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("玩家动作：玩家出招时触发\n"
+                          "怪物动作：怪物出招时触发");
+    ImGui::SameLine(0, 16);
+
+    if (editor.target == 1) {
+        // 怪物条目：武器无意义，改填怪物名（只用于归类，匹配不看它）
+        std::vector<const char*> mItems;
+        mItems.push_back("(未指定)");
+        for (int i = 0; i < kMonsterCount; ++i) mItems.push_back(kMonsters[i]);
+        int mi = 0;
+        for (int i = 0; i < kMonsterCount; ++i)
+            if (std::string(editor.monsterBuf) == kMonsters[i]) { mi = i + 1; break; }
+        ImGui::SetNextItemWidth(200 * dpiScale);
+        if (ImGui::Combo("怪物", &mi, mItems.data(), (int)mItems.size()))
+            snprintf(editor.monsterBuf, sizeof(editor.monsterBuf), "%s",
+                     mi > 0 ? kMonsters[mi - 1] : "");
+        ImGui::SameLine(0, 10);
+        ImGui::SetNextItemWidth(150 * dpiScale);
+        ImGui::InputTextWithHint("##mname", "或填写怪物名称",
+                                 editor.monsterBuf, sizeof(editor.monsterBuf));
+
+        // 已知动作挑选器：选中就把动作 ID 填进下面的 LMT 框，不用记数字。
+        // 相变、劫火这种一整招拆成多段的，选「整套」会一次填全并自动配 Group=。
+        std::vector<FsmDbEntry> known = MonsterActions(editor.monsterBuf);
+        if (!known.empty()) {
+            // 同一招的不同方向共用一个名字（大咬就有两个 ID）。下拉里按名字
+            // 去重，只列一行；选中时把这个名字下的所有 ID 一起填进 LMT 框。
+            // 拆成两行让人挨个挑没有意义 —— 漏掉一个就少响一次，这正是当初
+            // 「看到大咬却没响」的成因。
+            std::vector<std::string> names;
+            for (const auto& k : known) {
+                bool has = false;
+                for (const auto& n : names) if (n == k.name) { has = true; break; }
+                if (!has) names.push_back(k.name);
+            }
+            std::vector<std::string> labels;
+            for (const auto& n : names) {
+                std::string ids;
+                for (const auto& k : known)
+                    if (k.name == n) {
+                        if (!ids.empty()) ids += ",";
+                        ids += std::to_string(k.lmt);
+                    }
+                labels.push_back(ids + "  " + n);
+            }
+            std::vector<const char*> items;
+            items.push_back("(从已知动作里选择…)");
+            for (const auto& l : labels) items.push_back(l.c_str());
+            int pick = 0;
+            ImGui::SetNextItemWidth(430 * dpiScale);
+            if (ImGui::Combo("已知动作", &pick, items.data(), (int)items.size()) && pick > 0) {
+                const std::string& nm = names[pick - 1];
+                // 追加而不是覆盖：一整招的多段要一起填进同一条
+                std::string cur = Trim(editor.lmtBuf);
+                auto already = [&](int lmt) {
+                    std::string tok;
+                    for (std::size_t i = 0; i <= cur.size(); ++i) {
+                        char c = (i < cur.size()) ? cur[i] : ',';
+                        if (c == ',' || c == ';' || c == ' ') {
+                            if (Trim(tok) == std::to_string(lmt)) return true;
+                            tok.clear();
+                        } else tok += c;
+                    }
+                    return false;
+                };
+                for (const auto& k : known) {
+                    if (k.name != nm || already(k.lmt)) continue;
+                    if (!cur.empty()) cur += ",";
+                    cur += std::to_string(k.lmt);
+                }
+                snprintf(editor.lmtBuf, sizeof(editor.lmtBuf), "%s", cur.c_str());
+                if (editor.name[0] == 0)
+                    snprintf(editor.name, sizeof(editor.name), "%s", nm.c_str());
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("选中的动作ID会自动加入LMT框中。");
+        }
+    } else {
+        int wi = editor.weaponType + 1;
+        if (wi < 0) wi = 0;
+        if (wi > 14) wi = 0;
+        ImGui::SetNextItemWidth(200 * dpiScale);
+        ImGui::Combo("武器", &wi, wItems, 15);
+        editor.weaponType = wi - 1;
+    }
 
     ImGui::SetNextItemWidth(190 * dpiScale);
     ImGui::InputInt("FSMId (-1=不限)", &editor.fsmId, 1, 100);
@@ -1172,11 +1459,14 @@ void App::DrawEditorDetached() {
         editor.conds.clear();
         if (editor.judgePreset >= 1 && editor.judgePreset <= kPresetCount) {
             const JudgePreset& ps = kPresets[editor.judgePreset - 1];
-            editor.weaponType     = ps.weapon;
+            editor.target         = ps.target;
+            if (ps.target == 1)
+                snprintf(editor.monsterBuf, sizeof(editor.monsterBuf), "%s", ps.monster);
+            editor.weaponType     = (ps.target == 1) ? -1 : ps.weapon;
             editor.checkDelayMs   = ps.delayMs;
             editor.checkTimeoutMs = ps.timeoutMs;
             editor.checkOffsetMs  = ps.offsetMs;
-            editor.endOnAction    = true;
+            editor.endOnAction    = ps.endOnAction;
             snprintf(editor.lmtBuf, sizeof(editor.lmtBuf), "%s", ps.lmt);
             for (int i = 0; ps.conds[i].expr; ++i) {
                 CondRow r;
@@ -1184,6 +1474,7 @@ void App::DrawEditorDetached() {
                 r.label  = ps.conds[i].label;
                 r.parsed = ParseExprToTerms(ps.conds[i].expr, r.terms);
                 if (!r.parsed) r.rawExpr = ps.conds[i].expr;
+                ChatSet(r.chat, ps.conds[i].chat ? ps.conds[i].chat : "");
                 if (i < (int)keep.size()) r.pool = keep[i];
                 editor.conds.push_back(r);
             }
@@ -1307,6 +1598,9 @@ void App::DrawEditorDetached() {
                     ImGui::PopID();
                 }
                 if (r.pool.empty()) ImGui::TextDisabled("(未添加音效)");
+
+                DrawChatLine("队伍信息", "留空=不发；触发时发送这条信息", r.chat, dpiScale);
+
                 if (ImGui::Button("浏览...")) {
                     std::vector<SoundSpec> tmp;
                     if (BrowseSounds(tmp) > 0)
@@ -1329,6 +1623,8 @@ void App::DrawEditorDetached() {
                                 kPresets[editor.judgePreset - 1].fallbackLabel);
         else
             ImGui::TextDisabled("以上都不成立时，播下面的「默认音效」。");
+
+        DrawChatLine("默认信息", "留空=不发；以上条件都不触发时发送此信息", editor.defChat, dpiScale);
     }
 
     ImGui::Separator();
@@ -1589,8 +1885,13 @@ void App::ExportMeasuredIdsCsv() {
     };
     for (const auto& h : history)
         add(h.weapon, h.fsm, h.lmt, ResolveName(h.weapon, h.fsm, h.lmt));
-    for (const auto& e : cfg.entries)
+    for (const auto& e : cfg.entries) {
+        // 怪物条目不进共享库。fsm_db.csv 的列是 weapon,fsm,lmt,name，没有
+        // monster 这一列，怪物动作写进去就成了 weapon=-1/fsm=-1 的「武器」
+        // 动作 —— 上传出去会把别人的库也弄脏，而且和武器查询串台。
+        if (e.target == 1) continue;
         add(e.weaponType, e.fsmId, e.LmtAny(), e.name);
+    }
 
     // 1) 收进"用户库"（永不被更新覆盖），立刻生效
     const int added = MergeFsmDbEntries(ids, FsmDbUserPath());

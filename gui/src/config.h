@@ -20,6 +20,7 @@ struct PoolSpec {
 
 // 一条「条件 -> 音效池」。判定窗口内按书写顺序求值，第一个成立的播。
 struct CondSpec {
+    std::string chat;       // Chat:<表达式>= 条件命中时发的队伍聊天
     std::string expr;       // 条件表达式，如 "dmg>0 & dAura>=0"
     bool atEnd = false;     // true 写成 SoundEnd:（只在窗口结束时评），false 写成 Sound:
     PoolSpec pool;
@@ -27,6 +28,10 @@ struct CondSpec {
 
 // 一条派生攻击音效条目
 struct SoundEntry {
+    // 0 = 匹配玩家自己的动作（原来的唯一行为）  1 = 匹配怪物的动作
+    int target = 0;
+    std::string monsterName;    // MonsterName=，只用于在界面上归类，匹配时不看
+
     int weaponType = -1;        // 0..13，-1 = 任意武器
     std::vector<int> lmt;       // 触发的 LMT 列表；空 = 不限
     int fsmId = -1;             // 动作状态机 ID，-1 = 不限
@@ -44,8 +49,12 @@ struct SoundEntry {
     int checkDelayMs = 0;         // 从第几毫秒开始计伤害（排除招式前段的伤害）
     int checkTimeoutMs = 0;       // 窗口上限；0 = 不启用判定，行为与旧版一致
     int checkOffsetMs = 150;      // 判定点在"实测最晚出伤时刻"之上留的余量
-    bool endOnAction = true;      // 动作结束(含被打断)也作为判定时机
+    // 默认必须和插件一致：插件的 checkEndOn 默认是 0(=time)。
+    // 原来这里是 true，导致 ini 里写 CheckEndOn=time 的条目被 GUI 保存后
+    // 变成 action（往返测试抓到的）。
+    bool endOnAction = false;     // 动作结束(含被打断)也作为判定时机
     int checkMode = 0;            // CheckMode=final(1)：把所有条件都改成窗口结束时评
+    std::string defChat;          // Chat=，兜底触发时发的队伍聊天
     std::vector<CondSpec> conds;
 
     int LmtAny() const { return lmt.empty() ? -1 : lmt.front(); }
@@ -95,6 +104,35 @@ struct Config {
     std::string path;
     bool loaded = false;
 };
+
+
+// ---------------------------------------------------------------------------
+//  队伍喊话的界面表示
+//
+//  游戏认的是 <STYL 样式名>文字</STYL>。样式名（MOJI_YELLOW_DEFAULT 之类）是
+//  游戏内部的资源名，没道理要求用户去记，所以界面上只出现「颜色 + 文字」，
+//  标签在存盘那一刻才拼出来。
+//
+//  但用户手写的标签不能改坏：解析不出来的写法一律退回 raw，原样存回 ini。
+// ---------------------------------------------------------------------------
+struct ChatLine {
+    char text[224] = {};     // 纯文字，不含任何标签
+    int  color = 0;          // 0 = 默认（不加标签）；1.. 见 config.cpp 的 kChatColors
+    bool raw = false;        // 用户手写了解析不了的标签
+    char rawBuf[256] = {};   // raw 时的原文，原样存回去
+};
+
+struct ChatColorDef {
+    const char* ui;      // 下拉里显示的名字
+    const char* styl;    // 游戏的样式名；空 = 不加标签
+    float chip[4];       // 下拉里那个小色块（白底上要看得清）
+    float game[4];       // 预览条里的颜色（深底，按游戏里的观感取）
+};
+int                 ChatColorCount();
+const ChatColorDef& ChatColorAt(int i);
+
+void        ChatSet(ChatLine& cl, const std::string& s);   // ini 文本 -> 界面
+std::string ChatGet(const ChatLine& cl);                   // 界面 -> ini 文本
 
 bool LoadConfig(const std::string& path, Config& cfg);
 bool SaveConfig(const std::string& path, const Config& cfg);

@@ -3,10 +3,13 @@
 #include <vector>
 
 struct FsmDbEntry {
-    int weapon = -1;      // 0..13，-1=通用
+    int weapon = -1;      // 0..13，-1=通用（monster 非空时无意义）
     int fsm = -1;
     int lmt = -1;
     std::string name;
+    // 非空 = 这是「怪物」的动作，不是玩家武器的动作。两者的动作 ID 空间
+    // 互不相干，查询时必须分开，否则武器动作会被怪物动作串台。
+    std::string monster;
 };
 
 // 内置 + 外部 fsm_db.csv（exe 同目录，可选）合并后的知识库
@@ -37,3 +40,11 @@ void ReloadFsmDb();
 std::vector<FsmDbEntry> LoadFsmDbCsv(const std::string& path);
 // 内置兜底数据（仅当基础库文件缺失/为空时用来播种）
 std::vector<FsmDbEntry> BuiltinFsmDb();
+
+// ---- 怪物动作（内置，不进 fsm_db.csv；CSV 的列结构上游已冻结）----
+// 怪物动作反查：monster 为空则在所有怪物里找
+std::string LookupMonsterAction(const std::string& monster, int lmt);
+// 列出知识库里有记录的怪物名
+std::vector<std::string> ListKnownMonsters();
+// 某只怪物的全部已知动作
+std::vector<FsmDbEntry> MonsterActions(const std::string& monster);
