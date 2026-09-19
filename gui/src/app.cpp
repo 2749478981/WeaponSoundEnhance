@@ -1,5 +1,6 @@
 #include "app.h"
 #include "fsmdb.h"
+#include "fsutil.h"
 #include "imgui.h"
 #include <windows.h>
 #include <shellapi.h>
@@ -462,9 +463,8 @@ App::App() {
     {
         const std::string tpl = ExeDir() + "WeaponSoundEnhance.ini.template";
         const std::string ini = ExeDir() + "WeaponSoundEnhance.ini";
-        if (GetFileAttributesA(ini.c_str()) == INVALID_FILE_ATTRIBUTES &&
-            GetFileAttributesA(tpl.c_str()) != INVALID_FILE_ATTRIBUTES) {
-            if (CopyFileA(tpl.c_str(), ini.c_str(), FALSE) && LoadConfig(ini, cfg)) {
+        if (!FsExists(ini) && FsExists(tpl)) {
+            if (FsCopy(tpl, ini) && LoadConfig(ini, cfg)) {
                 EnrichNames();
                 SetFsmDbDir(BaseDir());
                 ReloadFsmDb();

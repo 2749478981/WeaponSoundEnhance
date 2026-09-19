@@ -273,17 +273,29 @@ volatile int gDebug = 0;   // ini Debug=1 enables per-play / heartbeat logging
 
 void Log(const char* fmt, ...);
 
+// 长路径：Win32 默认受 MAX_PATH(260) 限制，插件装在很深的目录（mod 管理器/长文件夹名）
+// 时会读不到 ini/wav。加 \\?\ 前缀可以突破（要求绝对路径且只用反斜杠）。
+std::wstring LongPathW(const std::wstring& p)
+{
+    if (p.size() < 250) return p;
+    std::wstring w = p;
+    for (auto& c : w) if (c == L'/') c = L'\\';
+    if (w.rfind(L"\\\\", 0) == 0) return L"\\\\?\\UNC\\" + w.substr(2);
+    if (w.size() >= 2 && w[1] == L':') return L"\\\\?\\" + w;
+    return w;
+}
+
 // 文件是否存在
 bool FileExistsW(const std::wstring& p)
 {
-    const DWORD a = ::GetFileAttributesW(p.c_str());
+    const DWORD a = ::GetFileAttributesW(LongPathW(p).c_str());
     return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
 }
 
 // 目录是否存在
 bool DirExistsW(const std::wstring& p)
 {
-    const DWORD a = ::GetFileAttributesW(p.c_str());
+    const DWORD a = ::GetFileAttributesW(LongPathW(p).c_str());
     return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
 }
 
@@ -315,7 +327,7 @@ void LogInit()
 {
     gLogPath = gDataDir + L"WeaponSoundEnhance.log";
     ::DeleteFileW(gLogPath.c_str());
-    Log("WeaponSoundEnhance 2.5 starting");
+    Log("WeaponSoundEnhance 2.6 starting");
     // 旧布局提示：wav 还在 plugins\sounds\ 时自动兼容，但建议搬进数据目录
     const std::wstring oldSounds = gModuleDir + L"sounds";
     if (gDataDir != gModuleDir && DirExistsW(oldSounds) &&
@@ -332,7 +344,7 @@ void LogV(const char* fmt, va_list ap)
     vsnprintf_s(buf, _TRUNCATE, fmt, ap);
     ::OutputDebugStringA(buf);
     FILE* f = nullptr;
-    if (_wfopen_s(&f, gLogPath.c_str(), L"ab") == 0 && f) {
+    if (_wfopen_s(&f, LongPathW(gLogPath).c_str(), L"ab") == 0 && f) {
         SYSTEMTIME st{}; ::GetLocalTime(&st);
         fprintf(f, "[%02u:%02u:%02u.%03u] %s\n",
                 st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, buf);
@@ -1029,7 +1041,7 @@ void ParseSoundSpec(const std::string& token, SoundSpec& sp)
 // Read a whole ini file as UTF-8, skipping a BOM if present.
 bool ReadFileUtf8(const std::wstring& path, std::string& out)
 {
-    HANDLE h = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+    HANDLE h = ::CreateFileW(LongPathW(path).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) return false;
     LARGE_INTEGER sz{};
@@ -1415,7 +1427,7 @@ const audio::Wav* GetCached(const std::wstring& absPath)
     for (auto& p : gCache)
         if (p.first == key) return &p.second;
 
-    HANDLE h = ::CreateFileW(absPath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+    HANDLE h = ::CreateFileW(LongPathW(absPath).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) {
         Log("wav not found: %s", key.c_str());

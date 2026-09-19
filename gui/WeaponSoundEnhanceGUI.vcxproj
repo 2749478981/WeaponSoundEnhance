@@ -109,6 +109,7 @@
     <ClInclude Include="src\config.h" />
     <ClInclude Include="src\game.h" />
     <ClInclude Include="src\fsmdb.h" />
+    <ClInclude Include="src\fsutil.h" />
     <ClInclude Include="third_party\imgui\imgui.h" />
     <ClInclude Include="third_party\imgui\imgui_internal.h" />
     <ClInclude Include="third_party\imgui\imconfig.h" />

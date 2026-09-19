@@ -1,6 +1,8 @@
 #include "fsmdb.h"
+#include "fsutil.h"
 #include <cstdlib>
 #include <fstream>
+#include <sstream>
 #include <windows.h>
 
 namespace {
@@ -101,8 +103,9 @@ std::string ExeDir() {
 }
 
 void LoadCsvInto(const std::string& path, std::vector<FsmDbEntry>& db) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return;
+    std::string txt;
+    if (!FsRead(path, txt)) return;          // 宽路径：中文目录也能读
+    std::istringstream in(txt);
     std::string line;
     while (std::getline(in, line)) {
         line = Trim(line);
@@ -151,7 +154,7 @@ bool g_loaded = false;
 std::string g_dir;   // 数据目录（ini 所在目录）；空 = exe 同目录
 
 bool FileExists(const std::string& p) {
-    const DWORD a = GetFileAttributesA(p.c_str());
+    const DWORD a = GetFileAttributesW(FsWide(p).c_str());
     return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
 }
 
@@ -207,8 +210,7 @@ std::vector<FsmDbEntry> BuiltinFsmDb() { return Builtin(); }
 void ReloadFsmDb() { g_loaded = false; }
 
 bool SaveFsmDbCsv(const std::string& path, const std::vector<FsmDbEntry>& entries) {
-    std::ofstream out(path, std::ios::binary);
-    if (!out) return false;
+    std::ostringstream out(std::ios::binary);
     WriteCsvHeader(out);
     std::vector<FsmDbEntry> uniq;
     for (const auto& e : entries) {
@@ -218,7 +220,7 @@ bool SaveFsmDbCsv(const std::string& path, const std::vector<FsmDbEntry>& entrie
     }
     for (const auto& e : uniq)
         out << e.weapon << "," << e.fsm << "," << e.lmt << "," << CsvName(e.name) << "\n";
-    return true;
+    return FsWrite(path, out.str());          // 宽路径写盘
 }
 
 int MergeFsmDbEntries(const std::vector<FsmDbEntry>& src, const std::string& dstPath) {
@@ -226,10 +228,8 @@ int MergeFsmDbEntries(const std::vector<FsmDbEntry>& src, const std::string& dst
     std::vector<FsmDbEntry> dst = LoadFsmDbCsv(dstPath);
 
     // 目标文件不存在时先写表头，保持文件可读
-    bool hadFile = false;
-    { std::ifstream in(dstPath, std::ios::binary); hadFile = (bool)in; }
-    std::ofstream out(dstPath, std::ios::binary | std::ios::app);
-    if (!out) return 0;
+    const bool hadFile = FileExists(dstPath);
+    std::ostringstream out(std::ios::binary);
     if (!hadFile) WriteCsvHeader(out);
 
     int added = 0;
@@ -241,6 +241,7 @@ int MergeFsmDbEntries(const std::vector<FsmDbEntry>& src, const std::string& dst
         dst.push_back(e);
         ++added;
     }
+    if (added > 0 || !hadFile) FsWrite(dstPath, out.str(), true);   // 追加写
     return added;
 }
 

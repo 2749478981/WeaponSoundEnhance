@@ -1,4 +1,5 @@
 #include "config.h"
+#include "fsutil.h"
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
@@ -144,10 +145,9 @@ std::uint64_t ParsePlayerRoot(const std::string& s, std::uint64_t defval) {
 static int ClampInt(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
 bool LoadConfig(const std::string& path, Config& cfg) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return false;
-    std::string txt((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    in.close();
+    std::string txt;
+    // 宽路径读取：路径含中文时 std::ifstream 会把 UTF-8 当 ANSI，直接变成“文件不存在”
+    if (!FsRead(path, txt)) return false;
 
     if (txt.size() >= 3 && (unsigned char)txt[0] == 0xEF &&
         (unsigned char)txt[1] == 0xBB && (unsigned char)txt[2] == 0xBF)
@@ -521,9 +521,6 @@ bool SaveConfig(const std::string& path, const Config& cfg) {
             }
     }
 
-    std::ofstream out(path, std::ios::binary);
-    if (!out) return false;
-    out.write(o.data(), (std::streamsize)o.size());
-    out.close();
-    return true;
+    // 宽路径写盘（同读取：中文路径下 std::ofstream 会写到不存在的位置/直接失败）
+    return FsWrite(path, o);
 }
