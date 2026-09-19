@@ -416,6 +416,14 @@ int gAutoFirstMs  = 5000;    // 进场景后等这么久再扫，给怪物生成
 int gAutoRetryMs  = 15000;  // 没扫到时的重试间隔
 int gAutoMaxTries = 20;     // 重试上限（单次扫描已经只要几百毫秒，可以放开）
 std::uint64_t gNextAutoAt = 0;
+volatile int gHud = 0;          // 把怪物当前动作显示在屏幕上（ini MonsterHud / Ctrl+F7）
+std::uint64_t gHudLastMs = 0;
+int gHudMinGapMs = 200;         // 屏显最小间隔，免得动作连切时刷屏
+
+// 动作 ID 小于这个值的一律当过渡噪声丢掉。实测这些只持续一个轮询周期
+// （60ms 出头），是动画对象切换的瞬间被读到的中间态，不是真招式。
+int gMinActionId = 100;
+
 long long gDeepProbes = 0;   // 真正下到 VirtualQuery 的候选数，用来看预筛好不好使
 int  gAutoTries  = 0;
 bool gWasInScene = false;
@@ -450,7 +458,7 @@ bool Validate(std::uintptr_t act, std::uintptr_t hpo,
 
     std::int32_t lmt = 0;
     if (!Rpm(act + OFF_LMT, &lmt, sizeof(lmt))) return false;
-    if (lmt < 0 || lmt > 200000) return false;
+    if (lmt < gMinActionId || lmt > 200000) return false;
 
     o.hpMax = hpv[0]; o.hp = hpv[1];
     o.frame = frame;  o.frameEnd = frameEnd;
@@ -845,6 +853,14 @@ void Tick()
         if (sp.lmt != mo.last.lmt || sp.fsm != mo.last.fsm || sp.fsmTgt != mo.last.fsmTgt) {
             const double dur = (mo.actStart == 0) ? 0.0 : (double)(now - mo.actStart);
             ++mo.changes;
+            if (gHud != 0 && (now - gHudLastMs) >= (std::uint64_t)gHudMinGapMs) {
+                gHudLastMs = now;
+                char hud[192];
+                snprintf(hud, sizeof(hud), "怪物动作 %d   (上一个 %d 持续 %.1fs)   帧%d   HP %.0f%%",
+                         sp.lmt, mo.last.lmt, dur / 1000.0, (int)sp.frameEnd,
+                         sp.hpMax > 0.0f ? (sp.hp * 100.0f / sp.hpMax) : 0.0f);
+                plugin::ShowMessage(hud, false);
+            }
             plugin::Log("[怪物%d] 动作 %d -> %d | fsm %d/%d -> %d/%d | 上一动作 %.0fms 掉血 %.0f "
                         "| HP %.0f/%.0f (%.1f%%) | 总帧 %.0f",
                         (int)i, mo.last.lmt, sp.lmt, mo.last.fsmTgt, mo.last.fsm,
@@ -1084,6 +1100,7 @@ int gToggleKey   = VK_F9;
 int gMoreKey     = VK_F10;
 int gComboKey    = VK_F11;   // 切换当前武器配置组合
 int gMonScanKey  = VK_F6;    // 扫描怪物（仅 MonsterProbe=1 时有用）
+int gMonHudKey   = VK_F7;    // 开关「怪物动作屏显」
 int gSetVolValue = 50;
 
 // --- game module addresses (15.23.00) ---
@@ -1721,6 +1738,7 @@ void LoadConfig()
                 else if (key == "Hotkeys") g_hotkeysEnabled = std::atoi(val.c_str()) != 0;
                 else if (key == "MonsterProbe") monster::gEnabled = std::atoi(val.c_str()) != 0;
                 else if (key == "MonsterAutoScan") monster::gAutoScan = std::atoi(val.c_str()) != 0;
+                else if (key == "MonsterHud") monster::gHud = std::atoi(val.c_str()) != 0;
                 else if (key == "Debug") gDebug = std::atoi(val.c_str()) != 0;
                 else if (key == "GaugePtrOff") { std::uintptr_t v = ParseHex(val); if (v) gGaugePtrOff = (std::uint32_t)v; }
                 else if (key == "GaugeValOff") { std::uintptr_t v = ParseHex(val); if (v) gGaugeValOff = (std::uint32_t)v; }
@@ -2541,17 +2559,17 @@ DWORD WINAPI WorkerProc(LPVOID)
 DWORD WINAPI HotkeyProc(LPVOID)
 {
     bool reloadWas=false, upWas=false, downWas=false,
-         setWas=false, togWas=false, moreWas=false, comboWas=false, monWas=false;
+         setWas=false, togWas=false, moreWas=false, comboWas=false, monWas=false, hudWas=false;
     while (::InterlockedCompareExchange(&gStop, 0, 0) == 0) {
         ::Sleep(30);
         if (g_hotkeysEnabled == 0) {
-            reloadWas = upWas = downWas = setWas = togWas = moreWas = comboWas = monWas = false;
+            reloadWas = upWas = downWas = setWas = togWas = moreWas = comboWas = monWas = hudWas = false;
             continue;
         }
         const bool mod = (gModifierKey == 0) ||
                          ((::GetAsyncKeyState(gModifierKey) & 0x8000) != 0);
         if (!mod) {
-            reloadWas = upWas = downWas = setWas = togWas = moreWas = comboWas = monWas = false;
+            reloadWas = upWas = downWas = setWas = togWas = moreWas = comboWas = monWas = hudWas = false;
             continue;
         }
         const bool reloadDown = (::GetAsyncKeyState(gReloadKey) & 0x8000) != 0;
@@ -2574,6 +2592,14 @@ DWORD WINAPI HotkeyProc(LPVOID)
             }
         }
         monWas = monDown;
+
+        const bool hudDown = (::GetAsyncKeyState(gMonHudKey) & 0x8000) != 0;
+        if (hudDown && !hudWas) {
+            monster::gHud = (monster::gHud != 0) ? 0 : 1;
+            ShowMessage(monster::gHud ? "wse: 怪物动作屏显 开"
+                                      : "wse: 怪物动作屏显 关", true);
+        }
+        hudWas = hudDown;
 
         if (reloadDown && !reloadWas) {
             ReloadConfig();
