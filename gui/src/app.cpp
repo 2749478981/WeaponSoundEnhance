@@ -149,9 +149,9 @@ struct JudgePreset {
 // 不看这个名字（目前还没法从内存里读出怪物种类）。列表不全也不影响使用，
 // 条目里的名字可以手填。
 static const char* const kMonsters[] = {
-    "黑龙", "煌黑龙", "天彗龙", "冰呪龙", "灭尽龙", "炎王龙", "炎妃龙",
-    "钢龙", "霜刃冰牙龙", "斩龙", "惨爪龙", "角龙", "恐暴龙", "爆锤龙",
-    "麒麟", "风漂龙", "雷颚龙", "土砂龙", "泥鱼龙", "浮岳龙",
+    "黑龙", "煌黑龙", "冰呪龙", "灭尽龙", "炎王龙", "炎妃龙",
+    "钢龙", "霜刃冰牙龙", "斩龙", "惨爪龙", "角龙", "恐暴龙",
+    "麒麟", "风漂龙", "土砂龙", "泥鱼龙",
 };
 static const int kMonsterCount = (int)(sizeof(kMonsters) / sizeof(kMonsters[0]));
 
@@ -175,19 +175,12 @@ static const JudgePreset kPresets[] = {
       "真蓄两段：第一段约 0.65 秒、伤害小，第二段约 1.7~2.1 秒、伤害大。"
       "计伤起点设在 1200ms 正好卡在两段中间，只认第二段。" },
 
-    { "黑龙 · 科目三 成功", 3, 1, "黑龙", "33029", 3000, 8000, 0, false,
+    { "黑龙·科目三 成功", 3, 1, "黑龙", "33029", 3000, 8000, 0, false,
       { { "dmg>0 & lmt==49326", false, "成功",
           "<STYL MOJI_YELLOW_DEFAULT>至尊太刀侠科目三成功！全体猎人收刀敬礼！</STYL>" },
         { nullptr, false, nullptr, nullptr } },
       "失败",
-      "黑龙二转三相变的最后一段是 33029（约 4.7 秒），大居就顶在这里。"
-      "整个相变期间黑龙无敌、血量一点不掉，伤害要到 33029 结束之后才进得去，"
-      "所以窗口里出现伤害就说明最后那下登龙打上了。实测出伤在 5.25 秒。\n"
-      "光靠时间窗不够：连段失败后窗口尾巴上可能采到一次普通攻击的伤害，"
-      "所以条件里还要求 lmt==49326，也就是那下伤害必须是登龙打出来的。\n"
-      "注意科目三的大居必然判失败（顶吼不产生伤害），别拿大居当信号。\n"
-      "这条建议只填喊话、不填音效：同一下登龙，你的「登龙命中/落空」那条"
-      "已经播过一次了，两边都填就会叠播。" },
+      "太刀黑龙科目三成功后触发" },
 };
 
 static const int kPresetCount = 4;
@@ -426,9 +419,8 @@ void DrawChatLine(const char* label, const char* hint, ChatLine& cl, float dpi)
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(label);
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("命中时往队伍频道发一条消息，队友都看得见。\n"
-                          "文字框留空 = 不发。\n"
-                          "这是真的发到队伍频道，刷屏会招人烦。");
+        ImGui::SetTooltip("触发判定后在队伍频道发一条消息。\n"
+                          "文字框留空：不发。");
     ImGui::SameLine(0, 10);
 
     if (cl.raw) {
@@ -458,7 +450,9 @@ void DrawChatLine(const char* label, const char* hint, ChatLine& cl, float dpi)
 
     // 颜色下拉：每项前面一个色块
     const ChatColorDef& cur = ChatColorAt(cl.color);
-    ImGui::SetNextItemWidth(118 * dpi);
+    ImGui::TextUnformatted("颜色选择");
+    ImGui::SameLine(0, 6);
+    ImGui::SetNextItemWidth(108 * dpi);
     if (ImGui::BeginCombo("##color", cur.ui)) {
         for (int i = 0; i < ChatColorCount(); ++i) {
             const ChatColorDef& cd = ChatColorAt(i);
@@ -497,7 +491,7 @@ void DrawChatLine(const char* label, const char* hint, ChatLine& cl, float dpi)
         const int used = (int)ChatGet(cl).size();
         const bool over = (used > 127);
         ImGui::TextColored(over ? C_RED : C_GRAY,
-                           over ? "长度 %d/127 字节 —— 超了，发出去会被游戏截断"
+                           over ? "长度 %d/127 字节 —— 超出可用长度，强行使用会被截断"
                                 : "长度 %d/127 字节（一个汉字算 3 个；颜色标签本身占 32 个）",
                            used);
     }
@@ -720,12 +714,13 @@ void App::DrawWeaponTree() {
         if (sel) ImGui::PopStyleColor(3);
         if (clicked) weaponFilter = filter;
     };
-    int totalActive = 0;
-    for (const auto& e : cfg.entries) if (EntryActive(e)) ++totalActive;
-    item("全部条目", -1, totalActive);
-
     // ---- 武器 ----
     // 和下面的「怪物」同一个格式：一个可折叠栏，里面才是具体分类。
+    //
+    // 这里只数武器条目（target==0）。原来外面还有一个「全部条目」数的是
+    // 武器+怪物的合计，但 DrawEntries 在 weaponFilter==-1 时会把怪物条目
+    // 全跳掉，点进去只看得到武器条目 —— 数字和内容对不上。两边本来就是
+    // 两套东西，合计数没有意义，去掉了。
     ImGui::Spacing();
     int wpnTotal = 0;
     for (const auto& e : cfg.entries) if (e.target == 0 && EntryActive(e)) ++wpnTotal;
@@ -734,6 +729,7 @@ void App::DrawWeaponTree() {
     if (ImGui::CollapsingHeader(wpnHdr, weaponTreeOpen ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
         weaponTreeOpen = true;
         ImGui::Indent();
+        item("全部武器条目", -1, wpnTotal);
         for (int w = 0; w <= 13; ++w)
             item(WeaponName(w), w, CountFor(w));
         int any = 0;
@@ -1342,9 +1338,8 @@ void App::DrawEditorDetached() {
     ImGui::SetNextItemWidth(140 * dpiScale);
     ImGui::Combo("触发目标", &editor.target, tItems, 2);
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("玩家动作 = 你自己出招时触发（原来的行为）\n"
-                          "怪物动作 = 当前跟踪的怪物出招时触发\n"
-                          "下面的 FSMId / LMT 填的就是所选目标的动作 ID");
+        ImGui::SetTooltip("玩家动作：玩家出招时触发\n"
+                          "怪物动作：怪物出招时");
     ImGui::SameLine(0, 16);
 
     if (editor.target == 1) {
@@ -1361,11 +1356,8 @@ void App::DrawEditorDetached() {
                      mi > 0 ? kMonsters[mi - 1] : "");
         ImGui::SameLine(0, 10);
         ImGui::SetNextItemWidth(150 * dpiScale);
-        ImGui::InputTextWithHint("##mname", "或手填名字",
+        ImGui::InputTextWithHint("##mname", "或填写怪物名称",
                                  editor.monsterBuf, sizeof(editor.monsterBuf));
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("只是个归类标签，插件匹配只看动作 ID。\n"
-                              "列表里没有的怪物直接手填就行。");
 
         // 已知动作挑选器：选中就把动作 ID 填进下面的 LMT 框，不用记数字。
         // 相变、劫火这种一整招拆成多段的，选「整套」会一次填全并自动配 Group=。
@@ -1378,7 +1370,7 @@ void App::DrawEditorDetached() {
                 labels.push_back(b);
             }
             std::vector<const char*> items;
-            items.push_back("(从已知动作里挑…)");
+            items.push_back("(从已知动作里选择…)");
             for (const auto& l : labels) items.push_back(l.c_str());
             int pick = 0;
             ImGui::SetNextItemWidth(430 * dpiScale);
@@ -1406,9 +1398,7 @@ void App::DrawEditorDetached() {
                     snprintf(editor.name, sizeof(editor.name), "%s", k.name.c_str());
             }
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("挑中的动作 ID 会追加到下面的 LMT 框里。\n"
-                                  "相变、劫火这类是一整招拆成的多段，\n"
-                                  "把几段都挑上并填一个「动作组」，整招才只响一次。");
+                ImGui::SetTooltip("选中的动作ID会自动加入LMT框中。");
         }
     } else {
         int wi = editor.weaponType + 1;
@@ -1609,7 +1599,7 @@ void App::DrawEditorDetached() {
                 }
                 if (r.pool.empty()) ImGui::TextDisabled("(未添加音效)");
 
-                DrawChatLine("队伍喊话", "留空=不发；命中这条时发给全队", r.chat, dpiScale);
+                DrawChatLine("队伍信息", "留空=不发；触发时发送这条信息", r.chat, dpiScale);
 
                 if (ImGui::Button("浏览...")) {
                     std::vector<SoundSpec> tmp;
@@ -1634,7 +1624,7 @@ void App::DrawEditorDetached() {
         else
             ImGui::TextDisabled("以上都不成立时，播下面的「默认音效」。");
 
-        DrawChatLine("兜底喊话", "留空=不发；都不成立时发给全队", editor.defChat, dpiScale);
+        DrawChatLine("默认信息", "留空=不发；以上条件都不触发时发送此信息", editor.defChat, dpiScale);
     }
 
     ImGui::Separator();

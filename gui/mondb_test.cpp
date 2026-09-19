@@ -23,6 +23,10 @@ int main(){
     Eq("黑龙 28788 (大咬方向二)", LookupMonsterAction("黑龙",28788), "大咬（方向二，推定，3.7s）");
     Eq("不指定怪物也能查",        LookupMonsterAction("",33024),      "1转2 相变 · 第9段 (5.9s)");
     Eq("查不到返回空",            LookupMonsterAction("黑龙",99999),  "");
+    // 只保留审过的五组（两段相变、劫火两种起手、大咬）。「高频动作」「长动作」
+    // 那些只是统计上显眼、没人认得出是什么招，不该再出现在下拉栏里。
+    Eq("不认得的高频动作已删",     LookupMonsterAction("黑龙",28897),  "");
+    Eq("不认得的长动作已删",       LookupMonsterAction("黑龙",12326),  "");
     Eq("怪物 ID 不能串到武器查询", LookupFsmName(3,-1,33047),          "");
     Eq("武器查询仍然正常",         LookupFsmName(3,-1,49326),          "登龙 (气刃兜割) —— 三个刃色共用");
     Eq("武器 ID 不会串到怪物查询", LookupMonsterAction("黑龙",49326),  "");
