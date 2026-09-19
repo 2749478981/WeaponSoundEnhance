@@ -19,7 +19,7 @@ struct CondRow {
     bool parsed = true;
     bool atEnd = false;     // 只在窗口结束时评（写成 SoundEnd:）
     std::string label;      // 预设给的友好名，如"成功"/"失败(掉刃)"
-    char chatBuf[256] = {}; // 该条件命中时发的队伍喊话（Chat:<表达式>=）
+    ChatLine chat;          // 该条件命中时发的队伍喊话（Chat:<表达式>=）
     std::vector<SoundSpec> pool;
 };
 
@@ -41,7 +41,8 @@ struct App {
     // -1=全部  -2=任意武器  0..13=具体武器
     // -3=所有怪物条目   -10-i=第 i 个怪物
     int weaponFilter = -1;
-    bool monsterTreeOpen = false;
+    bool weaponTreeOpen = true;    // 左栏「武器」折叠栏（默认展开）
+    bool monsterTreeOpen = false;  // 左栏「怪物」折叠栏
     std::vector<std::string> extraMonsters;   // ini 里出现过但不在内置列表里的怪物名
     std::string MonsterNameAt(int idx) const;
     char searchBuf[160] = {};
@@ -69,7 +70,7 @@ struct App {
         int  checkOffsetMs = 150;
         bool endOnAction = true;
         int  checkMode = 0;          // 1 = CheckMode=final
-        char defChatBuf[256] = {};   // 兜底触发时发的队伍喊话（Chat=）
+        ChatLine defChat;            // 兜底触发时发的队伍喊话（Chat=）
         std::vector<CondRow> conds;
     } editor;
 

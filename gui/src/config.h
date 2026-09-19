@@ -105,6 +105,35 @@ struct Config {
     bool loaded = false;
 };
 
+
+// ---------------------------------------------------------------------------
+//  队伍喊话的界面表示
+//
+//  游戏认的是 <STYL 样式名>文字</STYL>。样式名（MOJI_YELLOW_DEFAULT 之类）是
+//  游戏内部的资源名，没道理要求用户去记，所以界面上只出现「颜色 + 文字」，
+//  标签在存盘那一刻才拼出来。
+//
+//  但用户手写的标签不能改坏：解析不出来的写法一律退回 raw，原样存回 ini。
+// ---------------------------------------------------------------------------
+struct ChatLine {
+    char text[224] = {};     // 纯文字，不含任何标签
+    int  color = 0;          // 0 = 默认（不加标签）；1.. 见 config.cpp 的 kChatColors
+    bool raw = false;        // 用户手写了解析不了的标签
+    char rawBuf[256] = {};   // raw 时的原文，原样存回去
+};
+
+struct ChatColorDef {
+    const char* ui;      // 下拉里显示的名字
+    const char* styl;    // 游戏的样式名；空 = 不加标签
+    float chip[4];       // 下拉里那个小色块（白底上要看得清）
+    float game[4];       // 预览条里的颜色（深底，按游戏里的观感取）
+};
+int                 ChatColorCount();
+const ChatColorDef& ChatColorAt(int i);
+
+void        ChatSet(ChatLine& cl, const std::string& s);   // ini 文本 -> 界面
+std::string ChatGet(const ChatLine& cl);                   // 界面 -> ini 文本
+
 bool LoadConfig(const std::string& path, Config& cfg);
 bool SaveConfig(const std::string& path, const Config& cfg);
 

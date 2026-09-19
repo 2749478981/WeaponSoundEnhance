@@ -67,7 +67,7 @@ int main()
     std::memcpy(mon + monster::OFF_ACT,   &actp, 8);
     std::memcpy(mon + monster::OFF_HPOBJ, &hpop, 8);
 
-    const std::int32_t fsm = 40, fsmTgt = 8, lmt = 28787;   // 用真实量级的动作 ID：gMinActionId 会把 <100 的当噪声丢掉
+    const std::int32_t fsm = 40, fsmTgt = 8, lmt = 28787;   // 28787 是黑龙大咬的真实 ID；gMinActionId 会把 <100 的当噪声丢掉，所以不能用小数字
     std::memcpy(mon + monster::OFF_FSMID,  &fsm,    4);
     std::memcpy(mon + monster::OFF_FSMTGT, &fsmTgt, 4);
     std::memcpy(act + monster::OFF_LMT,    &lmt,    4);

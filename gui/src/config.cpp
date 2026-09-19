@@ -1,4 +1,5 @@
 #include "config.h"
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
@@ -142,6 +143,82 @@ std::uint64_t ParsePlayerRoot(const std::string& s, std::uint64_t defval) {
 }
 
 static int ClampInt(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+
+// ===========================================================================
+//  队伍喊话：颜色 + 纯文字  <->  <STYL ...>...</STYL>
+//
+//  颜色表里只有「默认/黄/红」是从游戏自己的文本文件里挖出来、确认存在的
+//  （nativePC\common\text\*.gmd 里能直接 grep 到 MOJI_YELLOW_DEFAULT /
+//  MOJI_RED_DEFAULT）。其余几种是按同一命名规律推的，还没在游戏里验过 ——
+//  进游戏打一句  /wse 颜色  会把每种各发一条样例，哪条变了色哪条就是真的。
+// ===========================================================================
+static const ChatColorDef kChatColors[] = {
+    { "默认（白）", "",                        {0.45f,0.45f,0.48f,1}, {0.95f,0.95f,0.95f,1} },
+    { "黄",         "MOJI_YELLOW_DEFAULT",     {0.80f,0.60f,0.05f,1}, {1.00f,0.84f,0.24f,1} },
+    { "红",         "MOJI_RED_DEFAULT",        {0.85f,0.20f,0.16f,1}, {1.00f,0.40f,0.35f,1} },
+    { "橙",         "MOJI_ORANGE_DEFAULT",     {0.85f,0.45f,0.05f,1}, {1.00f,0.62f,0.22f,1} },
+    { "绿",         "MOJI_LIGHTGREEN_DEFAULT", {0.15f,0.62f,0.20f,1}, {0.45f,0.90f,0.45f,1} },
+    { "蓝",         "MOJI_LIGHTBLUE_DEFAULT",  {0.10f,0.45f,0.85f,1}, {0.45f,0.75f,1.00f,1} },
+    { "紫",         "MOJI_PURPLE_DEFAULT",     {0.50f,0.25f,0.80f,1}, {0.75f,0.55f,1.00f,1} },
+    { "灰",         "MOJI_GRAY_DEFAULT",       {0.55f,0.55f,0.58f,1}, {0.65f,0.65f,0.68f,1} },
+};
+static const int kChatColorCount = (int)(sizeof(kChatColors) / sizeof(kChatColors[0]));
+
+int ChatColorCount() { return kChatColorCount; }
+
+const ChatColorDef& ChatColorAt(int i)
+{
+    if (i < 0 || i >= kChatColorCount) i = 0;
+    return kChatColors[i];
+}
+
+// 只认「整句被一对 STYL 包起来」这一种写法。其余（多段不同颜色、嵌了别的
+// 标签……）一律 raw 原样保留 —— 界面看不懂不等于它是错的，不能擅自改写。
+void ChatSet(ChatLine& cl, const std::string& src)
+{
+    cl.raw = false;
+    cl.color = 0;
+    cl.text[0] = 0;
+    cl.rawBuf[0] = 0;
+    const std::string v = Trim(src);
+    if (v.empty()) return;
+
+    snprintf(cl.rawBuf, sizeof(cl.rawBuf), "%s", v.c_str());
+
+    if (v.find('<') == std::string::npos) {           // 纯文字
+        snprintf(cl.text, sizeof(cl.text), "%s", v.c_str());
+        return;
+    }
+    const std::string kEnd = "</STYL>";
+    if (v.size() < 6 + kEnd.size() + 1 ||
+        v.compare(0, 6, "<STYL ") != 0 ||
+        v.compare(v.size() - kEnd.size(), kEnd.size(), kEnd) != 0) {
+        cl.raw = true; return;
+    }
+    const std::size_t gt = v.find('>');
+    if (gt == std::string::npos || gt + 1 > v.size() - kEnd.size()) { cl.raw = true; return; }
+    const std::string name = Trim(v.substr(6, gt - 6));
+    const std::string body = v.substr(gt + 1, v.size() - kEnd.size() - gt - 1);
+    if (body.find('<') != std::string::npos) { cl.raw = true; return; }   // 里面还有别的标签
+
+    int idx = -1;
+    for (int i = 1; i < kChatColorCount; ++i)
+        if (name == kChatColors[i].styl) { idx = i; break; }
+    if (idx < 0) { cl.raw = true; return; }            // 颜色表里没有的样式名
+
+    cl.color = idx;
+    snprintf(cl.text, sizeof(cl.text), "%s", body.c_str());
+}
+
+std::string ChatGet(const ChatLine& cl)
+{
+    if (cl.raw) return Trim(cl.rawBuf);
+    const std::string t = Trim(cl.text);
+    if (t.empty()) return std::string();
+    if (cl.color <= 0 || cl.color >= kChatColorCount) return t;
+    return std::string("<STYL ") + kChatColors[cl.color].styl + ">" + t + "</STYL>";
+}
 
 bool LoadConfig(const std::string& path, Config& cfg) {
     std::ifstream in(path, std::ios::binary);
@@ -388,6 +465,9 @@ static void WriteEntry(const SoundEntry& e, int n, std::string& o) {
         if (e.checkDelayMs > 0)
             o += "CheckDelayMs=" + std::to_string(e.checkDelayMs) + "\r\n";
         o += "CheckTimeoutMs=" + std::to_string(e.checkTimeoutMs) + "\r\n";
+        // 两种取值都显式写出。原来只在 endOnAction 为真时写 action，
+        // 于是 ini 里的 CheckEndOn=time 保存一次就没了，回读时又按默认值
+        // 变回 action（往返测试抓到的）。
         // 两种取值都显式写出。原来只在 endOnAction 为真时写 action，
         // 于是 ini 里的 CheckEndOn=time 保存一次就没了，回读时又按默认值
         // 变回 action（往返测试抓到的）。

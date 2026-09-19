@@ -1201,12 +1201,73 @@ bool Ptrs(std::uintptr_t& buf, std::uintptr_t& flag)
     return true;
 }
 
+
+// 游戏的聊天缓冲区只有 128 字节。直接 _TRUNCATE 会把多字节汉字劈成半个，
+// 更糟的是会把结尾的 </STYL> 切掉 —— 少了闭合标签，整句在聊天框里会连同
+// 标签原文一起显示出来，发给全队就很难看。所以自己按字符边界截，
+// 截完把闭合标签补回去。
+std::string ClampForChat(const std::string& in, std::size_t n)
+{
+    if (in.size() <= n) return in;
+
+    const std::string kEnd = "</STYL>";
+    const bool styled = in.size() > kEnd.size() &&
+                        in.compare(0, 6, "<STYL ") == 0 &&
+                        in.compare(in.size() - kEnd.size(), kEnd.size(), kEnd) == 0;
+    const std::size_t gt = styled ? in.find('>') : std::string::npos;
+
+    std::size_t lim = (styled && n > kEnd.size()) ? (n - kEnd.size()) : n;
+    if (lim > in.size()) lim = in.size();
+    // 退到 UTF-8 字符边界：续字节都是 10xxxxxx
+    while (lim > 0 && ((unsigned char)in[lim] & 0xC0) == 0x80) --lim;
+
+    // 万一短到连开标签都放不下，就别拼半截标签了，直接退化成纯文本截断
+    if (styled && (gt == std::string::npos || lim <= gt))
+        return in.substr(0, n > 0 ? n : 0);
+
+    std::string out = in.substr(0, lim);
+    if (styled) out += kEnd;
+    return out;
+}
+
 void Queue(const std::string& msg)
 {
     if (msg.empty()) return;
     std::lock_guard<std::mutex> lk(gMx);
     if (gQueue.size() >= 8) return;      // 别攒太多，过时的喊话没意义
     gQueue.push_back(msg);
+}
+
+
+// GUI 颜色下拉里的候选样式名，顺序必须和 gui/src/config.cpp 的 kChatColors 一致。
+// 其中只有 MOJI_YELLOW_DEFAULT / MOJI_RED_DEFAULT 是从游戏自带的 gmd 文本里
+// 挖出来、确认存在的；其余是按同样的命名规律推的。/wse 颜色 就是拿来验它们的：
+// 每种各发一条样例，哪条真变了色，哪条才是能用的。
+struct ChatColorProbe { const char* styl; const char* label; };
+const ChatColorProbe kColorProbe[] = {
+    { "MOJI_YELLOW_DEFAULT",     "1黄" },
+    { "MOJI_RED_DEFAULT",        "2红" },
+    { "MOJI_ORANGE_DEFAULT",     "3橙" },
+    { "MOJI_LIGHTGREEN_DEFAULT", "4绿" },
+    { "MOJI_LIGHTBLUE_DEFAULT",  "5蓝" },
+    { "MOJI_PURPLE_DEFAULT",     "6紫" },
+    { "MOJI_GRAY_DEFAULT",       "7灰" },
+};
+
+// 把候选颜色拼成几条样例塞进发送队列。一条最多 127 字节，一个样例约 37 字节，
+// 所以三个一组。注意这是真的发到当前聊天频道 —— 要在单人任务里试。
+void QueueColorProbe()
+{
+    gEnabled = 1;      // 用户主动要发，就临时打开
+    std::string line;
+    int inLine = 0;
+    for (std::size_t i = 0; i < sizeof(kColorProbe) / sizeof(kColorProbe[0]); ++i) {
+        line += std::string("<STYL ") + kColorProbe[i].styl + ">" +
+                kColorProbe[i].label + "</STYL>";
+        if (++inLine == 3) { Queue(line); line.clear(); inLine = 0; }
+    }
+    if (!line.empty()) Queue(line);
+    Queue("0白 <- 这条没加标签，是默认色");
 }
 
 // 每轮轮询调一次，一次最多发一条
@@ -1235,7 +1296,10 @@ void Pump()
     if (!mem::IsWritable(buf, 128) || !mem::IsWritable(flag, 1)) return;
 
     char tmp[128] = {};
-    _snprintf_s(tmp, _TRUNCATE, "%s", msg.c_str());   // 超长自动截断并留 NUL
+    const std::string fit = ClampForChat(msg, sizeof(tmp) - 1);
+    if (fit.size() != msg.size())
+        Log("[队伍聊天] 超长，已截到 %d 字节: %s", (int)fit.size(), fit.c_str());
+    std::memcpy(tmp, fit.c_str(), fit.size());        // 余下的本来就是 0，NUL 自带
     std::memcpy(reinterpret_cast<void*>(buf), tmp, sizeof(tmp));
     const unsigned char one = 1;
     std::memcpy(reinterpret_cast<void*>(flag), &one, 1);
@@ -2252,8 +2316,12 @@ inline bool HandleWseCommand(const std::string& rest, bool& used)
         gMoreSounds = 1; ShowMessage("wse extra sounds ON", true);
     } else if (rest == "one" || rest == "single") {
         gMoreSounds = 0; ShowMessage("wse extra sounds OFF (single)", true);
+    } else if (rest == "颜色" || rest == "color" || rest == "colors") {
+        // 颜色自检：每种候选颜色各发一条样例，看哪几种游戏真的认
+        teamchat::QueueColorProbe();
+        ShowMessage("wse: 已发送颜色样例，变了色的才是能用的（请在单人任务里试）", true);
     } else if (rest == "help" || rest == "h") {
-        ShowMessage("/wse reload(重载ini+音效) | on | off | more | one | vol N | vol+ | vol-");
+        ShowMessage("/wse reload(重载ini+音效) | on | off | more | one | vol N | vol+ | vol- | 颜色");
     } else if (rest == "vol+" || rest == "up") {
         gVolumePct += 5; if (gVolumePct > 100) gVolumePct = 100;
         char msg[0x180] = {}; _snprintf_s(msg, _TRUNCATE, "wse volume=%d", (int)gVolumePct);

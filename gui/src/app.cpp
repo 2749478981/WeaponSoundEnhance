@@ -185,7 +185,9 @@ static const JudgePreset kPresets[] = {
       "所以窗口里出现伤害就说明最后那下登龙打上了。实测出伤在 5.25 秒。\n"
       "光靠时间窗不够：连段失败后窗口尾巴上可能采到一次普通攻击的伤害，"
       "所以条件里还要求 lmt==49326，也就是那下伤害必须是登龙打出来的。\n"
-      "注意科目三的大居必然判失败（顶吼不产生伤害），别拿大居当信号。" },
+      "注意科目三的大居必然判失败（顶吼不产生伤害），别拿大居当信号。\n"
+      "这条建议只填喊话、不填音效：同一下登龙，你的「登龙命中/落空」那条"
+      "已经播过一次了，两边都填就会叠播。" },
 };
 
 static const int kPresetCount = 4;
@@ -412,6 +414,98 @@ static void PlayPreviewFile(const std::wstring& path, float gain, unsigned delay
 
 } // namespace
 
+// 颜色表、ChatSet/ChatGet 在 config.cpp —— 它们是 ini 文本格式的一部分，
+// 放那边才能被 cfg_roundtrip 测到。这里只负责画。
+
+namespace {
+
+// 一整块「队伍喊话」控件：颜色下拉 + 文字框 + 深底预览条。
+void DrawChatLine(const char* label, const char* hint, ChatLine& cl, float dpi)
+{
+    ImGui::PushID(label);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(label);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("命中时往队伍频道发一条消息，队友都看得见。\n"
+                          "文字框留空 = 不发。\n"
+                          "这是真的发到队伍频道，刷屏会招人烦。");
+    ImGui::SameLine(0, 10);
+
+    if (cl.raw) {
+        // 用户手写了我们解析不了的标签：原样显示、原样保存，不擅自改写
+        ImGui::SetNextItemWidth(330 * dpi);
+        ImGui::InputText("##raw", cl.rawBuf, sizeof(cl.rawBuf));
+        ImGui::SameLine(0, 8);
+        if (ImGui::SmallButton("转成简单模式")) {
+            // 把标签全剥掉，只留文字
+            std::string t;
+            bool in = false;
+            for (const char* p = cl.rawBuf; *p; ++p) {
+                if (*p == '<') in = true;
+                else if (*p == '>') in = false;
+                else if (!in) t += *p;
+            }
+            cl.raw = false;
+            cl.color = 0;
+            snprintf(cl.text, sizeof(cl.text), "%s", Trim(t).c_str());
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("这句里有本界面看不懂的标签，所以原样保留着。\n"
+                              "点这个会把所有标签剥掉、只留文字，然后就能用颜色下拉了。");
+        ImGui::PopID();
+        return;
+    }
+
+    // 颜色下拉：每项前面一个色块
+    const ChatColorDef& cur = ChatColorAt(cl.color);
+    ImGui::SetNextItemWidth(118 * dpi);
+    if (ImGui::BeginCombo("##color", cur.ui)) {
+        for (int i = 0; i < ChatColorCount(); ++i) {
+            const ChatColorDef& cd = ChatColorAt(i);
+            ImGui::PushID(i);
+            ImGui::TextColored(ImVec4(cd.chip[0], cd.chip[1], cd.chip[2], cd.chip[3]),
+                               "\xe2\x96\xa0");   // ■
+            ImGui::SameLine(0, 6);
+            if (ImGui::Selectable(cd.ui, i == cl.color)) cl.color = i;
+            ImGui::PopID();
+        }
+        ImGui::EndCombo();
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("只有「默认/黄/红」是确认过的，其余几种是按同样的\n"
+                          "命名规律推出来的，还没在游戏里验过。\n"
+                          "进游戏打一句  /wse 颜色  会把每种各发一条样例，\n"
+                          "哪条真的变了色，哪条就是能用的。");
+    ImGui::SameLine(0, 8);
+    ImGui::SetNextItemWidth(304 * dpi);
+    ImGui::InputTextWithHint("##txt", hint, cl.text, sizeof(cl.text));
+
+    // 预览条：深底，尽量还原游戏里聊天框的观感
+    if (cl.text[0]) {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+        const float w = 440.0f * dpi;
+        const float h = ImGui::GetTextLineHeight() + 10.0f * dpi;
+        dl->AddRectFilled(p0, ImVec2(p0.x + w, p0.y + h), IM_COL32(28, 28, 34, 255), 4.0f * dpi);
+        ImGui::SetCursorScreenPos(ImVec2(p0.x + 8.0f * dpi, p0.y + 5.0f * dpi));
+        ImGui::TextColored(ImVec4(cur.game[0], cur.game[1], cur.game[2], cur.game[3]),
+                           "%s", cl.text);
+        ImGui::SetCursorScreenPos(ImVec2(p0.x, p0.y + h + 3.0f * dpi));
+
+        // 长度余量。游戏的聊天缓冲区只有 128 字节，颜色标签本身就要吃掉 32 字节，
+        // 超了会被截断，界面上必须让人看得见还剩多少，不能等发出去才发现被切一半。
+        const int used = (int)ChatGet(cl).size();
+        const bool over = (used > 127);
+        ImGui::TextColored(over ? C_RED : C_GRAY,
+                           over ? "长度 %d/127 字节 —— 超了，发出去会被游戏截断"
+                                : "长度 %d/127 字节（一个汉字算 3 个；颜色标签本身占 32 个）",
+                           used);
+    }
+    ImGui::PopID();
+}
+
+} // namespace
+
 App::App() {
     // 数据目录优先：<exe目录>\WeaponSoundEnhance\ ；旧布局(与 exe 同目录)兼容
     std::vector<std::string> cand;
@@ -629,17 +723,31 @@ void App::DrawWeaponTree() {
     int totalActive = 0;
     for (const auto& e : cfg.entries) if (EntryActive(e)) ++totalActive;
     item("全部条目", -1, totalActive);
-    for (int w = 0; w <= 13; ++w)
-        item(WeaponName(w), w, CountFor(w));
-    int any = 0;
-    for (const auto& e : cfg.entries)
-        if (e.target == 0 && e.weaponType < 0 && e.combo.empty()) ++any;
-    if (any > 0) item("通用(任意)", -2, any);
+
+    // ---- 武器 ----
+    // 和下面的「怪物」同一个格式：一个可折叠栏，里面才是具体分类。
+    ImGui::Spacing();
+    int wpnTotal = 0;
+    for (const auto& e : cfg.entries) if (e.target == 0 && EntryActive(e)) ++wpnTotal;
+    char wpnHdr[64];
+    snprintf(wpnHdr, sizeof(wpnHdr), "武器   %d", wpnTotal);
+    if (ImGui::CollapsingHeader(wpnHdr, weaponTreeOpen ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
+        weaponTreeOpen = true;
+        ImGui::Indent();
+        for (int w = 0; w <= 13; ++w)
+            item(WeaponName(w), w, CountFor(w));
+        int any = 0;
+        for (const auto& e : cfg.entries)
+            if (e.target == 0 && e.weaponType < 0 && e.combo.empty()) ++any;
+        if (any > 0) item("通用(任意)", -2, any);
+        ImGui::Unindent();
+    } else {
+        weaponTreeOpen = false;
+    }
 
     // ---- 怪物 ----
     // 单开一栏，跟武器分开。条目绑的是怪物的动作 ID，不是玩家的。
     ImGui::Spacing();
-    ImGui::Separator();
     int monTotal = 0;
     for (const auto& e : cfg.entries) if (e.target == 1) ++monTotal;
     char monHdr[64];
@@ -1058,7 +1166,7 @@ void App::OpenEditorEdit(int index) {
     editor.index = index;
     const SoundEntry& e = cfg.entries[index];
     editor.target = e.target;
-    snprintf(editor.defChatBuf, sizeof(editor.defChatBuf), "%s", e.defChat.c_str());
+    ChatSet(editor.defChat, e.defChat);
     snprintf(editor.monsterBuf, sizeof(editor.monsterBuf), "%s", e.monsterName.c_str());
     editor.weaponType = e.weaponType;
     editor.fsmId = e.fsmId;
@@ -1081,7 +1189,7 @@ void App::OpenEditorEdit(int index) {
         r.atEnd  = c.atEnd;
         r.parsed = ParseExprToTerms(c.expr, r.terms);
         if (!r.parsed) r.rawExpr = c.expr;
-        snprintf(r.chatBuf, sizeof(r.chatBuf), "%s", c.chat.c_str());
+        ChatSet(r.chat, c.chat);
         r.pool = c.pool.specs;
         editor.conds.push_back(std::move(r));
     }
@@ -1115,7 +1223,7 @@ void App::OpenEditorEdit(int index) {
 void App::ApplyEditor() {
     SoundEntry e;
     e.target = editor.target;
-    e.defChat = Trim(editor.defChatBuf);
+    e.defChat = ChatGet(editor.defChat);
     e.monsterName = Trim(editor.monsterBuf);
     e.weaponType = (editor.target == 1) ? -1 : editor.weaponType;
     e.fsmId = editor.fsmId;
@@ -1163,7 +1271,7 @@ void App::ApplyEditor() {
             CondSpec c;
             c.expr  = r.parsed ? TermsToExpr(r.terms) : r.rawExpr;
             c.atEnd = r.atEnd;
-            c.chat  = Trim(r.chatBuf);
+            c.chat  = ChatGet(r.chat);
             c.pool.specs = r.pool;
             // 只配了喊话没配音效的条件也要留下
             if (c.expr.empty() || (c.pool.empty() && c.chat.empty())) continue;
@@ -1376,8 +1484,7 @@ void App::DrawEditorDetached() {
                 r.label  = ps.conds[i].label;
                 r.parsed = ParseExprToTerms(ps.conds[i].expr, r.terms);
                 if (!r.parsed) r.rawExpr = ps.conds[i].expr;
-                snprintf(r.chatBuf, sizeof(r.chatBuf), "%s",
-                         ps.conds[i].chat ? ps.conds[i].chat : "");
+                ChatSet(r.chat, ps.conds[i].chat ? ps.conds[i].chat : "");
                 if (i < (int)keep.size()) r.pool = keep[i];
                 editor.conds.push_back(r);
             }
@@ -1502,14 +1609,7 @@ void App::DrawEditorDetached() {
                 }
                 if (r.pool.empty()) ImGui::TextDisabled("(未添加音效)");
 
-                ImGui::SetNextItemWidth(430 * dpiScale);
-                ImGui::InputTextWithHint("队伍喊话", "留空=不发；命中这条时发给全队",
-                                         r.chatBuf, sizeof(r.chatBuf));
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("命中这条条件时往队伍频道发一条消息，队友都看得见。\n"
-                          "留空 = 不发。支持游戏的样式标签，例如\n"
-                          "<STYL MOJI_YELLOW_DEFAULT>文字</STYL>\n"
-                          "注意这是真的发到队伍频道，刷屏会招人烦。");
+                DrawChatLine("队伍喊话", "留空=不发；命中这条时发给全队", r.chat, dpiScale);
 
                 if (ImGui::Button("浏览...")) {
                     std::vector<SoundSpec> tmp;
@@ -1534,14 +1634,7 @@ void App::DrawEditorDetached() {
         else
             ImGui::TextDisabled("以上都不成立时，播下面的「默认音效」。");
 
-        ImGui::SetNextItemWidth(430 * dpiScale);
-        ImGui::InputTextWithHint("兜底喊话", "留空=不发；都不成立时发给全队",
-                                 editor.defChatBuf, sizeof(editor.defChatBuf));
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("命中这条条件时往队伍频道发一条消息，队友都看得见。\n"
-                          "留空 = 不发。支持游戏的样式标签，例如\n"
-                          "<STYL MOJI_YELLOW_DEFAULT>文字</STYL>\n"
-                          "注意这是真的发到队伍频道，刷屏会招人烦。");
+        DrawChatLine("兜底喊话", "留空=不发；都不成立时发给全队", editor.defChat, dpiScale);
     }
 
     ImGui::Separator();
