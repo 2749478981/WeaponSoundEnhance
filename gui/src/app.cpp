@@ -1870,8 +1870,13 @@ void App::ExportMeasuredIdsCsv() {
     };
     for (const auto& h : history)
         add(h.weapon, h.fsm, h.lmt, ResolveName(h.weapon, h.fsm, h.lmt));
-    for (const auto& e : cfg.entries)
+    for (const auto& e : cfg.entries) {
+        // 怪物条目不进共享库。fsm_db.csv 的列是 weapon,fsm,lmt,name，没有
+        // monster 这一列，怪物动作写进去就成了 weapon=-1/fsm=-1 的「武器」
+        // 动作 —— 上传出去会把别人的库也弄脏，而且和武器查询串台。
+        if (e.target == 1) continue;
         add(e.weaponType, e.fsmId, e.LmtAny(), e.name);
+    }
 
     // 1) 收进"用户库"（永不被更新覆盖），立刻生效
     const int added = MergeFsmDbEntries(ids, FsmDbUserPath());

@@ -36,7 +36,7 @@ if [ "$WHAT" = "gui" ] || [ "$WHAT" = "all" ]; then
         "$IM/backends/imgui_impl_win32.cpp" "$IM/backends/imgui_impl_dx11.cpp" \
         gui/out/resource.o \
         -o gui/out/WeaponSoundEnhanceGUI.exe \
-        -ld3d11 -ld3dcompiler -ldwmapi -lcomdlg32 -lole32 -lshell32 -lwinmm -lgdi32
+        -ld3d11 -ld3dcompiler -ldwmapi -lcomdlg32 -lole32 -lshell32 -lwinmm -lgdi32 -lurlmon
     ls -l gui/out/WeaponSoundEnhanceGUI.exe
 fi
 
