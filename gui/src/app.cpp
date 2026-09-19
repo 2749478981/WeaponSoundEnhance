@@ -425,34 +425,18 @@ void DrawChatLine(const char* label, const char* hint, ChatLine& cl, float dpi)
 
     if (cl.raw) {
         // 用户手写了我们解析不了的标签：原样显示、原样保存，不擅自改写
-        ImGui::SetNextItemWidth(330 * dpi);
+        ImGui::SetNextItemWidth(430 * dpi);
         ImGui::InputText("##raw", cl.rawBuf, sizeof(cl.rawBuf));
-        ImGui::SameLine(0, 8);
-        if (ImGui::SmallButton("转成简单模式")) {
-            // 把标签全剥掉，只留文字
-            std::string t;
-            bool in = false;
-            for (const char* p = cl.rawBuf; *p; ++p) {
-                if (*p == '<') in = true;
-                else if (*p == '>') in = false;
-                else if (!in) t += *p;
-            }
-            cl.raw = false;
-            cl.color = 0;
-            snprintf(cl.text, sizeof(cl.text), "%s", Trim(t).c_str());
-        }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("这句里有本界面看不懂的标签，所以原样保留着。\n"
-                              "点这个会把所有标签剥掉、只留文字，然后就能用颜色下拉了。");
+                              "把标签手动删掉，下次打开就能用颜色下拉了。");
         ImGui::PopID();
         return;
     }
 
     // 颜色下拉：每项前面一个色块
     const ChatColorDef& cur = ChatColorAt(cl.color);
-    ImGui::TextUnformatted("颜色选择");
-    ImGui::SameLine(0, 6);
-    ImGui::SetNextItemWidth(108 * dpi);
+    ImGui::SetNextItemWidth(118 * dpi);
     if (ImGui::BeginCombo("##color", cur.ui)) {
         for (int i = 0; i < ChatColorCount(); ++i) {
             const ChatColorDef& cd = ChatColorAt(i);
@@ -466,7 +450,8 @@ void DrawChatLine(const char* label, const char* hint, ChatLine& cl, float dpi)
         ImGui::EndCombo();
     }
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("只有「默认/黄/红」是确认过的，其余几种是按同样的\n"
+        ImGui::SetTooltip("颜色选择\n"
+                          "只有「默认/黄/红」是确认过的，其余几种是按同样的\n"
                           "命名规律推出来的，还没在游戏里验过。\n"
                           "进游戏打一句  /wse 颜色  会把每种各发一条样例，\n"
                           "哪条真的变了色，哪条就是能用的。");
@@ -1339,7 +1324,7 @@ void App::DrawEditorDetached() {
     ImGui::Combo("触发目标", &editor.target, tItems, 2);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("玩家动作：玩家出招时触发\n"
-                          "怪物动作：怪物出招时");
+                          "怪物动作：怪物出招时触发");
     ImGui::SameLine(0, 16);
 
     if (editor.target == 1) {

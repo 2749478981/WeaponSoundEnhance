@@ -14,14 +14,14 @@ int main(){
     printf("已知怪物: ");
     for (const auto& m : ListKnownMonsters()) printf("%s ", m.c_str());
     printf("\n黑龙动作数: %d\n\n", (int)MonsterActions("黑龙").size());
-    Eq("黑龙 33047 (2转3)",       LookupMonsterAction("黑龙",33047), "2转3 相变 · 第7段 (5.6s)");
+    Eq("黑龙 33047 (2转3)",       LookupMonsterAction("黑龙",33047), "2转3 · 第7段 (5.6s)");
     Eq("黑龙 33065 (劫火起手A)",  LookupMonsterAction("黑龙",33065), "P3 飞天劫火 · 起手A 第4段 (1.8s)");
     // 33069~33077 以前被当成「P3 专属动作(待认)」，实际是劫火的中后段
     Eq("黑龙 33071 (劫火中段)",   LookupMonsterAction("黑龙",33071), "P3 飞天劫火 · 第10段 (3.4s)");
     // 大咬的两个方向都要查得到，否则 ini 里漏填就没人发现
     Eq("黑龙 28787 (大咬方向一)", LookupMonsterAction("黑龙",28787), "大咬（方向一，用户确认，3.7s）");
     Eq("黑龙 28788 (大咬方向二)", LookupMonsterAction("黑龙",28788), "大咬（方向二，推定，3.7s）");
-    Eq("不指定怪物也能查",        LookupMonsterAction("",33024),      "1转2 相变 · 第9段 (5.9s)");
+    Eq("不指定怪物也能查",        LookupMonsterAction("",33024),      "1转2 · 第9段 (5.9s)");
     Eq("查不到返回空",            LookupMonsterAction("黑龙",99999),  "");
     // 只保留审过的五组（两段相变、劫火两种起手、大咬）。「高频动作」「长动作」
     // 那些只是统计上显眼、没人认得出是什么招，不该再出现在下拉栏里。
