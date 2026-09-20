@@ -327,7 +327,7 @@ void LogInit()
 {
     gLogPath = gDataDir + L"WeaponSoundEnhance.log";
     ::DeleteFileW(gLogPath.c_str());
-    Log("WeaponSoundEnhance 2.8 starting");
+    Log("WeaponSoundEnhance 2.9 starting");
     // 旧布局提示：wav 还在 plugins\sounds\ 时自动兼容，但建议搬进数据目录
     const std::wstring oldSounds = gModuleDir + L"sounds";
     if (gDataDir != gModuleDir && DirExistsW(oldSounds) &&

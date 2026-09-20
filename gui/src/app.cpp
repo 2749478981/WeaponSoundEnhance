@@ -55,6 +55,23 @@ bool SamePath(const std::string& a, const std::string& b) {
     return true;
 }
 
+// 从自身目录往上找游戏根目录（含结尾反斜杠）：GUI 一般放在
+// <游戏>\nativePC\plugins\WeaponSoundEnhance\，所以往上 1~6 层就能看到 MonsterHunterWorld.exe。
+// 游戏没运行时也能量出"游戏读取的那份 ini"在哪。
+std::string ExeDir();   // 定义在下面
+static bool FindGameDirFromSelf(std::string& out) {
+    std::string d = ExeDir();
+    for (int i = 0; i < 6 && !d.empty(); ++i) {
+        if (FsExists(d + "MonsterHunterWorld.exe")) { out = d; return true; }
+        std::string up = d;
+        while (!up.empty() && (up.back() == '\\' || up.back() == '/')) up.pop_back();
+        const size_t s = up.find_last_of("\\/");
+        if (s == std::string::npos) break;
+        d = up.substr(0, s + 1);
+    }
+    return false;
+}
+
 // LMT 列表的显示文本；空列表 = 不限（任意 LMT）
 std::string LmtText(const SoundEntry& e) {
     if (e.lmt.empty()) return "不限";
@@ -458,7 +475,10 @@ App::App() {
     // 优先加载"游戏实际读取的那份" ini（GUI 可能被放在别处，比如发布包解压目录里；
     // 之前先找 exe 同目录，结果 GUI 在改 A 文件、游戏在读 B 文件 —— 切组合/改动作全都没反应）。
     std::string gdir;
-    const bool haveGame = FindGameExeDir(gdir);
+    bool haveGame = FindGameExeDir(gdir);
+    // 游戏没在运行时也能定位：GUI 就装在 <游戏>\nativePC\plugins\WeaponSoundEnhance\ 下，
+    // 从自身目录往上找 MonsterHunterWorld.exe 即可。
+    if (!haveGame) haveGame = FindGameDirFromSelf(gdir);
     if (haveGame)
         mGameIni = gdir + "nativePC\\plugins\\WeaponSoundEnhance\\WeaponSoundEnhance.ini";
     std::vector<std::string> cand;
@@ -761,7 +781,8 @@ void App::DrawWeaponTree() {
             }
         int cur = 0;
         for (size_t i = 0; i < cbs.size(); ++i) if (cbs[i] == ActiveCombo(w)) { cur = (int)i; break; }
-        ImGui::SetNextItemWidth(150 * dpiScale);
+        // 下拉占满面板宽度；下面的按钮按剩余宽度自动换行（面板窄的时候按钮会被挤出可视区）
+        ImGui::SetNextItemWidth(-1);
         if (ImGui::BeginCombo("##combo", cbs[cur].empty() ? "默认" : cbs[cur].c_str())) {
             for (size_t i = 0; i < cbs.size(); ++i) {
                 const char* lbl = cbs[i].empty() ? "默认" : cbs[i].c_str();
@@ -775,30 +796,36 @@ void App::DrawWeaponTree() {
         if (ImGui::IsItemHovered() && cbs.size() > 1)
             ImGui::SetTooltip("切换该武器的配置组合；其它武器的配置不受影响");
 
-        // ---- 组合管理：重命名 / 删除 / 调整顺序 ----
+        // ---- 组合管理：改名 / 删除 / 调整顺序 ----
         const std::string sel = cbs[cur];
-        ImGui::SameLine();
+        // 同一行放不下就自动换行：算上按钮宽度 + 间距，超出面板就另起一行
+        auto fitsOnLine = [&](const char* label) {
+            const float need = ImGui::CalcTextSize(label).x +
+                               ImGui::GetStyle().FramePadding.x * 2.0f +
+                               ImGui::GetStyle().ItemSpacing.x;
+            return (ImGui::GetContentRegionMax().x - ImGui::GetCursorPosX()) >= need;
+        };
         ImGui::BeginDisabled(sel.empty());
-        if (ImGui::SmallButton("重命名")) ImGui::OpenPopup("##rencombo");
+        if (ImGui::SmallButton("改名")) ImGui::OpenPopup("##rencombo");
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("给组合「%s」改名（会改它下面所有条目）",
                                                       sel.empty() ? "默认" : sel.c_str());
-        ImGui::SameLine();
+        if (fitsOnLine("删除")) ImGui::SameLine();
         if (ImGui::SmallButton("删除")) ImGui::OpenPopup("##delcombo");
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("删除组合「%s」及其所有条目", sel.c_str());
         ImGui::EndDisabled();
         {
             const bool canUp = !sel.empty() && cur > 1;
             const bool canDown = !sel.empty() && cur + 1 < (int)cbs.size();
-            ImGui::SameLine();
+            if (fitsOnLine("↑")) ImGui::SameLine();
             ImGui::BeginDisabled(!canUp);
             if (ImGui::SmallButton("↑")) ComboMove(w, sel, -1);
             ImGui::EndDisabled();
-            ImGui::SameLine();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("组合上移（决定 GUI 下拉顺序和游戏内 Ctrl+F11 的循环顺序）");
+            if (fitsOnLine("↓")) ImGui::SameLine();
             ImGui::BeginDisabled(!canDown);
             if (ImGui::SmallButton("↓")) ComboMove(w, sel, +1);
             ImGui::EndDisabled();
-            if (ImGui::IsItemHovered() || ImGui::IsItemHovered())
-                ImGui::SetTooltip("调整组合顺序（GUI 下拉顺序 + 游戏内 Ctrl+F11 的循环顺序；默认组合恒在最前）");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("组合下移（默认组合恒在最前，不能移动）");
         }
         // 重命名弹窗
         if (ImGui::BeginPopup("##rencombo")) {
@@ -837,9 +864,8 @@ void App::DrawWeaponTree() {
         static char newCombo[64] = {};
         static int  newComboWeapon = -1;
         if (newComboWeapon != w) { newCombo[0] = 0; newComboWeapon = w; }
-        ImGui::SetNextItemWidth(150 * dpiScale);
-        ImGui::InputTextWithHint("##ncombo", "新组合名", newCombo, sizeof(newCombo));
-        ImGui::SameLine();
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputTextWithHint("##ncombo", "新组合名（复制当前组合的条目）", newCombo, sizeof(newCombo));
         if (ImGui::Button("新增组合")) {
             std::string nm = Trim(newCombo);
             if (!nm.empty()) {
