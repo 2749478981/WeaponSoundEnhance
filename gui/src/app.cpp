@@ -515,6 +515,80 @@ std::string App::ActiveCombo(int w) const {
     return (it != cfg.active.end()) ? it->second : std::string();
 }
 
+// 该武器的组合列表："" (默认) 在最前，命名组合按在 entries 里首次出现的顺序
+std::vector<std::string> App::WeaponCombos(int w) const {
+    std::vector<std::string> v;
+    v.push_back("");
+    for (const auto& e : cfg.entries) {
+        if (e.weaponType != w || e.combo.empty()) continue;
+        bool has = false;
+        for (const auto& c : v) if (c == e.combo) { has = true; break; }
+        if (!has) v.push_back(e.combo);
+    }
+    return v;
+}
+
+void App::ComboRename(int w, const std::string& from, const std::string& to0) {
+    if (from.empty()) { status = "默认组合不能重命名"; return; }
+    const std::string to = Trim(to0);
+    if (to.empty()) { status = "新组合名不能为空"; return; }
+    if (to == from) return;
+    for (const auto& c : WeaponCombos(w))
+        if (c == to) { status = "组合「" + to + "」已存在"; return; }
+    int n = 0;
+    for (auto& e : cfg.entries)
+        if (e.weaponType == w && e.combo == from) { e.combo = to; ++n; }
+    if (ActiveCombo(w) == from) cfg.active[w] = to;
+    if (editor.open && editor.weaponType == w && editor.combo == from) editor.combo = to;
+    mDirty = true;
+    status = "组合「" + from + "」已重命名为「" + to + "」（" + std::to_string(n) + " 条，记得保存）";
+}
+
+void App::ComboDelete(int w, const std::string& name) {
+    if (name.empty()) { status = "默认组合不能整个删除（可以逐条删条目）"; return; }
+    int n = 0;
+    for (auto it = cfg.entries.begin(); it != cfg.entries.end();) {
+        if (it->weaponType == w && it->combo == name) { it = cfg.entries.erase(it); ++n; }
+        else ++it;
+    }
+    if (ActiveCombo(w) == name) cfg.active[w] = "";
+    mDirty = true;
+    status = "已删除组合「" + name + "」及其 " + std::to_string(n) + " 条条目（记得保存）";
+}
+
+void App::ComboMove(int w, const std::string& name, int dir) {
+    if (name.empty()) { status = "默认组合固定在最前，不能移动"; return; }
+    std::vector<std::string> named;
+    for (const auto& e : cfg.entries) {
+        if (e.weaponType != w || e.combo.empty()) continue;
+        bool has = false;
+        for (const auto& c : named) if (c == e.combo) { has = true; break; }
+        if (!has) named.push_back(e.combo);
+    }
+    int i = -1;
+    for (size_t k = 0; k < named.size(); ++k) if (named[k] == name) i = (int)k;
+    const int j = i + dir;
+    if (i < 0 || j < 0 || j >= (int)named.size()) { status = "已经到头了"; return; }
+
+    std::vector<SoundEntry> mine;
+    for (auto it = cfg.entries.begin(); it != cfg.entries.end();) {
+        if (it->weaponType == w && it->combo == name) { mine.push_back(*it); it = cfg.entries.erase(it); }
+        else ++it;
+    }
+    const std::string& other = named[j];
+    size_t at = cfg.entries.size();
+    if (dir < 0) {                                  // 放到目标组合之前
+        for (size_t k = 0; k < cfg.entries.size(); ++k)
+            if (cfg.entries[k].weaponType == w && cfg.entries[k].combo == other) { at = k; break; }
+    } else {                                        // 放到目标组合之后
+        for (size_t k = cfg.entries.size(); k-- > 0;)
+            if (cfg.entries[k].weaponType == w && cfg.entries[k].combo == other) { at = k + 1; break; }
+    }
+    cfg.entries.insert(cfg.entries.begin() + at, mine.begin(), mine.end());
+    mDirty = true;
+    status = "已调整组合顺序（影响 GUI 下拉与游戏内 Ctrl+F11 的循环顺序，记得保存）";
+}
+
 bool App::EntryActive(const SoundEntry& e) const {
     if (e.weaponType < 0) return e.combo.empty();       // 任意武器：仅默认组合
     return e.combo == ActiveCombo(e.weaponType);
@@ -701,8 +775,68 @@ void App::DrawWeaponTree() {
         if (ImGui::IsItemHovered() && cbs.size() > 1)
             ImGui::SetTooltip("切换该武器的配置组合；其它武器的配置不受影响");
 
+        // ---- 组合管理：重命名 / 删除 / 调整顺序 ----
+        const std::string sel = cbs[cur];
+        ImGui::SameLine();
+        ImGui::BeginDisabled(sel.empty());
+        if (ImGui::SmallButton("重命名")) ImGui::OpenPopup("##rencombo");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("给组合「%s」改名（会改它下面所有条目）",
+                                                      sel.empty() ? "默认" : sel.c_str());
+        ImGui::SameLine();
+        if (ImGui::SmallButton("删除")) ImGui::OpenPopup("##delcombo");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("删除组合「%s」及其所有条目", sel.c_str());
+        ImGui::EndDisabled();
+        {
+            const bool canUp = !sel.empty() && cur > 1;
+            const bool canDown = !sel.empty() && cur + 1 < (int)cbs.size();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!canUp);
+            if (ImGui::SmallButton("↑")) ComboMove(w, sel, -1);
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!canDown);
+            if (ImGui::SmallButton("↓")) ComboMove(w, sel, +1);
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered() || ImGui::IsItemHovered())
+                ImGui::SetTooltip("调整组合顺序（GUI 下拉顺序 + 游戏内 Ctrl+F11 的循环顺序；默认组合恒在最前）");
+        }
+        // 重命名弹窗
+        if (ImGui::BeginPopup("##rencombo")) {
+            static char renBuf[64] = {};
+            if (ImGui::IsWindowAppearing())
+                snprintf(renBuf, sizeof(renBuf), "%s", sel.c_str());
+            ImGui::TextDisabled("把组合「%s」重命名为：", sel.c_str());
+            ImGui::SetNextItemWidth(200 * dpiScale);
+            const bool enter = ImGui::InputText("##ren", renBuf, sizeof(renBuf),
+                                                ImGuiInputTextFlags_EnterReturnsTrue);
+            if (ImGui::Button("确定", ImVec2(80 * dpiScale, 0)) || enter) {
+                ComboRename(w, sel, renBuf);
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("取消", ImVec2(80 * dpiScale, 0))) ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
+        // 删除确认
+        if (ImGui::BeginPopup("##delcombo")) {
+            int cnt = 0;
+            for (const auto& e : cfg.entries) if (e.weaponType == w && e.combo == sel) ++cnt;
+            ImGui::TextColored(C_RED, "删除组合「%s」及其 %d 条条目？", sel.c_str(), cnt);
+            ImGui::TextDisabled("（可以先「复制」到别的组合再删；删除后记得保存）");
+            if (ImGui::Button("删除", ImVec2(80 * dpiScale, 0))) {
+                ComboDelete(w, sel);
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("取消", ImVec2(80 * dpiScale, 0))) ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
+
         // 新增组合：复制当前激活组合的条目到一个新命名组合并切换过去
+        // 输入框按武器隔离：换武器就清空，免得把太刀输过的名字顺手加给长枪
         static char newCombo[64] = {};
+        static int  newComboWeapon = -1;
+        if (newComboWeapon != w) { newCombo[0] = 0; newComboWeapon = w; }
         ImGui::SetNextItemWidth(150 * dpiScale);
         ImGui::InputTextWithHint("##ncombo", "新组合名", newCombo, sizeof(newCombo));
         ImGui::SameLine();
@@ -719,7 +853,7 @@ void App::DrawWeaponTree() {
                     cfg.active[w] = nm;
                     newCombo[0] = 0;
                     mDirty = true;
-                    status = "已新增组合并切换： " + nm;
+                    status = "已新增组合并切换： " + nm + "（复制了 " + std::to_string(copy.size()) + " 条，记得保存）";
                 } else {
                     status = "组合已存在: " + nm;
                 }
@@ -1082,6 +1216,7 @@ void App::OpenEditorNew(int weapon, int fsm, int lmt, const std::string& name) {
     editor.fsmId = fsm;
     if (lmt >= 0) editor.lmt.push_back(lmt);
     editor.lmtAny = editor.lmt.empty();
+    editor.combo = (weapon >= 0) ? ActiveCombo(weapon) : std::string();   // 新条目默认进当前激活组合
     FillLmtBuf(editor.lmtBuf, sizeof(editor.lmtBuf), editor.lmt);
     snprintf(editor.name, sizeof(editor.name), "%s", name.c_str());
 }
@@ -1099,6 +1234,7 @@ void App::OpenEditorEdit(int index) {
     editor.fsmTarget = e.fsmTarget;
     editor.lmt = e.lmt;
     editor.lmtAny = e.lmt.empty();
+    editor.combo = e.combo;
     FillLmtBuf(editor.lmtBuf, sizeof(editor.lmtBuf), editor.lmt);
     snprintf(editor.name, sizeof(editor.name), "%s", e.name.c_str());
     snprintf(editor.groupBuf, sizeof(editor.groupBuf), "%s", e.group.c_str());
@@ -1153,12 +1289,19 @@ bool App::ApplyEditor() {
     e.fsmTarget = editor.fsmTarget;
     e.name = Trim(editor.name);
     e.group = Trim(editor.groupBuf);
-    // 组合归属：新条目加入当前武器的激活组合；编辑已有条目保持其原组合
-    e.combo = editor.isNew
-                  ? ((editor.weaponType >= 0) ? ActiveCombo(editor.weaponType) : std::string())
-                  : ((editor.index >= 0 && editor.index < (int)cfg.entries.size())
-                         ? cfg.entries[editor.index].combo
-                         : std::string());
+    // 组合归属：编辑器里可以直接选（默认组合 / 该武器的任意命名组合）。
+    // 任意武器(-1)没有组合概念，固定进默认组合（否则保存时会被丢掉）。
+    if (editor.weaponType < 0) {
+        e.combo.clear();
+    } else {
+        e.combo = editor.combo;
+        bool legal = e.combo.empty();
+        if (!legal) {
+            for (const auto& c : WeaponCombos(editor.weaponType))
+                if (c == e.combo) { legal = true; break; }
+        }
+        if (!legal) e.combo.clear();   // 组合名不属于这个武器 → 回默认，避免又造出"武器6的组合DIO"
+    }
     // 解析 LMT：勾了「LMT 不限」或文本框为空/-1 → 不限（空列表）；否则只收整数
     if (editor.lmtAny) {
         e.lmt.clear();
@@ -1259,7 +1402,44 @@ void App::DrawEditorDetached() {
     if (wi > 14) wi = 0;
     ImGui::SetNextItemWidth(200 * dpiScale);
     ImGui::Combo("武器", &wi, wItems, 15);
+    const int prevWeapon = editor.weaponType;
     editor.weaponType = wi - 1;
+
+    // ---- 组合归属：条目属于哪个配置组合（新条目默认落在"当前激活"的那个）----
+    if (editor.weaponType < 0) {
+        editor.combo.clear();
+        ImGui::TextDisabled("组合：任意武器条目固定进「默认组合」");
+    } else {
+        std::vector<std::string> cbList = WeaponCombos(editor.weaponType);
+        // 换武器后旧组合名可能不合法 → 回落到该武器当前激活的组合
+        bool legal = false;
+        for (const auto& c : cbList) if (c == editor.combo) { legal = true; break; }
+        if (!legal || editor.weaponType != prevWeapon) {
+            if (!legal) editor.combo = ActiveCombo(editor.weaponType);
+            legal = false;
+            for (const auto& c : cbList) if (c == editor.combo) { legal = true; break; }
+            if (!legal) editor.combo.clear();
+        }
+        int ci = 0;
+        for (size_t i = 0; i < cbList.size(); ++i) if (cbList[i] == editor.combo) ci = (int)i;
+        ImGui::SetNextItemWidth(200 * dpiScale);
+        std::string curLbl = cbList[ci].empty() ? std::string("默认组合") : cbList[ci];
+        if (!cbList[ci].empty() && cbList[ci] == ActiveCombo(editor.weaponType))
+            curLbl += "（当前激活）";
+        if (ImGui::BeginCombo("组合", curLbl.c_str())) {
+            for (size_t i = 0; i < cbList.size(); ++i) {
+                std::string lbl = cbList[i].empty() ? std::string("默认组合") : cbList[i];
+                if (!cbList[i].empty() && cbList[i] == ActiveCombo(editor.weaponType))
+                    lbl += "（当前激活）";
+                if (ImGui::Selectable(lbl.c_str(), (int)i == ci)) editor.combo = cbList[i];
+            }
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("这条条目属于哪个配置组合。游戏里只加载每把武器「当前激活」的那个组合\n"
+                              "（左侧「组合(当前激活)」下拉 / 游戏内 Ctrl+F11 切换）；\n"
+                              "放到别的组合 = 那份配置专用的条目，不会与当前组合互相影响。");
+    }
 
     ImGui::SetNextItemWidth(190 * dpiScale);
     ImGui::InputInt("FSMId (-1=不限)", &editor.fsmId, 1, 100);
@@ -1940,6 +2120,10 @@ void App::Load(const std::string& path) {
         SetFsmDbDir(BaseDir());
         ReloadFsmDb();
         status = "已加载: " + path;
+        if (cfg.fixedCombos > 0)
+            status += "（已修正 " + std::to_string(cfg.fixedCombos) +
+                      " 条错位条目：旧版保存会把默认组合的条目写进上一个组合的段里，现在按各自武器的默认组合处理；"
+                      "保存一次就恢复正常）";
         mDirty = false;
     } else {
         status = "加载失败: " + path;

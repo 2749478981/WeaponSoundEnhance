@@ -327,7 +327,7 @@ void LogInit()
 {
     gLogPath = gDataDir + L"WeaponSoundEnhance.log";
     ::DeleteFileW(gLogPath.c_str());
-    Log("WeaponSoundEnhance 2.7 starting");
+    Log("WeaponSoundEnhance 2.8 starting");
     // 旧布局提示：wav 还在 plugins\sounds\ 时自动兼容，但建议搬进数据目录
     const std::wstring oldSounds = gModuleDir + L"sounds";
     if (gDataDir != gModuleDir && DirExistsW(oldSounds) &&
@@ -1304,7 +1304,15 @@ void LoadConfig()
             if (i < rawDelay.size() && rawDelay[i] > 0) sp.delay = rawDelay[i];
             if (i < rawVol.size()) sp.vol = ClampInt(rawVol[i], 0, 100);
         }
-        std::string key = (inCombo && curComboW >= 0)
+        // 旧版本 GUI 保存默认组合的条目时没写 [WeaponW] 段头，条目会掉进上一个命名
+        // 组合的段里（长枪条目变成"武器3的组合DIO"）。段里的组合武器和条目自己的
+        // WeaponType 不一致 → 判为错位，按该武器自己的默认组合处理。
+        // （WeaponType=-1 的任意武器条目同理：组合只对具体武器有意义）
+        const bool misplaced = inCombo && curComboW >= 0 && cur.weaponType != curComboW;
+        if (misplaced)
+            LogD("config: 条目 \"%s\" 段头是武器%d的组合[%s]但自己是武器%d，按默认组合处理",
+                 cur.name.c_str(), curComboW, curComboName.c_str(), cur.weaponType);
+        std::string key = (inCombo && curComboW >= 0 && !misplaced)
                               ? ("cb|" + std::to_string(curComboW) + "|" + curComboName)
                               : ("def|" + std::to_string(cur.weaponType));
         comboData[key].push_back(std::move(cur));
@@ -1561,6 +1569,23 @@ void LoadConfig()
             sorted.push_back("");
             for (const auto& o : order) if (!o.empty()) sorted.push_back(o);
             order.swap(sorted);
+        }
+    }
+    // [Active] 里指向"该武器并不存在的组合"的映射一律丢掉：历史保存 bug 会留下
+    // W6=DIO 这种从别的武器串过来的名字，留着会让新条目被塞进幽灵组合。
+    for (auto it = activeMap.begin(); it != activeMap.end();) {
+        const int w = it->first;
+        const std::string& nm = it->second;
+        bool exists = nm.empty();
+        if (!exists) {
+            auto wc = g_combos.find(w);
+            if (wc != g_combos.end() && wc->second.count(nm)) exists = true;
+        }
+        if (!exists) {
+            LogD("config: [Active] W%d=%s 对应的组合不存在，已忽略", w, nm.c_str());
+            it = activeMap.erase(it);
+        } else {
+            ++it;
         }
     }
     g_activeCombo = activeMap;

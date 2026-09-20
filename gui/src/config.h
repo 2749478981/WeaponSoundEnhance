@@ -94,6 +94,9 @@ struct Config {
     std::vector<SoundEntry> entries;     // 所有组合的条目（每条带 combo 标记）
     std::string path;
     bool loaded = false;
+    // 读盘时修正的"组合归属错位"条目数（旧版本保存会把默认组合的条目写进
+    // 上一个命名组合的段里，这里读到就自动改回默认组合，见 SaveConfig 的修复）
+    int fixedCombos = 0;
 };
 
 bool LoadConfig(const std::string& path, Config& cfg);

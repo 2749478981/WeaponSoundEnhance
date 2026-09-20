@@ -52,6 +52,7 @@ struct App {
         std::vector<int> lmt;          // 空 = 不限
         char lmtBuf[128] = {};
         bool lmtAny = false;           // 勾选「LMT 不限」= 该 FSMId 的所有动作都触发
+        std::string combo;             // 条目所属配置组合（"" = 默认组合），编辑器里可改
         std::vector<SoundSpec> pool[5]; // 0 = 默认音效；1..4 = 无刃时/白刃时/黄刃时/红刃时
 
         // ---- 判定（延迟判定）----
@@ -125,4 +126,9 @@ private:
     void FetchLatestFsmDb();
     void MergeOldIni();   // 合并旧版 ini 的动作条目（升级不丢配置）
     void SwitchToGameIni();   // 切到游戏实际读取的 ini（当前那份不是它时用）
+    // ---- 配置组合管理 ----
+    std::vector<std::string> WeaponCombos(int w) const;              // "" 在最前 + 命名组合(按出现顺序)
+    void ComboRename(int w, const std::string& from, const std::string& to);
+    void ComboDelete(int w, const std::string& name);
+    void ComboMove(int w, const std::string& name, int dir);         // dir=-1 上移 / +1 下移
 };

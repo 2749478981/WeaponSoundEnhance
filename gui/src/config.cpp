@@ -155,6 +155,7 @@ bool LoadConfig(const std::string& path, Config& cfg) {
 
     cfg.entries.clear();
     cfg.active.clear();
+    cfg.fixedCombos = 0;
     std::map<int, std::string> activeMap;
     std::string section;
     bool inAttack = false, inCombo = false;
@@ -172,6 +173,14 @@ bool LoadConfig(const std::string& path, Config& cfg) {
             if (i < rawVol.size()) sp.vol = ClampInt(rawVol[i], 0, 100);
         }
         cur.combo = (inCombo && curComboW >= 0) ? curComboName : "";
+        // 修复历史保存 bug：默认组合的条目以前没写 [WeaponW] 段头，会掉进上一个
+        // 命名组合的段里（例如长枪条目跑到 [Weapon3:DIO] 里 → 变成"武器6的组合DIO"）。
+        // 段里的组合武器和自己 WeaponType 不一致 → 判为错位，按默认组合处理。
+        // （任意武器条目 WeaponType=-1 也一样：组合只对具体武器有意义，它只属于默认组合）
+        if (inCombo && curComboW >= 0 && cur.weaponType != curComboW) {
+            cur.combo.clear();
+            ++cfg.fixedCombos;
+        }
         cfg.entries.push_back(std::move(cur));
         inAttack = false;
         cur = SoundEntry();
@@ -340,6 +349,16 @@ bool LoadConfig(const std::string& path, Config& cfg) {
     }
     finishEntry();
 
+    // [Active] 里指向"该武器并不存在的组合"的映射一律丢掉（历史 bug 会留下 W6=DIO 这种
+    // 从别的武器串过来的名字；留着的话新条目会被塞进这个幽灵组合）。
+    for (auto it = activeMap.begin(); it != activeMap.end();) {
+        if (it->second.empty() || it->first < 0) { ++it; continue; }
+        bool exists = false;
+        for (const auto& e : cfg.entries)
+            if (e.weaponType == it->first && e.combo == it->second) { exists = true; break; }
+        if (!exists) it = activeMap.erase(it);
+        else ++it;
+    }
     cfg.active = activeMap;
     cfg.path = path;
     cfg.loaded = true;
@@ -427,7 +446,10 @@ bool SaveConfig(const std::string& path, const Config& cfg) {
     o += ";                        黄刃时/红刃时 的音效（未配的刃时回退默认音效）。\r\n";
     o += ";    音效写法 path|延时ms|音量0..100|F ，末尾 F = 固定音效：命中时恒播，\r\n";
     o += ";                        同池其余未固定音效仍随机抽一条同时播放。\r\n";
-    o += ";  游戏内聊天框指令：/wse reload | on | off | more | one | vol N | vol+ | vol- | help\r\n";
+    o += ";  每武器配置组合：默认组合的条目写在 [WeaponW] 段里；命名组合写在\r\n";
+    o += ";    [WeaponW:组合名] 段里；[Active] 段 W<type>=组合名 决定每武器当前用哪个组合。\r\n";
+    o += ";  游戏内聊天框指令：/wse reload | on | off | more | one | vol N | vol+ | vol- | "
+         "combo [名] | combos | help\r\n";
     o += "; ============================================================================\r\n\r\n";
 
     o += "[WeaponSoundEnhance]\r\n";
@@ -492,9 +514,18 @@ bool SaveConfig(const std::string& path, const Config& cfg) {
 
     for (int w = 0; w <= 13; ++w) {
         bool header = false;
-        // 默认组合（""）
+        // 默认组合（""）：必须写一个 [WeaponW] 段头把"组合上下文"清掉！
+        // 以前不写段头，默认组合的条目会掉进上一个命名组合的段里 —— 保存再读取就
+        // 变成"默认组合空了、条目跑到别的组合（甚至别的武器）里去了"。
+        bool anyDefault = false;
         for (const auto& e : cfg.entries)
-            if (e.weaponType == w && e.combo.empty()) { Banner(WeaponName(w), w, header); WriteEntry(e, ++n, o); }
+            if (e.weaponType == w && e.combo.empty()) { anyDefault = true; break; }
+        if (anyDefault) {
+            Banner(WeaponName(w), w, header);
+            o += "\r\n[Weapon" + std::to_string(w) + "]\r\n";
+            for (const auto& e : cfg.entries)
+                if (e.weaponType == w && e.combo.empty()) WriteEntry(e, ++n, o);
+        }
         // 命名组合（按条目中出现顺序）
         std::vector<std::string> cbOrder;
         for (const auto& e : cfg.entries)
@@ -506,19 +537,18 @@ bool SaveConfig(const std::string& path, const Config& cfg) {
                 if (e.weaponType == w && e.combo == cb) WriteEntry(e, ++n, o);
         }
     }
-    // 任意武器（weaponType<0）默认组合放到最后
+    // 任意武器（weaponType<0）固定属于默认组合（组合只对具体武器有意义），放最后
     {
-        bool header = false;
-        for (const auto& e : cfg.entries)
-            if (e.weaponType < 0 && e.combo.empty()) {
-                if (!header) {
-                    o += "\r\n; ----------------------------------------------------------------------------\r\n";
-                    o += "; 通用 / 任意武器\r\n";
-                    o += "; ----------------------------------------------------------------------------\r\n";
-                    header = true;
-                }
-                WriteEntry(e, ++n, o);
-            }
+        bool any = false;
+        for (const auto& e : cfg.entries) if (e.weaponType < 0) { any = true; break; }
+        if (any) {
+            o += "\r\n; ----------------------------------------------------------------------------\r\n";
+            o += "; 通用 / 任意武器\r\n";
+            o += "; ----------------------------------------------------------------------------\r\n";
+            o += "\r\n[WeaponAny]\r\n";
+            for (const auto& e : cfg.entries)
+                if (e.weaponType < 0) WriteEntry(e, ++n, o);
+        }
     }
 
     // 宽路径写盘（同读取：中文路径下 std::ofstream 会写到不存在的位置/直接失败）
