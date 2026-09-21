@@ -38,3 +38,5 @@ sounds/
 *.bak
 *.bak_*
 tmp_probe/
+
+tmp_probe*/

@@ -2,6 +2,9 @@
 #include "fsmdb.h"
 #include "fsutil.h"
 #include "imgui.h"
+// 音效解码（wav/mp3/ogg/flac -> 16-bit PCM），试听与选择都用它
+#define WSE_AUDIO_IMPLEMENTATION
+#include "wse_audio.h"
 #include <windows.h>
 #include <shellapi.h>
 #include <commdlg.h>
@@ -375,42 +378,6 @@ struct PvCtx {
     unsigned delayMs;
 };
 
-// 解析 PCM(16bit) 的 fmt/data 块
-static bool ParseWavPcm(const std::uint8_t* buf, std::size_t size,
-                        int& ch, int& rate, int& bits, std::vector<std::int16_t>& out) {
-    if (size < 12 || std::memcmp(buf, "RIFF", 4) != 0) return false;
-    std::size_t pos = 12;
-    bool hasFmt = false, hasData = false;
-    while (pos + 8 <= size) {
-        std::uint8_t id[4];
-        std::memcpy(id, buf + pos, 4);
-        std::uint32_t sz;
-        std::memcpy(&sz, buf + pos + 4, 4);
-        const std::uint8_t* d = buf + pos + 8;
-        if (std::memcmp(id, "fmt ", 4) == 0 && sz >= 16) {
-            std::uint16_t tag;
-            std::memcpy(&tag, d, 2);
-            if (tag != 1) return false;   // 仅 PCM
-            std::memcpy(&ch, d + 2, 2);
-            std::uint32_t r;
-            std::memcpy(&r, d + 4, 4);
-            rate = (int)r;
-            std::memcpy(&bits, d + 14, 2);
-            hasFmt = true;
-        } else if (std::memcmp(id, "data", 4) == 0) {
-            std::size_t n = sz / 2;
-            if (pos + 8 + n * 2 <= size) {
-                out.resize(n);
-                std::memcpy(out.data(), d, n * 2);
-            }
-            hasData = true;
-        }
-        pos += 8 + sz + (sz & 1);
-        if (hasFmt && hasData) break;
-    }
-    return hasFmt && hasData && bits == 16 && !out.empty();
-}
-
 static DWORD WINAPI PvWorker(LPVOID param) {
     std::unique_ptr<PvCtx> ctx((PvCtx*)param);
     if (ctx->delayMs > 0) ::Sleep(ctx->delayMs);
@@ -418,7 +385,7 @@ static DWORD WINAPI PvWorker(LPVOID param) {
                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) return 0;
     LARGE_INTEGER sz{};
-    if (!::GetFileSizeEx(h, &sz) || sz.QuadPart <= 0 || sz.QuadPart > (32LL << 20)) {
+    if (!::GetFileSizeEx(h, &sz) || sz.QuadPart <= 0 || sz.QuadPart > (64LL << 20)) {
         ::CloseHandle(h);
         return 0;
     }
@@ -430,24 +397,25 @@ static DWORD WINAPI PvWorker(LPVOID param) {
     }
     ::CloseHandle(h);
 
-    int ch = 2, rate = 44100, bits = 16;
-    std::vector<std::int16_t> pcm;
-    if (!ParseWavPcm(raw.data(), raw.size(), ch, rate, bits, pcm)) return 0;
+    // 试听同样走统一解码：wav(含 24/32bit、float) / mp3 / ogg / flac 都能播
+    wseaudio::Pcm pcm;
+    if (!wseaudio::DecodeFileBytes(raw.data(), raw.size(), pcm) || pcm.samples.empty()) return 0;
 
     float g = ctx->gain < 0.0f ? 0.0f : (ctx->gain > 1.0f ? 1.0f : ctx->gain);
-    for (auto& s : pcm) s = (std::int16_t)(s * g);
+    if (g < 1.0f)
+        for (auto& s : pcm.samples) s = (std::int16_t)(s * g);
 
     WAVEFORMATEX wfx{};
     wfx.wFormatTag = WAVE_FORMAT_PCM;
-    wfx.nChannels = (WORD)ch;
-    wfx.nSamplesPerSec = (DWORD)rate;
+    wfx.nChannels = (WORD)pcm.channels;
+    wfx.nSamplesPerSec = (DWORD)pcm.rate;
     wfx.wBitsPerSample = 16;
-    wfx.nBlockAlign = (WORD)((16 / 8) * ch);
-    wfx.nAvgBytesPerSec = rate * wfx.nBlockAlign;
+    wfx.nBlockAlign = (WORD)((16 / 8) * pcm.channels);
+    wfx.nAvgBytesPerSec = pcm.rate * wfx.nBlockAlign;
     HWAVEOUT hwo = nullptr;
     if (::waveOutOpen(&hwo, WAVE_MAPPER, &wfx, 0, 0, CALLBACK_NULL) != MMSYSERR_NOERROR) return 0;
-    std::vector<std::uint8_t> bytes((std::size_t)pcm.size() * 2);
-    std::memcpy(bytes.data(), pcm.data(), bytes.size());
+    std::vector<std::uint8_t> bytes((std::size_t)pcm.samples.size() * 2);
+    std::memcpy(bytes.data(), pcm.samples.data(), bytes.size());
     WAVEHDR hdr{};
     hdr.lpData = (LPSTR)bytes.data();
     hdr.dwBufferLength = (DWORD)bytes.size();
@@ -2052,7 +2020,7 @@ int App::BrowseSounds(std::vector<SoundSpec>& out) {
     // 以编辑窗口为对话框所有者：对话框在编辑窗口上居中，关闭后激活自动回到编辑窗口，
     // 避免模态对话框结束后编辑窗口被主窗口遮挡（层级跑到主 GUI 后面）。
     ofn.hwndOwner = (editHwnd && IsWindow((HWND)editHwnd)) ? (HWND)editHwnd : (HWND)hwnd;
-    ofn.lpstrFilter = L"WAV 音效 (*.wav)\0*.wav\0所有文件 (*.*)\0*.*\0";
+    ofn.lpstrFilter = L"音效 (*.wav;*.mp3;*.ogg;*.flac)\0*.wav;*.mp3;*.ogg;*.flac\0所有文件 (*.*)\0*.*\0";
     ofn.lpstrFile = buf;
     ofn.nMaxFile = 16384;
     ofn.lpstrInitialDir = initDir.c_str();

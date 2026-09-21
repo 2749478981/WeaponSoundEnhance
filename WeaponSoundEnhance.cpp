@@ -65,6 +65,10 @@
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "winmm.lib")
 
+// 音效解码（wav/mp3/ogg/flac -> 16-bit PCM）：实现宏只在本 TU 展开一次
+#define WSE_AUDIO_IMPLEMENTATION
+#include "third_party/wse_audio.h"
+
 // ===========================================================================
 //  Memory-safe read helpers (every access guarded)
 // ===========================================================================
@@ -327,7 +331,7 @@ void LogInit()
 {
     gLogPath = gDataDir + L"WeaponSoundEnhance.log";
     ::DeleteFileW(gLogPath.c_str());
-    Log("WeaponSoundEnhance 2.9 starting");
+    Log("WeaponSoundEnhance 2.10 starting");
     // 旧布局提示：wav 还在 plugins\sounds\ 时自动兼容，但建议搬进数据目录
     const std::wstring oldSounds = gModuleDir + L"sounds";
     if (gDataDir != gModuleDir && DirExistsW(oldSounds) &&
@@ -425,6 +429,25 @@ bool ParseWav(const std::uint8_t* buf, std::size_t size, Wav& out)
 
     out.channels = ch; out.sampleRate = rate; out.bitsPer = bits;
     out.data.assign(dataPtr, dataPtr + dataLen);
+    out.valid = true;
+    return true;
+}
+
+// 解码 wav / mp3 / ogg / flac 到 16-bit PCM。保留原始采样率，
+// 常见采样率(44100/48000 等)不重采样，保证最大音质。
+bool DecodeAudio(const std::uint8_t* buf, std::size_t size,
+                 std::string& fmtName, Wav& out)
+{
+    out = Wav{};
+    wseaudio::Pcm p;
+    if (!wseaudio::DecodeFileBytes(buf, size, p) || !p.valid || p.samples.empty())
+        return false;
+    fmtName = wseaudio::FormatName(p.format);
+    out.channels = (std::uint16_t)p.channels;
+    out.sampleRate = p.rate;
+    out.bitsPer = 16;
+    out.data.resize(p.samples.size() * 2);
+    std::memcpy(out.data.data(), p.samples.data(), p.samples.size() * 2);
     out.valid = true;
     return true;
 }
@@ -1612,13 +1635,13 @@ const audio::Wav* GetCached(const std::wstring& absPath)
     HANDLE h = ::CreateFileW(LongPathW(absPath).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) {
-        Log("wav not found: %s", key.c_str());
+        Log("audio not found: %s", key.c_str());
         return nullptr;
     }
     LARGE_INTEGER sz{};
-    if (!::GetFileSizeEx(h, &sz) || sz.QuadPart <= 0 || sz.QuadPart > (16LL << 20)) {
+    if (!::GetFileSizeEx(h, &sz) || sz.QuadPart <= 0 || sz.QuadPart > (64LL << 20)) {
         ::CloseHandle(h);
-        Log("wav size invalid: %s", key.c_str());
+        Log("audio size invalid (>64MB): %s", key.c_str());
         return nullptr;
     }
     std::vector<std::uint8_t> raw(static_cast<std::size_t>(sz.QuadPart));
@@ -1630,16 +1653,19 @@ const audio::Wav* GetCached(const std::wstring& absPath)
     ::CloseHandle(h);
 
     audio::Wav w;
-    if (!audio::ParseWav(raw.data(), raw.size(), w)) {
-        Log("parse failed: %s", key.c_str());
+    std::string fmtName;
+    if (!audio::DecodeAudio(raw.data(), raw.size(), fmtName, w)) {
+        Log("audio decode failed: %s (支持 wav/mp3/ogg/flac)", key.c_str());
         return nullptr;
     }
-    if (w.sampleRate != 44100) {
+    // 非标准采样率（很多用户音效是 48k 之外的特殊值）才重采样到 44.1k，
+    // 常见采样率原样播放，保住原始音质。
+    if (!wseaudio::IsStandardRate(w.sampleRate)) {
         audio::ResampleTo(w, 44100);
-        LogD("resampled: %s -> 44100", key.c_str());
+        LogD("resampled: %s -> 44100 (原采样率 %u Hz)", key.c_str(), w.sampleRate);
     }
-    LogD("loaded: %s | ch=%u rate=%u bits=%u bytes=%zu",
-         key.c_str(), w.channels, w.sampleRate, w.bitsPer, w.data.size());
+    LogD("loaded [%s]: %s | ch=%u rate=%u bits=%u bytes=%zu",
+         fmtName.c_str(), key.c_str(), w.channels, w.sampleRate, w.bitsPer, w.data.size());
     gCache.emplace_back(std::move(key), std::move(w));
     return &gCache.back().second;
 }
