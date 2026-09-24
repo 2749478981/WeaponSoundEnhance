@@ -584,7 +584,12 @@ bool App::EntryActive(const SoundEntry& e) const {
 
 void App::PollGame() {
     unsigned long long now = GetTickCount64();
-    if (now - mLastPoll < 250) return;   // 250ms 轮询，利于捕获动作窗口
+    // 采样间隔跟随 ini 的 PollMs（DLL 触发用的同一个值，默认 60ms）。
+    // 250ms 会漏掉弓箭平射这类“一帧就结束”的短动作 —— fsm/lmt 在两次采样之间
+    // 已经变回原值，捕获面板就看不到变化。
+    unsigned long interval = 250;
+    if (cfg.global.pollMs >= 20) interval = (unsigned long)cfg.global.pollMs;
+    if (now - mLastPoll < interval) return;
     mLastPoll = now;
     const std::uint64_t pr = ParsePlayerRoot(cfg.global.playerRoot, 0x1450139A0ULL);
     // 传入 PlayerRoot：Attach 会逐个候选进程验证指针链，避免连到残留的僵尸进程
