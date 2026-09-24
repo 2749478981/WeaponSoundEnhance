@@ -2190,18 +2190,26 @@ void App::EnrichNames() {
 }
 
 std::string App::ResolveName(int weapon, int fsm, int lmt) const {
-    // 先查知识库
-    std::string n = LookupFsmName(weapon, fsm, lmt);
-    if (!n.empty()) return n;
-    // 再查用户已配置的条目（武器/fsm/lmt 匹配，-1 视为不限）
+    // 用户自己配置的条目名字优先：在编辑器里改成什么，捕获面板立刻显示什么。
+    // 知识库(共享 ID 库)的名字只作兜底。
+    // 先精确匹配 LMT（比如 气刃斩1 只认 49265），再匹配 LMT=不限 的通配条目。
     for (const auto& e : cfg.entries) {
         if (!EntryActive(e)) continue;
         if (e.fsmId != fsm) continue;
         if (e.weaponType >= 0 && e.weaponType != weapon) continue;
-        if (!e.MatchesLmt(lmt)) continue;
+        bool exact = false;
+        for (int x : e.lmt) if (x == lmt) { exact = true; break; }
+        if (!exact) continue;
         if (!e.name.empty()) return e.name;
     }
-    return std::string();
+    for (const auto& e : cfg.entries) {
+        if (!EntryActive(e)) continue;
+        if (e.fsmId != fsm) continue;
+        if (e.weaponType >= 0 && e.weaponType != weapon) continue;
+        if (!e.lmt.empty()) continue;               // LMT 不限的通配条目
+        if (!e.name.empty()) return e.name;
+    }
+    return LookupFsmName(weapon, fsm, lmt);
 }
 
 bool App::IsCapturedAdded(int weapon, int fsm, int lmt) const {
