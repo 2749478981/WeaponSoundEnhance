@@ -800,6 +800,17 @@ void App::DrawWeaponTree() {
             ImGui::EndDisabled();
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("组合下移（默认组合恒在最前，不能移动）");
         }
+        // ---- 导出 / 导入组合（分享给别人 / 用别人的配置）----
+        if (fitsOnLine("导出")) ImGui::SameLine();
+        if (ImGui::SmallButton("导出")) ExportComboCurrent();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("导出当前组合「%s」为分享文件（可以发给别的玩家【导入】）",
+                              sel.empty() ? "默认" : sel.c_str());
+        if (fitsOnLine("导入")) ImGui::SameLine();
+        if (ImGui::SmallButton("导入")) ImportComboFile();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("导入别人分享的组合文件（按条目去重合并，导入后记得保存）；\n"
+                              "旧版配置用工具栏的「合并旧版ini」也可以导入。");
         // 重命名弹窗
         if (ImGui::BeginPopup("##rencombo")) {
             static char renBuf[64] = {};
@@ -1896,8 +1907,17 @@ void App::DrawIdShareWindow() {
 }
 
 void App::PlaySoundPreview(const std::string& rel, int vol, int delayMs) {
-    std::string full = BaseDir();
-    for (char c : rel) full += (c == '/') ? '\\' : c;
+    // 绝对路径（盘符或 UNC）直接用原文件；相对路径才拼到数据目录
+    std::string full;
+    const bool abs = rel.size() >= 2 &&
+                     ((rel[1] == ':') || (rel[0] == '\\' && rel[1] == '\\'));
+    if (abs) {
+        full = rel;
+        for (auto& c : full) if (c == '/') c = '\\';
+    } else {
+        full = BaseDir();
+        for (char c : rel) full += (c == '/') ? '\\' : c;
+    }
     // 实际增益 = 主音量 × 该音效倍率
     float gain = (cfg.global.volume / 100.0f) * (vol / 100.0f);
     if (gain < 0.0f) gain = 0.0f;
@@ -2056,15 +2076,37 @@ int App::BrowseSounds(std::vector<SoundSpec>& out) {
         }
     }
 
+    // 旧布局 sounds\（与 DLL/exe 同级）也算“已就位”，可以存相对路径
+    std::wstring legacyNorm = Utf8ToWide(ExeDir() + "sounds");
+    if (!legacyNorm.empty() && legacyNorm.back() != L'\\') legacyNorm += L'\\';
+
     int added = 0;
+    bool fallbackCopied = false;
     for (const auto& f : files) {
         size_t slash = f.find_last_of(L"\\/");
         std::wstring fn = (slash == std::wstring::npos) ? f : f.substr(slash + 1);
         std::wstring fileDir = (slash == std::wstring::npos) ? L"" : f.substr(0, slash + 1);
-        if (fileDir.empty() || _wcsicmp(fileDir.c_str(), targetNorm.c_str()) != 0)
-            CopyFileW(f.c_str(), (targetNorm + fn).c_str(), FALSE);
+        const bool inTarget = !fileDir.empty() && _wcsicmp(fileDir.c_str(), targetNorm.c_str()) == 0;
+        const bool inLegacy = !fileDir.empty() && _wcsicmp(fileDir.c_str(), legacyNorm.c_str()) == 0;
 
-        std::string rel = "sounds/" + Utf8FromWide(fn);
+        // 只保存路径，不再复制一份进 sounds\：
+        //  - 文件本来就放在数据目录 sounds\（或旧位置 sounds\）→ 存相对路径 sounds/x
+        //  - 否则存绝对路径，插件和试听都直接读原文件
+        std::string rel;
+        if (inTarget || inLegacy) {
+            rel = "sounds/" + Utf8FromWide(fn);
+        } else {
+            rel = Utf8FromWide(f);
+            for (auto& c : rel) if (c == '/') c = '\\';
+            // 绝对路径里若含 ';' 或 ',' 会撑坏 ini 的 Sound= 列表(分号分隔)，
+            // 退回复制到 sounds\，保证这条配置可读
+            if (rel.find(';') != std::string::npos || rel.find(',') != std::string::npos) {
+                CopyFileW(f.c_str(), (targetNorm + fn).c_str(), FALSE);
+                rel = "sounds/" + Utf8FromWide(fn);
+                fallbackCopied = true;
+            }
+        }
+
         bool dup = false;
         for (const auto& s : out) if (s.path == rel) { dup = true; break; }
         if (!dup) {
@@ -2073,6 +2115,8 @@ int App::BrowseSounds(std::vector<SoundSpec>& out) {
             ++added;
         }
     }
+    if (fallbackCopied)
+        status = "个别文件名里含 ; 或 ,（会破坏 ini 解析），已复制进 sounds\\ 并用相对路径";
     return added;
 }
 
@@ -2155,6 +2199,11 @@ void App::SwitchToGameIni() {
 void App::MergeOldIni() {
     const std::string p = OpenFileDialogIni();
     if (p.empty()) return;
+    MergeConfigFile(p);
+}
+
+// 合并指定 ini（旧配置 / 别人分享的组合导出文件共用）：按条目去重后追加
+void App::MergeConfigFile(const std::string& p) {
     Config old;
     if (!LoadConfig(p, old)) { status = "读取失败: " + p; return; }
 
@@ -2183,8 +2232,59 @@ void App::MergeOldIni() {
         ++added;
     }
     if (added > 0) mDirty = true;
-    status = "导入旧版 ini: 新增 " + std::to_string(added) + " 条，跳过重复 " +
-             std::to_string(skipped) + " 条（记得保存）";
+    std::string what = old.entries.empty() ? "（文件里没有条目）" : "";
+    status = "导入配置: 新增 " + std::to_string(added) + " 条，跳过重复 " +
+             std::to_string(skipped) + " 条" + what + "（记得保存）";
+}
+
+// 导出当前武器的当前组合（含"默认"组合）为分享文件
+void App::ExportComboCurrent() {
+    if (weaponFilter < 0 || weaponFilter > 13) { status = "先在左侧选一把武器（当前: 全部）"; return; }
+    const int w = weaponFilter;
+    const std::string combo = ActiveCombo(w);
+    const std::string comboName = combo.empty() ? "默认" : combo;
+
+    // 默认文件名：WeaponSoundEnhance_太刀_白刃流.txt（组合名里的非法字符换成 _）
+    std::string fname = "WeaponSoundEnhance_" + std::string(WeaponName(w)) + "_" + comboName;
+    for (auto& c : fname) {
+        if (c == '<' || c == '>' || c == ':' || c == '"' || c == '/' || c == '\\' || c == '|' || c == '?' || c == '*')
+            c = '_';
+    }
+    fname += ".txt";
+    wchar_t buf[MAX_PATH * 2] = {};
+    wcscpy_s(buf, Utf8ToWide(fname).c_str());
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = (HWND)hwnd;
+    ofn.lpstrFilter = L"组合文件 (*.txt;*.ini)\0*.txt;*.ini\0所有文件 (*.*)\0*.*\0";
+    ofn.lpstrFile = buf;
+    ofn.nMaxFile = sizeof(buf) / sizeof(wchar_t);
+    ofn.lpstrDefExt = L"txt";
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
+    if (!GetSaveFileNameW(&ofn)) return;
+
+    std::string path = Utf8FromWide(buf);
+    std::string err;
+    if (ExportComboFile(path, w, combo, cfg.entries, err)) {
+        status = "已导出「" + comboName + "」组合 (" + std::to_string([&]{ int n=0; for(auto&e:cfg.entries) if(e.weaponType==w&&e.combo==combo) ++n; return n; }()) +
+                 " 条) -> " + path + "（可直接分享给别人【导入】）";
+    } else {
+        status = "导出失败: " + err;
+    }
+}
+
+// 导入组合分享文件（合并到当前配置；使用者自己再点「保存」写盘）
+void App::ImportComboFile() {
+    wchar_t buf[MAX_PATH * 2] = {};
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = (HWND)hwnd;
+    ofn.lpstrFilter = L"组合文件 (*.txt;*.ini)\0*.txt;*.ini\0所有文件 (*.*)\0*.*\0";
+    ofn.lpstrFile = buf;
+    ofn.nMaxFile = sizeof(buf) / sizeof(wchar_t);
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (!GetOpenFileNameW(&ofn)) return;
+    MergeConfigFile(Utf8FromWide(buf));
 }
 
 void App::EnrichNames() {

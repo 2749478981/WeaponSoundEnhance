@@ -554,3 +554,35 @@ bool SaveConfig(const std::string& path, const Config& cfg) {
     // 宽路径写盘（同读取：中文路径下 std::ofstream 会写到不存在的位置/直接失败）
     return FsWrite(path, o);
 }
+
+// 组合段名：[WeaponW]（默认组合） / [WeaponW:组合名]
+static std::string GetComboSectionName(int w, const std::string& combo) {
+    if (combo.empty()) return "Weapon" + std::to_string(w);
+    return "Weapon" + std::to_string(w) + ":" + combo;
+}
+
+// 导出单个组合为可分享的 ini 片段：
+//   文件开头有说明头；然后是 [WeaponW:组合名] 段 + 该组合的全部条目。
+//   导入方用 LoadConfig 直接解析，再按条目去重合并（和「合并旧版ini」同一套逻辑）。
+bool ExportComboFile(const std::string& path, int weapon, const std::string& combo,
+                     const std::vector<SoundEntry>& all, std::string& err) {
+    std::string o;
+    o += "; ============================================================================\r\n";
+    o += ";  WeaponSoundEnhance 组合导出 v1\r\n";
+    o += ";  武器: " + std::string(WeaponName(weapon)) + " (" + std::to_string(weapon) + ")\r\n";
+    o += ";  组合: " + (combo.empty() ? "默认" : combo) + "\r\n";
+    o += ";  导入：GUI 左侧「组合(当前激活)」旁点【导入】选择本文件，按条目去重合并。\r\n";
+    o += "; ============================================================================\r\n\r\n";
+    o += "[" + GetComboSectionName(weapon, combo) + "]\r\n";
+
+    int n = 0, written = 0;
+    for (const auto& e : all) {
+        if (e.weaponType != weapon || e.combo != combo) continue;
+        WriteEntry(e, ++n, o);
+        ++written;
+    }
+    if (written == 0) { err = "这个组合一条条目都没有，没什么可导出的"; return false; }
+    if (!FsWrite(path, o)) { err = "写文件失败: " + path; return false; }
+    err.clear();
+    return true;
+}

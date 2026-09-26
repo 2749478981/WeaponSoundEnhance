@@ -125,6 +125,9 @@ private:
     void SubmitIdsToGithub();
     void FetchLatestFsmDb();
     void MergeOldIni();   // 合并旧版 ini 的动作条目（升级不丢配置）
+    void MergeConfigFile(const std::string& path);   // 合并指定 ini（旧配置 / 导入的组合文件共用）
+    void ExportComboCurrent();   // 把当前武器的当前组合导出为分享文件
+    void ImportComboFile();      // 导入别人分享的组合文件（按条目去重合并）
     void SwitchToGameIni();   // 切到游戏实际读取的 ini（当前那份不是它时用）
     // ---- 配置组合管理 ----
     std::vector<std::string> WeaponCombos(int w) const;              // "" 在最前 + 命名组合(按出现顺序)

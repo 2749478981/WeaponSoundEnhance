@@ -331,7 +331,7 @@ void LogInit()
 {
     gLogPath = gDataDir + L"WeaponSoundEnhance.log";
     ::DeleteFileW(gLogPath.c_str());
-    Log("WeaponSoundEnhance 2.10 starting");
+    Log("WeaponSoundEnhance 2.13 starting");
     // 旧布局提示：wav 还在 plugins\sounds\ 时自动兼容，但建议搬进数据目录
     const std::wstring oldSounds = gModuleDir + L"sounds";
     if (gDataDir != gModuleDir && DirExistsW(oldSounds) &&
@@ -1723,7 +1723,10 @@ std::wstring JoinPath(const std::wstring& dir, const std::string& rel)
 
 std::wstring AbsFor(const std::string& rel)
 {
-    if (rel.size() > 1 && rel[1] == ':') return strconv::ToWide(rel);   // 绝对路径
+    // 绝对路径（盘符或 UNC）原样返回，不拼数据目录
+    if (rel.size() > 1 && rel[1] == ':') return strconv::ToWide(rel);
+    if (rel.size() >= 2 && (rel[0] == '\\' || rel[0] == '/') &&
+        (rel[1] == '\\' || rel[1] == '/')) return strconv::ToWide(rel);
 
     static std::mutex pathMutex;
     static std::map<std::string, std::wstring> pathCache;

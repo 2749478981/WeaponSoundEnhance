@@ -101,6 +101,9 @@ struct Config {
 
 bool LoadConfig(const std::string& path, Config& cfg);
 bool SaveConfig(const std::string& path, const Config& cfg);
+// 导出单个组合为可分享的 ini 片段（只含该组合的条目）。err 带失败原因。
+bool ExportComboFile(const std::string& path, int weapon, const std::string& combo,
+                     const std::vector<SoundEntry>& all, std::string& err);
 
 const char* WeaponName(int t);
 // 刃时标签：tag ∈ none|white|yellow|red 或 0..3 → 0..3，否则 -1
