@@ -104,6 +104,10 @@ bool SaveConfig(const std::string& path, const Config& cfg);
 // 导出单个组合为可分享的 ini 片段（只含该组合的条目）。err 带失败原因。
 bool ExportComboFile(const std::string& path, int weapon, const std::string& combo,
                      const std::vector<SoundEntry>& all, std::string& err);
+// 生成组合导出的文本内容（带 UTF-8 BOM，供写入文件/打进 zip 用）。空组合返回 false。
+bool BuildComboExportText(int weapon, const std::string& combo,
+                          const std::vector<SoundEntry>& all,
+                          std::string& outText, std::string& err);
 
 const char* WeaponName(int t);
 // 刃时标签：tag ∈ none|white|yellow|red 或 0..3 → 0..3，否则 -1

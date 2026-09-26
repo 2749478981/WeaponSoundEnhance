@@ -5,6 +5,11 @@
 // 音效解码（wav/mp3/ogg/flac -> 16-bit PCM），试听与选择都用它
 #define WSE_AUDIO_IMPLEMENTATION
 #include "wse_audio.h"
+// zip 打包/解包（组合导出/导入用；miniz 单文件公有领域）
+#pragma warning(push)
+#pragma warning(disable: 4100 4201 4242 4244 4245 4267 4305 4324 4700 4701 4702 4706 4996 6011 6262 6387)
+#include "miniz.c"
+#pragma warning(pop)
 #include <windows.h>
 #include <shellapi.h>
 #include <commdlg.h>
@@ -367,6 +372,141 @@ static void MakeDirs(const std::wstring& dir) {
     }
 }
 
+// 递归删除目录树
+static void DeleteTree(const std::wstring& dir) {
+    std::wstring pat = dir + L"*";
+    WIN32_FIND_DATAW fd;
+    HANDLE f = ::FindFirstFileW(pat.c_str(), &fd);
+    if (f != INVALID_HANDLE_VALUE) {
+        do {
+            std::wstring nm = fd.cFileName;
+            if (nm == L"." || nm == L"..") continue;
+            std::wstring q = dir + nm;
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) DeleteTree(q + L"\\");
+            else ::DeleteFileW(q.c_str());
+        } while (::FindNextFileW(f, &fd));
+        ::FindClose(f);
+    }
+    ::RemoveDirectoryW(dir.c_str());
+}
+
+// 把 bytes 以宽路径写盘
+static bool WriteWideFile(const std::wstring& path, const void* data, std::size_t n) {
+    HANDLE h = ::CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                             CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    DWORD wr = 0;
+    const bool ok = n == 0 ||
+                    (::WriteFile(h, data, (DWORD)n, &wr, nullptr) && wr == (DWORD)n);
+    ::CloseHandle(h);
+    return ok;
+}
+
+// 读文件为字节（宽路径）
+static bool ReadWideFile(const std::wstring& path, std::string& out) {
+    HANDLE h = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    LARGE_INTEGER sz{};
+    if (!::GetFileSizeEx(h, &sz) || sz.QuadPart <= 0 || sz.QuadPart > (64LL << 20)) {
+        ::CloseHandle(h);
+        return false;
+    }
+    out.resize((std::size_t)sz.QuadPart);
+    DWORD rd = 0;
+    const bool ok = ::ReadFile(h, &out[0], (DWORD)out.size(), &rd, nullptr) != FALSE &&
+                    rd == out.size();
+    ::CloseHandle(h);
+    if (!ok) out.clear();
+    return ok;
+}
+
+// 创建 zip：组合 txt（内存）+ soundsSrcDir 里所有文件（保留子目录，URL 风格路径）
+static bool ZipBuildArchive(const std::wstring& zipPath, const std::string& txtName,
+                            const std::string& txtData, const std::wstring& soundsSrcDir,
+                            std::string& err) {
+    mz_zip_archive z{};
+    if (!mz_zip_writer_init_heap(&z, 0, (size_t)1 << 20)) { err = "初始化 zip 失败"; return false; }
+    bool fail = false;
+    auto abortAdd = [&]() { mz_zip_writer_end(&z); fail = true; };
+    if (mz_zip_writer_add_mem(&z, txtName.c_str(), txtData.data(), txtData.size(), 0) == MZ_FALSE) {
+        err = "打包组合文件失败";
+        abortAdd();
+        return false;
+    }
+    std::function<void(const std::wstring&, const std::string&)> walk;
+    walk = [&](const std::wstring& disk, const std::string& arc) {
+        if (fail) return;
+        WIN32_FIND_DATAW fd;
+        HANDLE f = ::FindFirstFileW((disk + L"*").c_str(), &fd);
+        if (f == INVALID_HANDLE_VALUE) return;
+        do {
+            std::wstring nm = fd.cFileName;
+            if (nm == L"." || nm == L"..") continue;
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                walk(disk + nm + L"\\", arc + Utf8FromWide(nm) + "/");
+                continue;
+            }
+            std::string bytes;
+            if (!ReadWideFile(disk + nm, bytes)) continue;
+            const std::string arcName = arc + Utf8FromWide(nm);
+            if (mz_zip_writer_add_mem(&z, arcName.c_str(), bytes.data(), bytes.size(), 0) == MZ_FALSE) {
+                err = "打包音效失败: " + arcName;
+                abortAdd();
+                return;
+            }
+        } while (::FindNextFileW(f, &fd));
+        ::FindClose(f);
+    };
+    walk(soundsSrcDir, "sounds/");
+    if (fail) return false;
+
+    void* buf = nullptr;
+    std::size_t bufsz = 0;
+    if (mz_zip_writer_finalize_heap_archive(&z, &buf, &bufsz) == MZ_FALSE) { err = "取 zip 内容失败"; mz_zip_writer_end(&z); return false; }
+    mz_zip_writer_end(&z);
+    const bool okW = WriteWideFile(zipPath, buf, bufsz);
+    mz_free(buf);
+    if (!okW) { err = "写 zip 文件失败: " + Utf8FromWide(zipPath); return false; }
+    return true;
+}
+
+// 解开 zip 到 extDir；返回其中第一个 *.txt/*.ini（大写不敏感）的路径
+static std::string ZipExtractTo(const std::wstring& zipPath, const std::string& extDir) {
+    std::string bytes;
+    if (!ReadWideFile(zipPath, bytes)) return std::string();
+    mz_zip_archive z{};
+    if (mz_zip_reader_init_mem(&z, bytes.data(), bytes.size(), 0) == MZ_FALSE) return std::string();
+    std::string found;
+    const mz_uint num = mz_zip_reader_get_num_files(&z);
+    for (mz_uint i = 0; i < num; ++i) {
+        mz_zip_archive_file_stat st;
+        if (mz_zip_reader_file_stat(&z, i, &st) == MZ_FALSE) continue;
+        std::string name = st.m_filename;
+        if (name.empty() || name.find("..") != std::string::npos) continue;
+        std::size_t len = 0;
+        void* buf = mz_zip_reader_extract_to_heap(&z, i, &len, 0);
+        if (!buf) continue;
+        std::string rel = name;
+        for (auto& c : rel) if (c == '/') c = '\\';
+        if (!rel.empty() && rel[0] == '\\') rel.erase(0, 1);
+        const std::string outPath = extDir + rel;
+        const std::string::size_type s = outPath.find_last_of("\\/");
+        if (s != std::string::npos) MakeDirs(Utf8ToWide(outPath.substr(0, s + 1)));
+        WriteWideFile(Utf8ToWide(outPath), buf, len);
+        mz_free(buf);
+        if (found.empty()) {
+            std::string low = name;
+            for (auto& c : low) if (c >= 'A' && c <= 'Z') c += 32;
+            const std::size_t dot = low.find_last_of('.');
+            const std::string ext = (dot == std::string::npos) ? "" : low.substr(dot);
+            if (ext == ".txt" || ext == ".ini") found = outPath;
+        }
+    }
+    mz_zip_reader_end(&z);
+    return found;
+}
+
 // 按显示宽度截断文本（UTF-8 安全，超出加省略号），避免长名称撑出/截断卡片
 std::string ClipText(const std::string& s, float maxW) {
     if (ImGui::CalcTextSize(s.c_str()).x <= maxW) return s;
@@ -718,11 +858,11 @@ void App::DrawToolbar() {
     ImGui::SameLine();
     if (ImGui::Button("导出组合")) ExportComboCurrent();
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("把当前武器当前激活的组合导出为分享文件（会连同它用到的音效一起复制到导出目录的 sounds\\ 里）");
+        ImGui::SetTooltip("把当前武器当前激活的组合导出为 zip 组合包（内含组合 txt + sounds\\ 音效），发给别人直接【导入】");
     ImGui::SameLine();
     if (ImGui::Button("导入组合")) ImportComboFile();
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("导入别人分享的组合文件（按条目去重合并；如果文件旁边有 sounds\\ 文件夹会一并复制进来）");
+        ImGui::SetTooltip("导入别人分享的组合包（zip/txt/ini 都行，按条目去重合并；zip 里的音效会自动复制进本地）");
     ImGui::SameLine();
     if (ImGui::Button("打开 sounds\\")) {
         // 数据目录下没有 sounds\ 但旧布局(与 DLL 同级)有 → 打开旧目录，避免用户找不到音效
@@ -1219,9 +1359,8 @@ void App::DrawStatus() {
         }
         if (pairs > 0) {
             ImGui::SameLine(0, 20);
-            char bb[192];
-            snprintf(bb, sizeof(bb), "⚠ %d 组条目重叠会同时触发：%s", pairs, sample.c_str());
-            ImGui::TextColored(C_AMBER, "%s", bb);
+            std::string ov = "⚠ " + std::to_string(pairs) + " 组条目重叠会同时触发：" + sample;
+            ImGui::TextColored(C_AMBER, "%s", ov.c_str());
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("同武器 + 同 FSMId 的多条条目，只要 LMT 有交集就会在同一次动作里各响一次。\n"
                                   "把某条设成「LMT 不限」后，一般要删掉被它覆盖的那几条（例如 xxx(起手帧)）。");
@@ -2415,53 +2554,105 @@ void App::ExportComboCurrent() {
     const std::string combo = ActiveCombo(w);
     const std::string comboName = combo.empty() ? "默认" : combo;
 
-    // 默认文件名：WeaponSoundEnhance_太刀_白刃流.txt（组合名里的非法字符换成 _）
+    // 默认文件名：WeaponSoundEnhance_太刀_白刃流.zip（组合名里的非法字符换成 _）
     std::string fname = "WeaponSoundEnhance_" + std::string(WeaponName(w)) + "_" + comboName;
     for (auto& c : fname) {
         if (c == '<' || c == '>' || c == ':' || c == '"' || c == '/' || c == '\\' || c == '|' || c == '?' || c == '*')
             c = '_';
     }
-    fname += ".txt";
+    fname += ".zip";
     wchar_t buf[MAX_PATH * 2] = {};
     wcscpy_s(buf, Utf8ToWide(fname).c_str());
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = (HWND)hwnd;
-    ofn.lpstrFilter = L"组合文件 (*.txt;*.ini)\0*.txt;*.ini\0所有文件 (*.*)\0*.*\0";
+    ofn.lpstrFilter = L"组合包 (*.zip)\0*.zip\0所有文件 (*.*)\0*.*\0";
     ofn.lpstrFile = buf;
     ofn.nMaxFile = sizeof(buf) / sizeof(wchar_t);
-    ofn.lpstrDefExt = L"txt";
+    ofn.lpstrDefExt = L"zip";
     ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
     if (!GetSaveFileNameW(&ofn)) return;
-    const std::string path = Utf8FromWide(buf);
-    const std::string::size_type slash = path.find_last_of("\\/");
-    const std::string dir = (slash == std::string::npos) ? "" : path.substr(0, slash + 1);
+    const std::string zipPath = Utf8FromWide(buf);
+
+    // 暂存目录：先复制音效到 <暂存>\sounds\，再打进 zip，收尾删掉
+    char t[MAX_PATH] = {};
+    ::GetTempPathA(MAX_PATH, t);
+    const std::string stage = std::string(t) + "wse_export_" +
+                              std::to_string((unsigned long)::GetCurrentProcessId()) + "\\";
+    DeleteTree(Utf8ToWide(stage));
+    MakeDirs(Utf8ToWide(stage));
 
     std::vector<SoundEntry> exported;
     int copied = 0, missing = 0;
-    PackComboToDir(w, combo, dir, exported, copied, missing);
+    PackComboToDir(w, combo, stage, exported, copied, missing);
+    if (exported.empty()) {
+        DeleteTree(Utf8ToWide(stage));
+        status = "这个组合一条条目都没有，没什么可导出的";
+        return;
+    }
 
-    std::string err;
-    if (!ExportComboFile(path, w, combo, exported, err)) { status = "导出失败: " + err; return; }
-    status = "已导出「" + comboName + "」组合 (" + std::to_string(exported.size()) + " 条, 音效 " +
-             std::to_string(copied) + " 个 -> " + dir + "sounds\\) 到 " + path;
+    std::string txt, err;
+    if (!BuildComboExportText(w, combo, exported, txt, err)) {
+        DeleteTree(Utf8ToWide(stage));
+        status = "导出失败: " + err;
+        return;
+    }
+    // zip 里的 txt 名与 zip 同名，只换后缀
+    std::string txtName = fname;
+    txtName.resize(txtName.size() - 4);
+    txtName += ".txt";
+
+    if (!ZipBuildArchive(Utf8ToWide(zipPath), txtName, txt,
+                         Utf8ToWide(stage + "sounds\\"), err)) {
+        DeleteTree(Utf8ToWide(stage));
+        status = "导出失败: " + err;
+        return;
+    }
+    DeleteTree(Utf8ToWide(stage));
+
+    status = "已导出组合包（zip）: " + zipPath + "（" + std::to_string(exported.size()) +
+             " 条条目，音效 " + std::to_string(copied) + " 个）—— 把整个 zip 发给别人【导入】即可";
     if (missing > 0)
-        status += "；有 " + std::to_string(missing) + " 个音效文件找不到，路径已原样保留";
-    ShellExecuteW((HWND)hwnd, L"open", Utf8ToWide(dir).c_str(), nullptr, nullptr, SW_SHOW);   // 顺手打开导出目录方便打包
+        status += "；有 " + std::to_string(missing) + " 个音效文件找不到，路径已按原样写入";
+    const std::string::size_type sl = zipPath.find_last_of("\\/");
+    if (sl != std::string::npos)
+        ShellExecuteW((HWND)hwnd, L"open", Utf8ToWide(zipPath.substr(0, sl + 1)).c_str(),
+                      nullptr, nullptr, SW_SHOW);
 }
 
-// 导入组合分享文件（合并到当前配置；使用者自己再点「保存」写盘）
+// 导入组合分享文件（zip / txt / ini 都行；合并到当前配置，使用者再点「保存」写盘）
 void App::ImportComboFile() {
     wchar_t buf[MAX_PATH * 2] = {};
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = (HWND)hwnd;
-    ofn.lpstrFilter = L"组合文件 (*.txt;*.ini)\0*.txt;*.ini\0所有文件 (*.*)\0*.*\0";
+    ofn.lpstrFilter = L"组合文件 (*.zip;*.txt;*.ini)\0*.zip;*.txt;*.ini\0所有文件 (*.*)\0*.*\0";
     ofn.lpstrFile = buf;
     ofn.nMaxFile = sizeof(buf) / sizeof(wchar_t);
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     if (!GetOpenFileNameW(&ofn)) return;
-    MergeConfigFile(Utf8FromWide(buf));
+    const std::string p = Utf8FromWide(buf);
+
+    std::string low = p;
+    for (auto& c : low) if (c >= 'A' && c <= 'Z') c += 32;
+    const bool isZip = low.size() > 4 && low.substr(low.size() - 4) == ".zip";
+    if (!isZip) { MergeConfigFile(p); return; }
+
+    // zip：解包到临时目录，取出组合 txt 再走普通合并（旁边的 sounds\ 会自动复制进本地）
+    char t[MAX_PATH] = {};
+    ::GetTempPathA(MAX_PATH, t);
+    const std::string ext = std::string(t) + "wse_import_" +
+                            std::to_string((unsigned long)::GetCurrentProcessId()) + "\\";
+    DeleteTree(Utf8ToWide(ext));
+    MakeDirs(Utf8ToWide(ext));
+    const std::string found = ZipExtractTo(Utf8ToWide(p), ext);
+    if (found.empty()) {
+        DeleteTree(Utf8ToWide(ext));
+        status = "这个 zip 里没有组合文件（*.txt / *.ini）";
+        return;
+    }
+    MergeConfigFile(found);
+    DeleteTree(Utf8ToWide(ext));
 }
 
 void App::EnrichNames() {
