@@ -128,6 +128,9 @@ private:
     void MergeConfigFile(const std::string& path);   // 合并指定 ini（旧配置 / 导入的组合文件共用）
     void ExportComboCurrent();   // 把当前武器的当前组合导出为分享文件
     void ImportComboFile();      // 导入别人分享的组合文件（按条目去重合并）
+    // 提取组合条目 + 把用到的音效复制到 dir\sounds\ 并改写路径（可测试的导出核心）
+    bool PackComboToDir(int w, const std::string& combo, const std::string& dir,
+                        std::vector<SoundEntry>& outEntries, int& copied, int& missing);
     void SwitchToGameIni();   // 切到游戏实际读取的 ini（当前那份不是它时用）
     // ---- 配置组合管理 ----
     std::vector<std::string> WeaponCombos(int w) const;              // "" 在最前 + 命名组合(按出现顺序)

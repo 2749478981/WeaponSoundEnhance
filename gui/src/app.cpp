@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <map>
 
 #pragma comment(lib, "winmm.lib")
 #pragma comment(lib, "comdlg32.lib")
@@ -701,6 +702,14 @@ void App::DrawToolbar() {
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("把旧版 ini 里的动作合并进来（不替换当前配置），换新版时不用重填");
     ImGui::SameLine();
+    if (ImGui::Button("导出组合")) ExportComboCurrent();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("把当前武器当前激活的组合导出为分享文件（会连同它用到的音效一起复制到导出目录的 sounds\\ 里）");
+    ImGui::SameLine();
+    if (ImGui::Button("导入组合")) ImportComboFile();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("导入别人分享的组合文件（按条目去重合并；如果文件旁边有 sounds\\ 文件夹会一并复制进来）");
+    ImGui::SameLine();
     if (ImGui::Button("打开 sounds\\")) {
         // 数据目录下没有 sounds\ 但旧布局(与 DLL 同级)有 → 打开旧目录，避免用户找不到音效
         std::wstring sd = Utf8ToWide(BaseDir() + "sounds");
@@ -800,17 +809,6 @@ void App::DrawWeaponTree() {
             ImGui::EndDisabled();
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("组合下移（默认组合恒在最前，不能移动）");
         }
-        // ---- 导出 / 导入组合（分享给别人 / 用别人的配置）----
-        if (fitsOnLine("导出")) ImGui::SameLine();
-        if (ImGui::SmallButton("导出")) ExportComboCurrent();
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("导出当前组合「%s」为分享文件（可以发给别的玩家【导入】）",
-                              sel.empty() ? "默认" : sel.c_str());
-        if (fitsOnLine("导入")) ImGui::SameLine();
-        if (ImGui::SmallButton("导入")) ImportComboFile();
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("导入别人分享的组合文件（按条目去重合并，导入后记得保存）；\n"
-                              "旧版配置用工具栏的「合并旧版ini」也可以导入。");
         // 重命名弹窗
         if (ImGui::BeginPopup("##rencombo")) {
             static char renBuf[64] = {};
@@ -2207,6 +2205,36 @@ void App::MergeConfigFile(const std::string& p) {
     Config old;
     if (!LoadConfig(p, old)) { status = "读取失败: " + p; return; }
 
+    // 组合导出会带一个旁边 sounds\；导入时把这些音效复制进本地数据目录，
+    // 这样条目里的相对路径 sounds/x 在本机也能找到
+    int sndCopied = 0, sndSkipped = 0;
+    {
+        const std::string::size_type s = p.find_last_of("\\/");
+        const std::string dir = (s == std::string::npos) ? std::string() : p.substr(0, s + 1);
+        const std::wstring pkg = Utf8ToWide(dir + "sounds\\");
+        if (GetFileAttributesW(pkg.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            const std::string local = BaseDir() + "sounds\\";
+            CreateDirectoryW(Utf8ToWide(local).c_str(), nullptr);
+            const std::wstring localW = Utf8ToWide(local);
+            WIN32_FIND_DATAW fd;
+            HANDLE ff = FindFirstFileW((pkg + L"*").c_str(), &fd);
+            if (ff != INVALID_HANDLE_VALUE) {
+                do {
+                    if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+                    std::wstring fn = fd.cFileName;
+                    std::size_t dot = fn.find_last_of(L'.');
+                    std::wstring low = (dot == std::wstring::npos) ? L"" : fn.substr(dot);
+                    for (auto& c : low) if (c >= L'A' && c <= L'Z') c += 32;
+                    if (low != L".wav" && low != L".mp3" && low != L".ogg" && low != L".flac") continue;
+                    if (GetFileAttributesW((localW + fn).c_str()) != INVALID_FILE_ATTRIBUTES) { ++sndSkipped; continue; }
+                    if (CopyFileW((pkg + fn).c_str(), (localW + fn).c_str(), FALSE)) ++sndCopied;
+                    else ++sndSkipped;
+                } while (FindNextFileW(ff, &fd));
+                FindClose(ff);
+            }
+        }
+    }
+
     auto keyOf = [](const SoundEntry& e) {
         std::string k = std::to_string(e.weaponType) + "|" + e.combo + "|" +
                         std::to_string(e.fsmId) + "|" + std::to_string(e.fsmTarget) + "|";
@@ -2232,14 +2260,83 @@ void App::MergeConfigFile(const std::string& p) {
         ++added;
     }
     if (added > 0) mDirty = true;
-    std::string what = old.entries.empty() ? "（文件里没有条目）" : "";
+    std::string extra;
+    if (sndCopied > 0 || sndSkipped > 0)
+        extra = "；音效: 复制 " + std::to_string(sndCopied) + " 个、已有跳过 " +
+                std::to_string(sndSkipped) + " 个 -> " + BaseDir() + "sounds\\";
     status = "导入配置: 新增 " + std::to_string(added) + " 条，跳过重复 " +
-             std::to_string(skipped) + " 条" + what + "（记得保存）";
+             std::to_string(skipped) + " 条" + extra + "（记得保存）";
 }
 
-// 导出当前武器的当前组合（含"默认"组合）为分享文件
+// 导出核心：收集组合条目 + 把用到的音效复制到 dir\sounds\ 并改写条目路径
+bool App::PackComboToDir(int w, const std::string& combo, const std::string& dir,
+                         std::vector<SoundEntry>& outEntries, int& copied, int& missing) {
+    // 把源音效路径解析成源文件（sounds/相对 → 数据目录；绝对/UNC → 原样）
+    auto resolveSrc = [&](const std::string& p) -> std::wstring {
+        if (p.empty()) return std::wstring();
+        if (p.size() > 1 && p[1] == ':') return Utf8ToWide(p);
+        if (p.size() >= 2 && (p[0] == '\\' || p[0] == '/') && (p[1] == '\\' || p[1] == '/')) return Utf8ToWide(p);
+        std::wstring w2 = Utf8ToWide(BaseDir());
+        for (char c : p) w2 += (c == '/') ? L'\\' : wchar_t(c);
+        if (GetFileAttributesW(w2.c_str()) != INVALID_FILE_ATTRIBUTES) return w2;
+        std::wstring lg = Utf8ToWide(ExeDir());          // 旧布局：与 DLL/exe 同级
+        for (char c : p) lg += (c == '/') ? L'\\' : wchar_t(c);
+        return lg;
+    };
+
+    const std::wstring outDir = Utf8ToWide(dir + "sounds\\");
+    CreateDirectoryW(outDir.c_str(), nullptr);
+
+    std::map<std::wstring, std::string> srcToRel;   // 源文件(小写) -> 导出后的相对路径
+    std::map<std::wstring, int> usedBase;
+    copied = 0;
+    missing = 0;
+    outEntries.clear();
+
+    for (const auto& e : cfg.entries) {
+        if (e.weaponType != w || e.combo != combo) continue;
+        SoundEntry c2 = e;                              // 拷贝（含全部音效池）
+        auto rew = [&](std::vector<SoundSpec>& specs) {
+            for (auto& sp : specs) {
+                const std::wstring src = resolveSrc(sp.path);
+                if (src.empty()) { ++missing; continue; }   // 找不到源文件：路径原样保留
+                std::wstring key = src;
+                for (auto& ch : key) if (ch >= L'A' && ch <= L'Z') ch += 32;
+                auto it = srcToRel.find(key);
+                if (it != srcToRel.end()) { sp.path = it->second; continue; }
+                std::wstring base = src.substr(src.find_last_of(L"\\/") + 1);
+                std::wstring baseKey = base;
+                for (auto& ch : baseKey) if (ch >= L'A' && ch <= L'Z') ch += 32;
+                const int k = usedBase[baseKey];
+                std::wstring outName = base;
+                if (k > 0) {                            // 撞名：a.wav / a_2.wav
+                    const std::size_t dot = outName.find_last_of(L'.');
+                    outName = (dot == std::wstring::npos)
+                                  ? (outName + L"_" + std::to_wstring(k + 1))
+                                  : (outName.substr(0, dot) + L"_" + std::to_wstring(k + 1) +
+                                     outName.substr(dot));
+                }
+                usedBase[baseKey] = k + 1;
+                if (CopyFileW(src.c_str(), (outDir + outName).c_str(), FALSE)) ++copied;
+                else ++missing;
+                const std::string rel = "sounds/" + Utf8FromWide(outName);
+                srcToRel[key] = rel;
+                sp.path = rel;
+            }
+        };
+        rew(c2.def.specs);
+        for (int g = 0; g < 4; ++g) rew(c2.gauge[g].specs);
+        for (auto& cc : c2.conds) rew(cc.pool.specs);
+        outEntries.push_back(std::move(c2));
+    }
+    return !outEntries.empty();
+}
+
+// 导出当前武器的当前组合（含"默认"组合）为分享文件：
+// 同时把组合用到的音效复制到导出目录的 sounds\ 并把条目路径改写过去，
+// 对方【导入】后拿到文件夹就能直接用。
 void App::ExportComboCurrent() {
-    if (weaponFilter < 0 || weaponFilter > 13) { status = "先在左侧选一把武器（当前: 全部）"; return; }
+    if (weaponFilter < 0 || weaponFilter > 13) { status = "先在左侧选一把武器（当前: 全部/通用）"; return; }
     const int w = weaponFilter;
     const std::string combo = ActiveCombo(w);
     const std::string comboName = combo.empty() ? "默认" : combo;
@@ -2262,15 +2359,21 @@ void App::ExportComboCurrent() {
     ofn.lpstrDefExt = L"txt";
     ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
     if (!GetSaveFileNameW(&ofn)) return;
+    const std::string path = Utf8FromWide(buf);
+    const std::string::size_type slash = path.find_last_of("\\/");
+    const std::string dir = (slash == std::string::npos) ? "" : path.substr(0, slash + 1);
 
-    std::string path = Utf8FromWide(buf);
+    std::vector<SoundEntry> exported;
+    int copied = 0, missing = 0;
+    PackComboToDir(w, combo, dir, exported, copied, missing);
+
     std::string err;
-    if (ExportComboFile(path, w, combo, cfg.entries, err)) {
-        status = "已导出「" + comboName + "」组合 (" + std::to_string([&]{ int n=0; for(auto&e:cfg.entries) if(e.weaponType==w&&e.combo==combo) ++n; return n; }()) +
-                 " 条) -> " + path + "（可直接分享给别人【导入】）";
-    } else {
-        status = "导出失败: " + err;
-    }
+    if (!ExportComboFile(path, w, combo, exported, err)) { status = "导出失败: " + err; return; }
+    status = "已导出「" + comboName + "」组合 (" + std::to_string(exported.size()) + " 条, 音效 " +
+             std::to_string(copied) + " 个 -> " + dir + "sounds\\) 到 " + path;
+    if (missing > 0)
+        status += "；有 " + std::to_string(missing) + " 个音效文件找不到，路径已原样保留";
+    ShellExecuteW((HWND)hwnd, L"open", Utf8ToWide(dir).c_str(), nullptr, nullptr, SW_SHOW);   // 顺手打开导出目录方便打包
 }
 
 // 导入组合分享文件（合并到当前配置；使用者自己再点「保存」写盘）

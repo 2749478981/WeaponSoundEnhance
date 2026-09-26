@@ -1,0 +1,155 @@
+; ============================================================================
+;  WeaponSoundEnhance.ini —— 武器音效拓展插件配置
+;
+;  【随包模板】发布包里本文件叫 WeaponSoundEnhance.ini.template；
+;  你的 WeaponSoundEnhance.ini 缺失时，插件/工具会自动用它生成一份。
+;  升级只会覆盖模板，不会覆盖你自己的 ini —— 你的动作条目不会丢。
+;  若误换成新文件，用 GUI 工具栏「合并旧版ini」把旧动作合并回来即可。
+;
+;  文件位置：数据目录 <plugins>\WeaponSoundEnhance\ 下（与 dll 同目录的旧布局也兼容）；
+;  音效(wav/mp3/ogg/flac，不用转换)放到数据目录的 sounds\ 下；
+;  播放时统一转 16-bit PCM，常见采样率(44.1k/48k 等)原样保留、不重采样，保证最大音质。
+;
+;  武器类型（与原版序号一致）：0大剑 1片手 2双刀 3太刀 4大锤 5笛子
+;                       6长枪 7铳枪 8斩斧 9盾斧 10虫棍 11弓箭 12轻弩 13重弩
+;
+;  每条 [AttackN] 代表一个"派生攻击"，命中时按 AND 匹配：
+;    WeaponType   : 武器(0..13)，-1=任意
+;    ActionLMT/LMT: 动作 LMT。不限 = 空 / -1 / any / * / 不限（该 FSMId 的所有动作都触发）；
+;                   多个用逗号：LMT=49265,49256。只接受整数，无法识别的项会被忽略。
+;    FSMId        : 动作状态机 ID，-1=不限
+;  音效写法 path|延时ms|音量0..100|F ：分号分隔多条；末尾 F=固定音效(命中恒播，
+;    同组其余未固定音效仍随机抽一条，同时叠播)。同文件 400ms 内不重复。
+;  刃时音效(仅太刀) Sound:none/white/yellow/red=...（无刃时/白刃时/黄刃时/红刃时）；
+;    未配置的刃时回退默认 Sound=。
+;  动作组 Group=名 ：同一招的多个触发条目填相同组名 → 整招只响一次。
+;  每武器配置组合：
+;    默认组合的条目写在 [Weapon<类型>] 段里（[Weapon3] = 太刀的默认组合）；
+;    命名组合写在 [Weapon<类型>:组合名] 段里（[Weapon3:DIO] = 太刀的 DIO 组合）；
+;    [Active] 段 W<类型>=组合名 决定每武器当前用哪个组合（切换只改该武器）。
+;    ⚠ 每个 [AttackN] 要待在自己武器的段里：段头写的是武器 3 的某组合、条目却写
+;      WeaponType=6，会被算回"武器6的默认组合"（插件会自动纠正并在日志里记一行）。
+;    游戏内 Ctrl+F11 切下一个组合，切完写回本文件的 [Active]（PersistActiveCombo=0 可关），
+;    所以重载/重开游戏不会跳回旧组合。
+;
+;  游戏内热键：Ctrl+F5 重载 / Ctrl+F9 开关 / Ctrl+F10 更多音效(旧条目) /
+;             Ctrl+↑↓ 音量 / Ctrl+F8 设定音量 / Ctrl+F11 切换当前武器组合
+;  游戏聊天框：/wse help | reload | on | off | more | one | vol N | vol+ | vol- |
+;             combo [组合名] (切组合) | combos (列出该武器的组合)
+; ============================================================================
+
+[WeaponSoundEnhance]
+; 全局玩家指针基址（十六进制）。游戏小版本变动导致失效时才需调整。
+PlayerRoot=0x1450139A0
+PollMs=60
+DebounceMs=120
+Volume=50
+Enabled=1
+; 旧全局"更多音效"：仅对无固定音效的旧条目生效
+MoreSounds=1
+ChatEcho=1
+ChatCommands=1
+; 启用热键 1=开 0=关（关闭后游戏内 Ctrl 组合热键全部失效；/wse 聊天指令不受影响）
+Hotkeys=1
+; 游戏内切组合后是否把选择写回本文件 [Active]（1=写回，重载/重开游戏保持；0=只在本次运行内有效）
+PersistActiveCombo=1
+; 调试日志 0=关 1=开（把每次播放/心跳写入 DLL 同目录 WeaponSoundEnhance.log）
+Debug=0
+; 太刀气刃等级读取偏移（链为 *(*(玩家+0x76B0)+0x2370)，写 3=红刃）
+GaugePtrOff=0x76B0
+GaugeValOff=0x2370
+; 大剑蓄力等级偏移（与刃级同一个对象，只是值偏移不同）
+ChargeValOff=0x2358
+; FSM target 偏移（FSM 为 (target,id) 二元组；条目可用 FSMTarget= 一起匹配）
+FsmTargetOff=0x6274
+; 任务结构入口与累计伤害偏移（用于条件判定的 dmg 变量，只统计本人伤害）
+QuestRoot=0x14500ED30
+QuestDmgOff=0x17088
+
+[Hotkeys]
+ModifierKey=17
+ReloadKey=116
+VolUpKey=38
+VolDownKey=40
+SetVolKey=119
+SetVolValue=50
+ToggleKey=120
+MoreKey=121
+ComboKey=122
+
+; ----------------------------------------------------------------------------
+;  以下没有预置条目，请按上面的说明自行添加 [AttackN]。
+;  示例（去掉行首 ; 即可启用）：
+;
+; ; [Attack1]
+; ; Name=气刃斩1
+; ; Group=气刃斩1
+; ; WeaponType=3
+; ; FSMId=11
+; ; LMT=49265,49256
+; ; Sound=sounds/气刃斩1.wav
+; ; Sound:white=sounds/气刃斩1_白1.wav|0|100|F; sounds/气刃斩1_白2.wav; sounds/气刃斩1_白3.wav|40|80
+; ; Sound:red=sounds/气刃斩1_红.wav
+;
+; ; [Active]  每武器当前组合（有命名组合时才需要写）
+; ; W3=太刀-主
+;
+; ; [Weapon3:太刀-主]   太刀 组合"太刀-主"
+; ; [Attack2]
+; ; WeaponType=3
+; ; FSMId=92
+; ; Sound=sounds/气刃兜割.wav
+; ;
+; ; ---- 条件判定：匹配到动作后盯一段时间，按结果挑音效池 ----
+; ; 用来做「这招打中了没有」「掉刃了没有」这类要观察一会儿才知道结果的触发。
+; ; 不写 CheckTimeoutMs 就是旧行为（匹配到就立刻播），完全兼容。
+; ;
+; ; 变量: dmg 自己打出的伤害(不含队友) / aura dAura 太刀气刃等级及变化
+; ;       charge dCharge 大剑蓄力等级及变化 / lmt fsm fsmTarget 当前动作 / ms 已过毫秒
+; ; 比较符 > >= < <= == != ，用 & (且) | (或) 连接，& 优先级更高
+; ; Sound:   条件一成立就播（适合已成定局的结果）
+; ; SoundEnd: 只在窗口结束时评（适合还可能被推翻的结果）
+; ; CheckMode=final 可让所有条件都在窗口结束时评（等价于每条都写 SoundEnd:）
+; ;
+; ; 判定条目注意：
+; ;   - 不走 Group=，也不受全局 Debounce 限制（观察窗自身负责去重）
+; ;   - 不参与刃时池(Sound:white/...)，只在条件池 + 默认 Sound= 里挑
+; ;   - FSM 是 (target,id) 二元组，跨层 id 可能重号；条目可加 FSMTarget= 一起匹配
+; ;
+; ; 例一 · 太刀登龙 命中/落空
+; ; [Attack90]
+; ; Name=登龙判定
+; ; WeaponType=3
+; ; FSMId=90
+; ; FSMTarget=-1        ; 填实际 target 可避免跨层重号误触发
+; ; LMT=49326
+; ; CheckTimeoutMs=2500
+; ; CheckEndOn=action
+; ; CheckOffsetMs=150
+; ; Sound:dmg>0=sounds/命中.wav
+; ; Sound=sounds/落空.wav
+; ;
+; ; 例二 · 太刀大居 成功/失败（掉刃也能打出伤害，所以"成功"必须等窗口结束才算数）
+; ; [Attack91]
+; ; Name=大居判定
+; ; WeaponType=3
+; ; LMT=49461,49462,49463
+; ; CheckTimeoutMs=3000
+; ; CheckEndOn=action
+; ; CheckOffsetMs=150
+; ; Sound:dAura<0=sounds/失败.wav
+; ; SoundEnd:dmg>0=sounds/成功.wav
+; ; Sound=sounds/失败.wav
+; ;
+; ; 例三 · 大剑真蓄 命中/落空（两段攻击，CheckDelayMs 卡在两段中间只认第二段）
+; ; [Attack92]
+; ; Name=真蓄判定
+; ; WeaponType=0
+; ; LMT=49298,49341,49342,49427,49428,49429
+; ; CheckDelayMs=1200
+; ; CheckTimeoutMs=3500
+; ; CheckEndOn=action
+; ; CheckOffsetMs=150
+; ; Sound:dmg>0=sounds/命中.wav
+; ; Sound=sounds/落空.wav
+; ----------------------------------------------------------------------------
