@@ -40,3 +40,6 @@ sounds/
 tmp_probe/
 
 tmp_probe*/
+
+# 误解压的发布产物目录
+WeaponSoundEnhance_v*/
