@@ -108,6 +108,8 @@ private:
     void Load(const std::string& path);
     std::string OpenFileDialogIni();
     int BrowseSounds(std::vector<SoundSpec>& out);   // 追加选中的 wav 为默认属性音效
+    std::string RelPathForPicked(const std::wstring& f, bool& copiedFallback);   // 选中音效 → 要存的路径
+    std::string PickSoundFile();   // 单文件音效选择框，返回要存的路径（取消返回空）
     void PlaySoundPreview(const std::string& rel, int vol, int delayMs);
     int CountFor(int w) const;
     void EnrichNames();

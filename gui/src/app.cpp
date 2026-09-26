@@ -421,6 +421,33 @@ static bool ReadWideFile(const std::wstring& path, std::string& out) {
     return ok;
 }
 
+// 给 zip 里所有条目补上 UTF-8 文件名标志（GP 标志 bit11=0x0800）：
+// miniz 1.x 不写这个标志，Windows 资源管理器/部分解压工具会把中文条目名按 ANSI
+// 显示成乱码；内容不受影响。条目都是 store(不压缩)，按结构顺序跳着改即可。
+static void PatchZipUtf8Flags(std::uint8_t* p, std::size_t n) {
+    std::size_t i = 0;
+    while (i + 30 <= n) {
+        if (p[i] == 0x50 && p[i + 1] == 0x4B && p[i + 2] == 0x03 && p[i + 3] == 0x04) {
+            p[i + 6] |= 0x00;                       // 本地文件头 GP 标志 bit11=0x0800（UTF-8 文件名）
+            p[i + 7] |= 0x08;
+            const std::size_t fn = p[i + 26] | ((std::size_t)p[i + 27] << 8);
+            const std::size_t ex = p[i + 28] | ((std::size_t)p[i + 29] << 8);
+            const std::size_t cs = (std::size_t)p[i + 18] | ((std::size_t)p[i + 19] << 8) |
+                                   ((std::size_t)p[i + 20] << 16) | ((std::size_t)p[i + 21] << 24);
+            i += 30 + fn + ex + cs;
+        } else if (p[i] == 0x50 && p[i + 1] == 0x4B && p[i + 2] == 0x01 && p[i + 3] == 0x02) {
+            p[i + 8] |= 0x00;                       // 中央目录头 GP 标志 bit11=0x0800
+            p[i + 9] |= 0x08;
+            const std::size_t fn = p[i + 28] | ((std::size_t)p[i + 29] << 8);
+            const std::size_t ex = p[i + 30] | ((std::size_t)p[i + 31] << 8);
+            const std::size_t cm = p[i + 32] | ((std::size_t)p[i + 33] << 8);
+            i += 46 + fn + ex + cm;
+        } else {
+            break;
+        }
+    }
+}
+
 // 创建 zip：组合 txt（内存）+ soundsSrcDir 里所有文件（保留子目录，URL 风格路径）
 static bool ZipBuildArchive(const std::wstring& zipPath, const std::string& txtName,
                             const std::string& txtData, const std::wstring& soundsSrcDir,
@@ -465,6 +492,7 @@ static bool ZipBuildArchive(const std::wstring& zipPath, const std::string& txtN
     std::size_t bufsz = 0;
     if (mz_zip_writer_finalize_heap_archive(&z, &buf, &bufsz) == MZ_FALSE) { err = "取 zip 内容失败"; mz_zip_writer_end(&z); return false; }
     mz_zip_writer_end(&z);
+    PatchZipUtf8Flags((std::uint8_t*)buf, bufsz);   // 中文条目名在资源管理器里不乱码
     const bool okW = WriteWideFile(zipPath, buf, bufsz);
     mz_free(buf);
     if (!okW) { err = "写 zip 文件失败: " + Utf8FromWide(zipPath); return false; }
@@ -1808,6 +1836,13 @@ void App::DrawEditorDetached() {
                     ImGui::SameLine(0, 10);
                     if (ImGui::Button("试听")) PlaySoundPreview(sp.path, sp.vol, sp.delay);
                     ImGui::SameLine(0, 8);
+                    if (ImGui::Button("换")) {
+                        const std::string rel = PickSoundFile();
+                        if (!rel.empty()) sp.path = rel;   // 只换文件，保留延时/音量
+                    }
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("替换这条音效的文件（路径），延迟/音量/固定不变");
+                    ImGui::SameLine(0, 8);
                     if (ImGui::Button("移除")) {
                         r.pool.erase(r.pool.begin() + i);
                         ImGui::PopID();
@@ -1882,6 +1917,13 @@ void App::DrawEditorDetached() {
                     ImGui::PopID();
                     break;
                 }
+                ImGui::SameLine(0, 8);
+                if (ImGui::Button("换")) {
+                    const std::string rel = PickSoundFile();
+                    if (!rel.empty()) sp.path = rel;   // 只换文件，保留 固定/延时/音量
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("替换这条音效的文件（路径），固定/延时/音量不变");
 
                 ImGui::AlignTextToFramePadding();
                 ImGui::TextDisabled("延时");
@@ -2176,6 +2218,74 @@ std::string App::OpenFileDialogIni() {
     return Utf8FromWide(buf);
 }
 
+// 把选中的音效文件换算成配置里要存的路径（浏览 / 替换共用）：
+//  - 文件在数据目录 sounds\（或旧位置 sounds\）里（含子文件夹）→ 存相对路径 sounds/…，保留层级；
+//  - 否则存绝对路径（插件/试听直接读原文件）；
+//  - 文件名含 ';' 或 ','（会破坏 ini 列表）→ 复制进 sounds\ 并用相对路径，copiedFallback=true。
+std::string App::RelPathForPicked(const std::wstring& f, bool& copiedFallback) {
+    const size_t slash = f.find_last_of(L"\\/");
+    const std::wstring fn = (slash == std::wstring::npos) ? f : f.substr(slash + 1);
+    const std::wstring fileDir = (slash == std::wstring::npos) ? L"" : f.substr(0, slash + 1);
+
+    std::wstring targetNorm = Utf8ToWide(BaseDir() + "sounds");
+    if (!targetNorm.empty() && targetNorm.back() != L'\\') targetNorm += L'\\';
+    std::wstring legacyNorm = Utf8ToWide(ExeDir() + "sounds");
+    if (!legacyNorm.empty() && legacyNorm.back() != L'\\') legacyNorm += L'\\';
+
+    const bool inTarget = targetNorm.size() > 0 && fileDir.size() >= targetNorm.size() &&
+                          _wcsnicmp(fileDir.c_str(), targetNorm.c_str(), targetNorm.size()) == 0;
+    const bool inLegacy = legacyNorm.size() > 0 && fileDir.size() >= legacyNorm.size() &&
+                          _wcsnicmp(fileDir.c_str(), legacyNorm.c_str(), legacyNorm.size()) == 0;
+
+    auto fallbackCopy = [&](const std::wstring& src, const std::wstring& base) -> std::string {
+        CopyFileW(src.c_str(), (base + fn).c_str(), FALSE);
+        copiedFallback = true;
+        return "sounds/" + Utf8FromWide(fn);
+    };
+
+    std::string rel;
+    if (inTarget || inLegacy) {
+        const std::wstring base = inTarget ? targetNorm : legacyNorm;
+        std::wstring sub = fileDir.substr(base.size());          // 可能是 "" 或 "文件夹1\"
+        for (auto& c : sub) if (c == L'\\') c = L'/';
+        rel = "sounds/" + Utf8FromWide(sub) + Utf8FromWide(fn);  // sounds/文件夹1/xxx.wav
+        if (rel.find(';') != std::string::npos || rel.find(',') != std::string::npos)
+            rel = fallbackCopy(f, targetNorm);
+    } else {
+        rel = Utf8FromWide(f);
+        for (auto& c : rel) if (c == '/') c = '\\';
+        if (rel.find(';') != std::string::npos || rel.find(',') != std::string::npos)
+            rel = fallbackCopy(f, targetNorm);
+    }
+    return rel;
+}
+
+// 弹单个音效选择框，返回要存的路径；取消返回空
+std::string App::PickSoundFile() {
+    std::wstring target = Utf8ToWide(BaseDir() + "sounds");
+    const std::wstring legacySounds = Utf8ToWide(ExeDir() + "sounds");
+    std::wstring initDir = target;
+    if (GetFileAttributesW(target.c_str()) == INVALID_FILE_ATTRIBUTES &&
+        GetFileAttributesW(legacySounds.c_str()) != INVALID_FILE_ATTRIBUTES)
+        initDir = legacySounds;
+    CreateDirectoryW(target.c_str(), nullptr);
+
+    wchar_t buf[MAX_PATH * 2] = {};
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = (editHwnd && IsWindow((HWND)editHwnd)) ? (HWND)editHwnd : (HWND)hwnd;
+    ofn.lpstrFilter = L"音效 (*.wav;*.mp3;*.ogg;*.flac)\0*.wav;*.mp3;*.ogg;*.flac\0所有文件 (*.*)\0*.*\0";
+    ofn.lpstrFile = buf;
+    ofn.nMaxFile = sizeof(buf) / sizeof(wchar_t);
+    ofn.lpstrInitialDir = initDir.c_str();
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (!GetOpenFileNameW(&ofn)) return std::string();
+    if (editHwnd && IsWindow((HWND)editHwnd))
+        SetWindowPos((HWND)editHwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    bool fb = false;
+    return RelPathForPicked(buf, fb);
+}
+
 int App::BrowseSounds(std::vector<SoundSpec>& out) {
     std::string sdir = BaseDir() + "sounds";
     std::wstring target = Utf8ToWide(sdir);
@@ -2234,42 +2344,8 @@ int App::BrowseSounds(std::vector<SoundSpec>& out) {
     int added = 0;
     bool fallbackCopied = false;
     for (const auto& f : files) {
-        size_t slash = f.find_last_of(L"\\/");
-        std::wstring fn = (slash == std::wstring::npos) ? f : f.substr(slash + 1);
-        std::wstring fileDir = (slash == std::wstring::npos) ? L"" : f.substr(0, slash + 1);
-        // 在数据目录 sounds\（或旧位置 sounds\）里选的（含子文件夹）→ 存相对路径，
-        // 保留子目录结构：sounds/文件夹1/xxx.wav
-        const bool inTarget = targetNorm.size() > 0 && fileDir.size() >= targetNorm.size() &&
-                              _wcsnicmp(fileDir.c_str(), targetNorm.c_str(), targetNorm.size()) == 0;
-        const bool inLegacy = legacyNorm.size() > 0 && fileDir.size() >= legacyNorm.size() &&
-                              _wcsnicmp(fileDir.c_str(), legacyNorm.c_str(), legacyNorm.size()) == 0;
-
-        // 只保存路径，不再复制一份进 sounds\：
-        //  - 文件本来就放在 sounds\ 里 → 存相对路径 sounds/…（保留子文件夹）
-        //  - 否则存绝对路径，插件和试听都直接读原文件
-        std::string rel;
-        if (inTarget || inLegacy) {
-            const std::wstring base = inTarget ? targetNorm : legacyNorm;
-            std::wstring sub = fileDir.substr(base.size());          // 可能是 "" 或 "文件夹1\"
-            for (auto& c : sub) if (c == L'\\') c = L'/';
-            rel = "sounds/" + Utf8FromWide(sub) + Utf8FromWide(fn);  // sounds/文件夹1/xxx.wav
-            if (rel.find(';') != std::string::npos || rel.find(',') != std::string::npos) {
-                CopyFileW(f.c_str(), (targetNorm + fn).c_str(), FALSE);
-                rel = "sounds/" + Utf8FromWide(fn);
-                fallbackCopied = true;
-            }
-        } else {
-            rel = Utf8FromWide(f);
-            for (auto& c : rel) if (c == '/') c = '\\';
-            // 绝对路径里若含 ';' 或 ',' 会撑坏 ini 的 Sound= 列表(分号分隔)，
-            // 退回复制到 sounds\，保证这条配置可读
-            if (rel.find(';') != std::string::npos || rel.find(',') != std::string::npos) {
-                CopyFileW(f.c_str(), (targetNorm + fn).c_str(), FALSE);
-                rel = "sounds/" + Utf8FromWide(fn);
-                fallbackCopied = true;
-            }
-        }
-
+        // 只保存路径，不再复制一份进 sounds\（相对/绝对规则见 RelPathForPicked）
+        std::string rel = RelPathForPicked(f, fallbackCopied);
         bool dup = false;
         for (const auto& s : out) if (s.path == rel) { dup = true; break; }
         if (!dup) {
