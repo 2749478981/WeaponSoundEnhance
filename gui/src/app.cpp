@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <functional>
 #include <map>
 
 #pragma comment(lib, "winmm.lib")
@@ -351,6 +352,19 @@ bool MacSlider(const char* id, int& v, int vmin, int vmax, float width, const ch
     ImGui::Dummy(ImVec2(trackW + sp + labelW, 22.0f * dpi));
     ImGui::PopID();
     return v != orig;
+}
+
+// 递归创建多级目录（已存在的忽略）
+static void MakeDirs(const std::wstring& dir) {
+    if (dir.empty()) return;
+    std::wstring cur;
+    const wchar_t* p = dir.c_str();
+    for (; *p; ++p) {
+        cur += *p;
+        if (*p == L'\\' || *(p + 1) == L'\0') {
+            ::CreateDirectoryW(cur.c_str(), nullptr);
+        }
+    }
 }
 
 // 按显示宽度截断文本（UTF-8 安全，超出加省略号），避免长名称撑出/截断卡片
@@ -2084,15 +2098,27 @@ int App::BrowseSounds(std::vector<SoundSpec>& out) {
         size_t slash = f.find_last_of(L"\\/");
         std::wstring fn = (slash == std::wstring::npos) ? f : f.substr(slash + 1);
         std::wstring fileDir = (slash == std::wstring::npos) ? L"" : f.substr(0, slash + 1);
-        const bool inTarget = !fileDir.empty() && _wcsicmp(fileDir.c_str(), targetNorm.c_str()) == 0;
-        const bool inLegacy = !fileDir.empty() && _wcsicmp(fileDir.c_str(), legacyNorm.c_str()) == 0;
+        // 在数据目录 sounds\（或旧位置 sounds\）里选的（含子文件夹）→ 存相对路径，
+        // 保留子目录结构：sounds/文件夹1/xxx.wav
+        const bool inTarget = targetNorm.size() > 0 && fileDir.size() >= targetNorm.size() &&
+                              _wcsnicmp(fileDir.c_str(), targetNorm.c_str(), targetNorm.size()) == 0;
+        const bool inLegacy = legacyNorm.size() > 0 && fileDir.size() >= legacyNorm.size() &&
+                              _wcsnicmp(fileDir.c_str(), legacyNorm.c_str(), legacyNorm.size()) == 0;
 
         // 只保存路径，不再复制一份进 sounds\：
-        //  - 文件本来就放在数据目录 sounds\（或旧位置 sounds\）→ 存相对路径 sounds/x
+        //  - 文件本来就放在 sounds\ 里 → 存相对路径 sounds/…（保留子文件夹）
         //  - 否则存绝对路径，插件和试听都直接读原文件
         std::string rel;
         if (inTarget || inLegacy) {
-            rel = "sounds/" + Utf8FromWide(fn);
+            const std::wstring base = inTarget ? targetNorm : legacyNorm;
+            std::wstring sub = fileDir.substr(base.size());          // 可能是 "" 或 "文件夹1\"
+            for (auto& c : sub) if (c == L'\\') c = L'/';
+            rel = "sounds/" + Utf8FromWide(sub) + Utf8FromWide(fn);  // sounds/文件夹1/xxx.wav
+            if (rel.find(';') != std::string::npos || rel.find(',') != std::string::npos) {
+                CopyFileW(f.c_str(), (targetNorm + fn).c_str(), FALSE);
+                rel = "sounds/" + Utf8FromWide(fn);
+                fallbackCopied = true;
+            }
         } else {
             rel = Utf8FromWide(f);
             for (auto& c : rel) if (c == '/') c = '\\';
@@ -2214,24 +2240,34 @@ void App::MergeConfigFile(const std::string& p) {
         const std::wstring pkg = Utf8ToWide(dir + "sounds\\");
         if (GetFileAttributesW(pkg.c_str()) != INVALID_FILE_ATTRIBUTES) {
             const std::string local = BaseDir() + "sounds\\";
-            CreateDirectoryW(Utf8ToWide(local).c_str(), nullptr);
+            MakeDirs(Utf8ToWide(local));
             const std::wstring localW = Utf8ToWide(local);
-            WIN32_FIND_DATAW fd;
-            HANDLE ff = FindFirstFileW((pkg + L"*").c_str(), &fd);
-            if (ff != INVALID_HANDLE_VALUE) {
+            // 递归镜像整个 sounds\（含子文件夹），同名已有则跳过
+            std::function<void(const std::wstring&)> walk;
+            walk = [&](const std::wstring& sub) {
+                WIN32_FIND_DATAW fd;
+                HANDLE ff = FindFirstFileW((pkg + sub + L"*").c_str(), &fd);
+                if (ff == INVALID_HANDLE_VALUE) return;
                 do {
-                    if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-                    std::wstring fn = fd.cFileName;
-                    std::size_t dot = fn.find_last_of(L'.');
-                    std::wstring low = (dot == std::wstring::npos) ? L"" : fn.substr(dot);
+                    std::wstring name = fd.cFileName;
+                    if (name == L"." || name == L"..") continue;
+                    if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                        MakeDirs(localW + sub + name + L"\\");
+                        walk(sub + name + L"\\");
+                        continue;
+                    }
+                    std::size_t dot = name.find_last_of(L'.');
+                    std::wstring low = (dot == std::wstring::npos) ? L"" : name.substr(dot);
                     for (auto& c : low) if (c >= L'A' && c <= L'Z') c += 32;
                     if (low != L".wav" && low != L".mp3" && low != L".ogg" && low != L".flac") continue;
-                    if (GetFileAttributesW((localW + fn).c_str()) != INVALID_FILE_ATTRIBUTES) { ++sndSkipped; continue; }
-                    if (CopyFileW((pkg + fn).c_str(), (localW + fn).c_str(), FALSE)) ++sndCopied;
+                    const std::wstring dst = localW + sub + name;
+                    if (GetFileAttributesW(dst.c_str()) != INVALID_FILE_ATTRIBUTES) { ++sndSkipped; continue; }
+                    if (CopyFileW((pkg + sub + name).c_str(), dst.c_str(), FALSE)) ++sndCopied;
                     else ++sndSkipped;
                 } while (FindNextFileW(ff, &fd));
                 FindClose(ff);
-            }
+            };
+            walk(L"");
         }
     }
 
@@ -2271,17 +2307,19 @@ void App::MergeConfigFile(const std::string& p) {
 // 导出核心：收集组合条目 + 把用到的音效复制到 dir\sounds\ 并改写条目路径
 bool App::PackComboToDir(int w, const std::string& combo, const std::string& dir,
                          std::vector<SoundEntry>& outEntries, int& copied, int& missing) {
-    // 把源音效路径解析成源文件（sounds/相对 → 数据目录；绝对/UNC → 原样）
+    // 把源音效路径解析成源文件（sounds/相对 → 数据目录；绝对/UNC → 原样）。
+    // 注意：路径是 UTF-8 字节串，不能逐字节转 wchar（中文子目录会乱码），
+    // 先拼成 UTF-8 全路径、整体用 Utf8ToWide 转换。
     auto resolveSrc = [&](const std::string& p) -> std::wstring {
         if (p.empty()) return std::wstring();
         if (p.size() > 1 && p[1] == ':') return Utf8ToWide(p);
         if (p.size() >= 2 && (p[0] == '\\' || p[0] == '/') && (p[1] == '\\' || p[1] == '/')) return Utf8ToWide(p);
-        std::wstring w2 = Utf8ToWide(BaseDir());
-        for (char c : p) w2 += (c == '/') ? L'\\' : wchar_t(c);
-        if (GetFileAttributesW(w2.c_str()) != INVALID_FILE_ATTRIBUTES) return w2;
-        std::wstring lg = Utf8ToWide(ExeDir());          // 旧布局：与 DLL/exe 同级
-        for (char c : p) lg += (c == '/') ? L'\\' : wchar_t(c);
-        return lg;
+        std::string cand = BaseDir();
+        for (char c : p) cand += (c == '/') ? '\\' : c;
+        if (FsExists(cand)) return Utf8ToWide(cand);
+        std::string cand2 = ExeDir();                    // 旧布局：与 DLL/exe 同级
+        for (char c : p) cand2 += (c == '/') ? '\\' : c;
+        return Utf8ToWide(cand2);
     };
 
     const std::wstring outDir = Utf8ToWide(dir + "sounds\\");
@@ -2304,24 +2342,60 @@ bool App::PackComboToDir(int w, const std::string& combo, const std::string& dir
                 for (auto& ch : key) if (ch >= L'A' && ch <= L'Z') ch += 32;
                 auto it = srcToRel.find(key);
                 if (it != srcToRel.end()) { sp.path = it->second; continue; }
-                std::wstring base = src.substr(src.find_last_of(L"\\/") + 1);
-                std::wstring baseKey = base;
-                for (auto& ch : baseKey) if (ch >= L'A' && ch <= L'Z') ch += 32;
-                const int k = usedBase[baseKey];
-                std::wstring outName = base;
-                if (k > 0) {                            // 撞名：a.wav / a_2.wav
-                    const std::size_t dot = outName.find_last_of(L'.');
-                    outName = (dot == std::wstring::npos)
-                                  ? (outName + L"_" + std::to_wstring(k + 1))
-                                  : (outName.substr(0, dot) + L"_" + std::to_wstring(k + 1) +
-                                     outName.substr(dot));
+
+                // 导出后的相对路径：
+                //  配置里本来就是 sounds/…（可能带子文件夹）→ 保留子目录结构
+                //  绝对路径 → 压平到 sounds\ 根（带冲突改名）
+                std::wstring outSub;                    // outDir 之下的相对路径（含文件名）
+                std::string newRel;
+                if (sp.path.rfind("sounds/", 0) == 0 || sp.path.rfind("sounds\\", 0) == 0) {
+                    std::string sub = sp.path.substr(7);            // 去掉 "sounds/"
+                    outSub = Utf8ToWide(sub);
+                    for (auto& c : outSub) if (c == L'/') c = L'\\';
+                    const std::size_t lastBack = outSub.find_last_of(L'\\');
+                    const std::wstring base = outSub.substr(lastBack == std::wstring::npos ? 0 : lastBack + 1);
+                    std::wstring baseKey = base;
+                    for (auto& ch : baseKey) if (ch >= L'A' && ch <= L'Z') ch += 32;
+                    const int k = usedBase[baseKey];
+                    if (k > 0) {                                    // 撞名：xxx_2.wav
+                        const std::size_t dot = base.find_last_of(L'.');
+                        std::wstring n2 =
+                            (dot == std::wstring::npos)
+                                ? (base + L"_" + std::to_wstring(k + 1))
+                                : (base.substr(0, dot) + L"_" + std::to_wstring(k + 1) + base.substr(dot));
+                        outSub = (lastBack == std::wstring::npos)
+                                     ? n2
+                                     : (outSub.substr(0, lastBack + 1) + n2);
+                    }
+                    usedBase[baseKey] = k + 1;
+                    newRel = "sounds/" + Utf8FromWide(outSub);
+                    for (auto& c : newRel) if (c == L'\\') c = L'/';
+                } else {
+                    std::wstring base = src.substr(src.find_last_of(L"\\/") + 1);
+                    std::wstring baseKey = base;
+                    for (auto& ch : baseKey) if (ch >= L'A' && ch <= L'Z') ch += 32;
+                    const int k = usedBase[baseKey];
+                    std::wstring outName = base;
+                    if (k > 0) {                            // 撞名：a.wav / a_2.wav
+                        const std::size_t dot = outName.find_last_of(L'.');
+                        outName = (dot == std::wstring::npos)
+                                      ? (outName + L"_" + std::to_wstring(k + 1))
+                                      : (outName.substr(0, dot) + L"_" + std::to_wstring(k + 1) +
+                                         outName.substr(dot));
+                    }
+                    usedBase[baseKey] = k + 1;
+                    outSub = outName;
+                    newRel = "sounds/" + Utf8FromWide(outName);
                 }
-                usedBase[baseKey] = k + 1;
-                if (CopyFileW(src.c_str(), (outDir + outName).c_str(), FALSE)) ++copied;
+
+                // 复制并保留子目录
+                const std::size_t dd = outSub.find_last_of(L'\\');
+                if (dd != std::wstring::npos)
+                    MakeDirs(outDir + outSub.substr(0, dd + 1));
+                if (CopyFileW(src.c_str(), (outDir + outSub).c_str(), FALSE)) ++copied;
                 else ++missing;
-                const std::string rel = "sounds/" + Utf8FromWide(outName);
-                srcToRel[key] = rel;
-                sp.path = rel;
+                srcToRel[key] = newRel;
+                sp.path = newRel;
             }
         };
         rew(c2.def.specs);

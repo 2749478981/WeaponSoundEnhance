@@ -566,7 +566,8 @@ static std::string GetComboSectionName(int w, const std::string& combo) {
 //   导入方用 LoadConfig 直接解析，再按条目去重合并（和「合并旧版ini」同一套逻辑）。
 bool ExportComboFile(const std::string& path, int weapon, const std::string& combo,
                      const std::vector<SoundEntry>& all, std::string& err) {
-    std::string o;
+    // 导出文件带 UTF-8 BOM：记事本/其它编辑器打开中文不乱码（导入端解析会跳过 BOM）
+    std::string o("\xEF\xBB\xBF");
     o += "; ============================================================================\r\n";
     o += ";  WeaponSoundEnhance 组合导出 v1\r\n";
     o += ";  武器: " + std::string(WeaponName(weapon)) + " (" + std::to_string(weapon) + ")\r\n";
