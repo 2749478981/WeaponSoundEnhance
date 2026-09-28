@@ -87,6 +87,42 @@ static void SyncSwapChainSize(HWND hwnd, IDXGISwapChain* sc, UINT& bufW, UINT& b
     bufH = h;
 }
 
+// ---- 拖动窗口期间的即时重绘 ----
+// 拖动边框时 Windows 会在 DefWindowProc 里跑模态循环，主渲染循环被卡住，
+// 新露出的区域就会一直黑着（松手才恢复）。所以在窗口过程的 WM_SIZE/WM_PAINT 里
+// 直接同步重绘一帧，把黑块消掉。
+static App* g_app = nullptr;
+static bool g_paintingNow = false;
+// 拖动缩放时的即时重绘不走 vsync，避免等待垂直同步造成内容滞后（背景已由类刷填充，不会黑）
+static bool g_noVsyncPresent = false;
+
+static void RenderEditorFrame(App& app, const float* clear);
+static void RenderFsmFrame(App& app, const float* clear);
+
+static void KillBlackOnResizeEditor() {
+    if (!g_app || !g_edInit || !g_edVisible || g_paintingNow) return;
+    g_paintingNow = true;
+    g_noVsyncPresent = true;
+    SyncSwapChainSize(g_edHwnd, g_edSwapChain, g_edBufW, g_edBufH,
+                      CleanupEditorRenderTarget, CreateEditorRenderTarget);
+    const float clear[4] = { 0.96f, 0.96f, 0.97f, 1.0f };
+    RenderEditorFrame(*g_app, clear);
+    g_noVsyncPresent = false;
+    g_paintingNow = false;
+}
+
+static void KillBlackOnResizeFsm() {
+    if (!g_app || !g_fsInit || !g_fsVisible || g_paintingNow) return;
+    g_paintingNow = true;
+    g_noVsyncPresent = true;
+    SyncSwapChainSize(g_fsHwnd, g_fsSwapChain, g_fsBufW, g_fsBufH,
+                      CleanupFsmRenderTarget, CreateFsmRenderTarget);
+    const float clear[4] = { 0.96f, 0.96f, 0.97f, 1.0f };
+    RenderFsmFrame(*g_app, clear);
+    g_noVsyncPresent = false;
+    g_paintingNow = false;
+}
+
 // 统一浅色主题（主窗与编辑窗套用同一份）
 static void ApplyLightStyle() {
     ImGui::StyleColorsLight();
@@ -237,9 +273,13 @@ LRESULT WINAPI EditorWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             if (wParam != SIZE_MINIMIZED) {
                 g_edResizeWidth = (UINT)LOWORD(lParam);
                 g_edResizeHeight = (UINT)HIWORD(lParam);
+                KillBlackOnResizeEditor();   // 拖动中即时重绘，避免新露出区域发黑
             }
             result = 0;
             handled = true;
+            break;
+        case WM_PAINT:
+            KillBlackOnResizeEditor();
             break;
         case WM_CLOSE:
             g_edCloseRequested = true;
@@ -272,9 +312,13 @@ LRESULT WINAPI FsmWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (wParam != SIZE_MINIMIZED) {
                 g_fsResizeWidth = (UINT)LOWORD(lParam);
                 g_fsResizeHeight = (UINT)HIWORD(lParam);
+                KillBlackOnResizeFsm();   // 拖动中即时重绘
             }
             result = 0;
             handled = true;
+            break;
+        case WM_PAINT:
+            KillBlackOnResizeFsm();
             break;
         case WM_CLOSE:
             g_fsCloseRequested = true;
@@ -369,6 +413,13 @@ void CleanupDeviceD3D() {
 }
 
 // 创建独立编辑窗口及其渲染资源/ImGui 上下文（首次打开时调用）
+// 拖动缩放时新露出的区域：类背景刷让系统立刻用浅色填上（否则会是黑块）
+static HBRUSH g_lightBrush = nullptr;
+static HBRUSH LightBrush() {
+    if (!g_lightBrush) g_lightBrush = ::CreateSolidBrush(RGB(245, 245, 247));
+    return g_lightBrush;
+}
+
 bool CreateEditorWindow(HINSTANCE hInstance, float dpiScale) {
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
@@ -380,6 +431,7 @@ bool CreateEditorWindow(HINSTANCE hInstance, float dpiScale) {
                                  GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_DEFAULTSIZE);
     wc.hIconSm = (HICON)LoadImageW(hInstance, MAKEINTRESOURCE(IDI_APP), IMAGE_ICON,
                                    GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTSIZE);
+    wc.hbrBackground = LightBrush();
     wc.lpszClassName = L"WSEEditorClass";
     RegisterClassExW(&wc);
 
@@ -485,6 +537,7 @@ bool CreateFsmWindow(HINSTANCE hInstance, float dpiScale) {
                                  GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_DEFAULTSIZE);
     wc.hIconSm = (HICON)LoadImageW(hInstance, MAKEINTRESOURCE(IDI_APP), IMAGE_ICON,
                                    GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTSIZE);
+    wc.hbrBackground = LightBrush();
     wc.lpszClassName = L"WSEFsmClass";
     RegisterClassExW(&wc);
 
@@ -609,7 +662,7 @@ static void RenderEditorFrameBody(App& app, const float* clear) {
         g_edDeviceCtx->OMSetRenderTargets(1, &g_edRtv, nullptr);
         g_edDeviceCtx->ClearRenderTargetView(g_edRtv, clear);
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
-        g_edSwapChain->Present(1, 0);
+        g_edSwapChain->Present(g_noVsyncPresent ? 0u : 1u, 0);
     }
 }
 
@@ -651,7 +704,7 @@ static void RenderFsmFrameBody(App& app, const float* clear) {
         g_fsDeviceCtx->OMSetRenderTargets(1, &g_fsRtv, nullptr);
         g_fsDeviceCtx->ClearRenderTargetView(g_fsRtv, clear);
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
-        g_fsSwapChain->Present(1, 0);
+        g_fsSwapChain->Present(g_noVsyncPresent ? 0u : 1u, 0);
     }
 }
 
@@ -758,6 +811,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     App app;
     app.hwnd = hwnd;
     app.dpiScale = dpiScale;
+    g_app = &app;   // 供窗口过程在拖动缩放的模态循环里即时重绘
     // 调试钩子：设置环境变量 WSE_OPEN_FSM=1 时启动即打开 FSM 查询独立窗口（用于冒烟/截图；不设置时无影响）
     char envBuf[16] = {};
     if (GetEnvironmentVariableA("WSE_OPEN_FSM", envBuf, sizeof(envBuf)) > 0 && envBuf[0] == '1')
@@ -843,6 +897,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
 
     CleanupFsm();
     CleanupEditor();
+    if (g_lightBrush) { ::DeleteObject(g_lightBrush); g_lightBrush = nullptr; }
     app.editHwnd = nullptr;
 
     ImGui_ImplDX11_Shutdown();
