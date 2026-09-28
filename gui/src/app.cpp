@@ -857,6 +857,11 @@ void App::DrawToolbar() {
     ImGui::Separator();
 
     // 设置栏
+    // 按钮行空间不够时自动换行（窄窗口不再把右侧按钮裁掉）
+    auto fitsOnLine = [&](const char* label) {
+        const float need = ImGui::CalcTextSize(label).x + ImGui::GetStyle().FramePadding.x * 2.0f + ImGui::GetStyle().ItemSpacing.x;
+        return (ImGui::GetContentRegionMax().x - ImGui::GetCursorPosX()) >= need;
+    };
     bool en = cfg.global.enabled != 0;
     if (ImGui::Checkbox("总开关", &en)) { cfg.global.enabled = en ? 1 : 0; mDirty = true; }
     ImGui::SameLine(0, 16);
@@ -878,25 +883,25 @@ void App::DrawToolbar() {
     if (ImGui::Checkbox("启用热键", &hk)) { cfg.global.hotkeysEnabled = hk ? 1 : 0; mDirty = true; }
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("插件侧 Hotkeys=1：关闭后游戏内 Ctrl 组合热键全部失效（聊天框 /wse 指令不受影响）");
-    ImGui::SameLine(0, 16);
+    ImGui::Spacing();   // 动作按钮另起一行：窄窗口也不会把右侧按钮推到看不见
     if (ImGui::Button("FSM 查询")) fsmWinOpen = !fsmWinOpen;
-    ImGui::SameLine();
+    if (fitsOnLine("上传ID")) ImGui::SameLine();
     if (ImGui::Button("上传ID")) idWinOpen = !idWinOpen;
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("共享动作 ID 库：导出你的实测 FSM/LMT、导入别人的、提交到共享库、获取最新库");
-    ImGui::SameLine();
+    if (fitsOnLine("合并旧版ini")) ImGui::SameLine();
     if (ImGui::Button("合并旧版ini")) MergeOldIni();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("把旧版 ini 里的动作合并进来（不替换当前配置），换新版时不用重填");
-    ImGui::SameLine();
+    if (fitsOnLine("导出组合")) ImGui::SameLine();
     if (ImGui::Button("导出组合")) ExportComboCurrent();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("把当前武器当前激活的组合导出为 zip 组合包（内含组合 txt + sounds\\ 音效），发给别人直接【导入】");
-    ImGui::SameLine();
+    if (fitsOnLine("导入组合")) ImGui::SameLine();
     if (ImGui::Button("导入组合")) ImportComboFile();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("导入别人分享的组合包（zip/txt/ini 都行，按条目去重合并；zip 里的音效会自动复制进本地）");
-    ImGui::SameLine();
+    if (fitsOnLine("打开 sounds\\")) ImGui::SameLine();
     if (ImGui::Button("打开 sounds\\")) {
         // 数据目录下没有 sounds\ 但旧布局(与 DLL 同级)有 → 打开旧目录，避免用户找不到音效
         std::wstring sd = Utf8ToWide(BaseDir() + "sounds");
@@ -909,7 +914,8 @@ void App::DrawToolbar() {
     }
 
     // ---- 版本号 + 在线更新入口 ----
-    ImGui::SameLine(0, 16);
+    // 空间不够时自动换行（窄窗口不再把右侧按钮裁掉）
+    if (ImGui::GetContentRegionAvail().x > 210 * dpiScale) ImGui::SameLine(0, 16);
     ImGui::AlignTextToFramePadding();
     if (mUpdState == 3) {
         ImGui::TextColored(C_AMBER, "v%s", kWseGuiVersion);

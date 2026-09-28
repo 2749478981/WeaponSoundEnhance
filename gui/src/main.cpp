@@ -25,6 +25,7 @@ static IDXGISwapChain*          g_pSwapChain = nullptr;
 static ID3D11RenderTargetView*  g_mainRenderTargetView = nullptr;
 static UINT                     g_ResizeWidth = 0, g_ResizeHeight = 0;
 static ImGuiContext*            g_mainCtx = nullptr;
+static HWND                     g_hMainWnd = nullptr;   // 主窗口（供拖动缩放即时重绘用）
 
 // ---------------- 独立编辑窗口 ----------------
 static ID3D11Device*            g_edDevice = nullptr;
@@ -95,9 +96,24 @@ static App* g_app = nullptr;
 static bool g_paintingNow = false;
 // 拖动缩放时的即时重绘不走 vsync，避免等待垂直同步造成内容滞后（背景已由类刷填充，不会黑）
 static bool g_noVsyncPresent = false;
+static UINT g_mainBufW = 0, g_mainBufH = 0;   // 主窗口交换链缓冲尺寸
 
 static void RenderEditorFrame(App& app, const float* clear);
 static void RenderFsmFrame(App& app, const float* clear);
+static void RenderMainFrame(App& app, const float* clear);
+
+// 主窗口拖动缩放时即时重绘（主窗口的 WM_SIZE 也在模态循环里派发）
+static void KillBlackOnResizeMain() {
+    if (!g_app || !g_pSwapChain || !g_mainRenderTargetView || g_paintingNow) return;
+    g_paintingNow = true;
+    g_noVsyncPresent = true;
+    SyncSwapChainSize(g_hMainWnd, g_pSwapChain, g_mainBufW, g_mainBufH,
+                      CleanupRenderTarget, CreateRenderTarget);
+    const float clear[4] = { 0.96f, 0.96f, 0.97f, 1.0f };
+    RenderMainFrame(*g_app, clear);
+    g_noVsyncPresent = false;
+    g_paintingNow = false;
+}
 
 static void KillBlackOnResizeEditor() {
     if (!g_app || !g_edInit || !g_edVisible || g_paintingNow) return;
@@ -235,10 +251,14 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (wParam != SIZE_MINIMIZED) {
                 g_ResizeWidth = (UINT)LOWORD(lParam);
                 g_ResizeHeight = (UINT)HIWORD(lParam);
+                KillBlackOnResizeMain();   // 拖动中即时重绘，避免新露出区域发黑
             }
             result = 0;
             handled = true;
             break;
+        case WM_PAINT:
+            KillBlackOnResizeMain();
+            break;   // 交给 DefWindowProc 走 BeginPaint/EndPaint 验证区域
         case WM_SYSCOMMAND:
             if ((wParam & 0xfff0) == SC_KEYMENU) { result = 0; handled = true; } // 禁用 Alt 菜单
             break;
@@ -723,6 +743,41 @@ static void RenderFsmFrame(App& app, const float* clear) {
 #endif
     ImGui::SetCurrentContext(g_mainCtx);
 }
+// 主窗口一帧（泵与拖动即时重绘共用）
+static void RenderMainFrameBody(App& app, const float* clear) {
+    ImGui::SetCurrentContext(g_mainCtx);
+    ImGui_ImplDX11_NewFrame();
+    ImGui_ImplWin32_NewFrame();
+    RECT rc = {};
+    if (g_hMainWnd && ::GetClientRect(g_hMainWnd, &rc)) {
+        ImGuiIO& io = ImGui::GetIO();
+        io.DisplaySize = ImVec2((float)(rc.right - rc.left), (float)(rc.bottom - rc.top));
+        io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
+    }
+    ImGui::NewFrame();
+    app.Draw();
+    ImGui::SetCurrentContext(g_mainCtx);
+    ImGui::Render();
+    g_pd3dDeviceContext->OMSetRenderTargets(1, &g_mainRenderTargetView, nullptr);
+    g_pd3dDeviceContext->ClearRenderTargetView(g_mainRenderTargetView, clear);
+    ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+    g_pSwapChain->Present(g_noVsyncPresent ? 0u : 1u, 0);
+}
+
+static void RenderMainFrame(App& app, const float* clear) {
+    ImGui::SetCurrentContext(g_mainCtx);
+#ifdef _MSC_VER
+    __try {
+        RenderMainFrameBody(app, clear);
+    } __except ((g_crashCode = GetExceptionCode(),
+                 g_crashAddr = (void*)GetExceptionInformation()->ExceptionRecord->ExceptionAddress,
+                 EXCEPTION_EXECUTE_HANDLER)) {
+        ReportCrash(g_crashCode, g_crashAddr);
+    }
+#else
+    RenderMainFrameBody(app, clear);
+#endif
+}
 
 #ifdef _MSC_VER
 // 记录并在弹窗提示一次崩溃，避免程序直接闪退、便于定位
@@ -774,12 +829,18 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
                                  GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_DEFAULTSIZE);
     wc.hIconSm = (HICON)LoadImageW(hInstance, MAKEINTRESOURCE(IDI_APP), IMAGE_ICON,
                                    GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTSIZE);
+    wc.hbrBackground = LightBrush();   // 拖动缩放时新露出区域由系统用浅色填充（否则是黑块）
     wc.lpszClassName = L"WeaponSoundEnhanceGUI";
     RegisterClassExW(&wc);
     HWND hwnd = CreateWindowW(wc.lpszClassName, L"WeaponSoundEnhance 配置工具 (15.23.00)",
                               WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, ww, wh,
                               nullptr, nullptr, wc.hInstance, nullptr);
 
+    g_hMainWnd = hwnd;
+    {
+        RECT crc = {};
+        if (::GetClientRect(hwnd, &crc)) { g_mainBufW = (UINT)(crc.right - crc.left); g_mainBufH = (UINT)(crc.bottom - crc.top); }
+    }
     SendMessageW(hwnd, WM_SETICON, ICON_BIG,
                  (LPARAM)LoadImageW(hInstance, MAKEINTRESOURCE(IDI_APP), IMAGE_ICON,
                                     GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_DEFAULTSIZE));
@@ -831,25 +892,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         }
         if (done) break;
 
-        if (g_ResizeWidth != 0 && g_ResizeHeight != 0) {
-            CleanupRenderTarget();
-            g_pSwapChain->ResizeBuffers(0, g_ResizeWidth, g_ResizeHeight, DXGI_FORMAT_UNKNOWN, 0);
-            g_ResizeWidth = g_ResizeHeight = 0;
-            CreateRenderTarget();
-        }
-
         // ---- 主窗口界面 ----
-        ImGui::SetCurrentContext(g_mainCtx);
-        ImGui_ImplDX11_NewFrame();
-        ImGui_ImplWin32_NewFrame();
-        ImGui::NewFrame();
-        app.Draw();
-        ImGui::Render();
         const float clear[4] = { 0.96f, 0.96f, 0.97f, 1.0f };
-        g_pd3dDeviceContext->OMSetRenderTargets(1, &g_mainRenderTargetView, nullptr);
-        g_pd3dDeviceContext->ClearRenderTargetView(g_mainRenderTargetView, clear);
-        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
-        g_pSwapChain->Present(1, 0);
+        SyncSwapChainSize(hwnd, g_pSwapChain, g_mainBufW, g_mainBufH,
+                          CleanupRenderTarget, CreateRenderTarget);
+        RenderMainFrame(app, clear);
 
         // ---- 独立编辑窗口 ----
         if (g_edCloseRequested) {
