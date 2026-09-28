@@ -2509,6 +2509,7 @@ void App::MergeConfigFile(const std::string& p, bool importCombo) {
     std::map<int, int> importSuffix;
     int relocated = 0;
     std::set<std::string> newCombos;
+    std::map<int, std::string> newComboFirst;   // 武器 -> 第一个新建的组合（用于自动切换）
     auto importComboName = [&](const SoundEntry& e) -> std::string {
         if (!importCombo || e.weaponType < 0 || !e.combo.empty()) return e.combo;
         for (;;) {
@@ -2519,7 +2520,11 @@ void App::MergeConfigFile(const std::string& p, bool importCombo) {
             bool clash = false;
             for (const auto& x : cfg.entries)
                 if (x.weaponType == e.weaponType && x.combo == nm) { clash = true; break; }
-            if (!clash) { newCombos.insert(nm); return nm; }
+            if (!clash) {
+                newCombos.insert(nm);
+                if (!newComboFirst.count(e.weaponType)) newComboFirst[e.weaponType] = nm;
+                return nm;
+            }
         }
     };
 
@@ -2543,6 +2548,13 @@ void App::MergeConfigFile(const std::string& p, bool importCombo) {
         if (importCombo && e.weaponType >= 0 && e.combo.empty()) {
             e.combo = importComboName(e);   // 不碰本地默认组合
             ++relocated;
+        } else if (importCombo && e.weaponType >= 0 && !e.combo.empty()) {
+            // 命名组合：本地还没有这个组合 → 记为“新组合”，导入后切过去才看得见
+            bool exists = false;
+            for (const auto& x : cfg.entries)
+                if (x.weaponType == e.weaponType && x.combo == e.combo) { exists = true; break; }
+            if (!exists && !newComboFirst.count(e.weaponType))
+                newComboFirst[e.weaponType] = e.combo;
         }
         const std::string k = keyOf(e);
         bool dup = false;
@@ -2559,13 +2571,33 @@ void App::MergeConfigFile(const std::string& p, bool importCombo) {
                 std::to_string(sndSkipped) + " 个 -> " + BaseDir() + "sounds\\";
     status = "导入配置: 新增 " + std::to_string(added) + " 条，跳过重复 " +
              std::to_string(skipped) + " 条" + extra;
+    // 导入出新组合时，自动把对应武器的当前组合切过去（并跳到该武器视图），
+    // 否则条目落在“非当前激活”的组合里，列表和游戏里都看不到，会以为没反应。
+    if (importCombo && !newComboFirst.empty()) {
+        bool switched = false;
+        std::string names;
+        for (const auto& kv : newComboFirst) {
+            if (ActiveCombo(kv.first) == kv.second) continue;
+            cfg.active[kv.first] = kv.second;
+            mDirty = true;
+            if (!names.empty()) names += "、";
+            names += std::string(WeaponName(kv.first)) + "→" + kv.second;
+            if (!switched) {
+                weaponFilter = kv.first;
+                switched = true;
+            }
+        }
+        if (switched)
+            status += "；已把「" + names +
+                      "」切为当前组合（左侧下拉可改回；Ctrl+F11 游戏内循环到达）";
+    }
     if (relocated > 0) {
         std::string names;
         for (const auto& c : newCombos) { if (!names.empty()) names += "、"; names += c; }
         status += "；原「默认组合」的 " + std::to_string(relocated) + " 条已导入为新组合「" +
                   names + "」，没有覆盖你的默认组合";
     }
-    status += "（记得保存）";
+    status += "（记得点【保存】再 Ctrl+F5 生效）";
 }
 
 // 导出核心：收集组合条目 + 把用到的音效复制到 dir\sounds\ 并改写条目路径
