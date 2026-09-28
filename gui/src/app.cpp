@@ -1647,22 +1647,27 @@ void App::DrawEditorDetached() {
     ImGui::InputInt("FSMId (-1=不限)", &editor.fsmId, 1, 100);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("动作状态机 ID；同一招在不同 FSM 层(target)里 id 可能重号");
-    ImGui::SameLine();
     if (editor.advOpen) {
+        ImGui::SameLine();
         ImGui::SetNextItemWidth(ew(170));
         ImGui::InputInt("FSMTarget (-1=不限)", &editor.fsmTarget, 1, 100);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("FSM 目标层。填上可避免跨层 id 重号误触发；-1 = 只比 FSMId（旧行为）");
     }
 
-    // ---- LMT：勾「不限」= 该 FSMId 的所有动作都触发（等同于写 -1）----
-    if (ImGui::Checkbox("LMT 不限（该 FSMId 的所有动作都触发）", &editor.lmtAny)) {
+    // ---- LMT：独占一行（勾「不限」= 该 FSMId 的所有动作都触发，等同写 -1）----
+    if (ImGui::Checkbox("LMT 不限", &editor.lmtAny)) {
         if (editor.lmtAny) editor.lmtBuf[0] = 0;
     }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("该 FSMId 的所有动作都触发（等同 LMT 留空 / -1）");
+    ImGui::SameLine();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("LMT");
     ImGui::SameLine();
     ImGui::BeginDisabled(editor.lmtAny);
-    ImGui::SetNextItemWidth(ew(320));
-    ImGui::InputTextWithHint("LMT", "如 49265,49256；空或 -1 = 不限",
+    ImGui::SetNextItemWidth(ew(300));
+    ImGui::InputTextWithHint("##lmt", "如 49265（空或 -1 = 不限）",
                              editor.lmtBuf, sizeof(editor.lmtBuf));
     ImGui::EndDisabled();
     {
@@ -1688,10 +1693,11 @@ void App::DrawEditorDetached() {
     // =====================================================================
     //  高级设置（默认折叠）：一般添加条目只用 名称/武器/FSMId/LMT + 默认音效，
     //  动作组 / FSMTarget / Stop / 判定模式 这些按需展开即可。
+    //  注意：这里不能用 CollapsingHeader(label, bool*) —— imgui 在该 bool 为 false 时
+    //  整行都不画（源码 if (p_visible && !*p_visible) return false;），会变成"看不见也点不到"。
     // =====================================================================
     ImGui::Separator();
-    ImGui::CollapsingHeader("高级设置（动作组 · FSMTarget · Stop · 判定 · 刃时音效）",
-                            &editor.advOpen);   // 不传 DefaultOpen → 默认折叠
+    editor.advOpen = ImGui::CollapsingHeader("高级设置（动作组 · FSMTarget · Stop · 判定 · 刃时音效）");
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("一般只用填 FSMId 和 LMT；这些高级项按需展开");
 
@@ -1923,14 +1929,14 @@ void App::DrawEditorDetached() {
     }
 
     ImGui::Separator();
-    ImGui::TextDisabled("命中动作时：固定(F)音效全部播放 + 未固定中随机一条，同时叠播；");
+    ImGui::TextWrapped("命中动作时：固定(F)音效全部播放 + 未固定中随机一条，同时叠播；");
     const bool ls = (editor.weaponType == 3);
     if (ls && !editor.advOpen)
-        ImGui::TextDisabled("刃时音效（无/白/黄/红，太刀专用）在「高级设置」里；未配置时回退默认音效。");
+        ImGui::TextWrapped("刃时音效（无/白/黄/红，太刀专用）在「高级设置」里；未配置时回退默认音效。");
     else if (ls)
-        ImGui::TextDisabled("刃时音效：未配置的刃色回退默认音效。");
+        ImGui::TextWrapped("刃时音效：未配置的刃色回退默认音效。");
     else
-        ImGui::TextDisabled("刃时音效(无/白/黄/红)仅对太刀可用，当前武器只有默认音效。");
+        ImGui::TextWrapped("刃时音效(无/白/黄/红)仅对太刀可用，当前武器只有默认音效。");
     ImGui::Spacing();
 
     static char newPath[5][512] = {};
@@ -2006,7 +2012,7 @@ void App::DrawEditorDetached() {
             snprintf(addId, sizeof(addId), "##add%d", p);
             snprintf(b1, sizeof(b1), "添加##p%d", p);
             snprintf(b2, sizeof(b2), "浏览...##p%d", p);
-            ImGui::SetNextItemWidth(ew(320));
+            ImGui::SetNextItemWidth(ew(260));
             ImGui::InputTextWithHint(addId, "路径，如 sounds/xxx.wav", newPath[p], sizeof(newPath[p]));
             ImGui::SameLine();
             if (ImGui::Button(b1)) {

@@ -37,6 +37,7 @@ static HWND                     g_edHwnd = nullptr;
 static bool                     g_edInit = false;
 static bool                     g_edVisible = false;
 static bool                     g_edCloseRequested = false;
+static UINT                     g_edBufW = 0, g_edBufH = 0;   // 当前交换链缓冲尺寸
 
 // ---------------- 独立 FSM/LMT 查询窗口 ----------------
 static ID3D11Device*            g_fsDevice = nullptr;
@@ -49,6 +50,7 @@ static HWND                     g_fsHwnd = nullptr;
 static bool                     g_fsInit = false;
 static bool                     g_fsVisible = false;
 static bool                     g_fsCloseRequested = false;
+static UINT                     g_fsBufW = 0, g_fsBufH = 0;   // 当前交换链缓冲尺寸
 
 LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 LRESULT WINAPI EditorWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -61,6 +63,29 @@ bool CreateEditorWindow(HINSTANCE hInstance, float dpiScale);
 void CleanupEditor();
 bool CreateFsmWindow(HINSTANCE hInstance, float dpiScale);
 void CleanupFsm();
+void CreateEditorRenderTarget();
+void CleanupEditorRenderTarget();
+void CreateFsmRenderTarget();
+void CleanupFsmRenderTarget();
+
+// 每帧核对「客户区尺寸」与「交换链缓冲尺寸」，不一致就重建缓冲。
+// 只靠 WM_SIZE 会漏（拖拽/最大化/DPI 变化时可能来不及处理），漏掉就会出现
+// 内容只占左边一块、右边是黑底的观感。
+static void SyncSwapChainSize(HWND hwnd, IDXGISwapChain* sc, UINT& bufW, UINT& bufH,
+                              void (*cleanup)(), void (*create)()) {
+    if (!hwnd || !sc) return;
+    RECT rc = {};
+    if (!::GetClientRect(hwnd, &rc)) return;
+    const UINT w = (UINT)(rc.right - rc.left);
+    const UINT h = (UINT)(rc.bottom - rc.top);
+    if (w == 0 || h == 0) return;
+    if (w == bufW && h == bufH) return;
+    cleanup();
+    if (FAILED(sc->ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, 0))) return;
+    create();
+    bufW = w;
+    bufH = h;
+}
 
 // 统一浅色主题（主窗与编辑窗套用同一份）
 static void ApplyLightStyle() {
@@ -403,6 +428,13 @@ bool CreateEditorWindow(HINSTANCE hInstance, float dpiScale) {
         return false;
     }
     CreateEditorRenderTarget();
+    {
+        RECT rc = {};
+        if (::GetClientRect(g_edHwnd, &rc)) {
+            g_edBufW = (UINT)(rc.right - rc.left);
+            g_edBufH = (UINT)(rc.bottom - rc.top);
+        }
+    }
 
     // 独立 ImGui 上下文（编辑窗用）
     g_edCtx = ImGui::CreateContext();
@@ -500,6 +532,13 @@ bool CreateFsmWindow(HINSTANCE hInstance, float dpiScale) {
         return false;
     }
     CreateFsmRenderTarget();
+    {
+        RECT rc = {};
+        if (::GetClientRect(g_fsHwnd, &rc)) {
+            g_fsBufW = (UINT)(rc.right - rc.left);
+            g_fsBufH = (UINT)(rc.bottom - rc.top);
+        }
+    }
 
     // 独立 ImGui 上下文（FSM 查询窗用）
     g_fsCtx = ImGui::CreateContext();
@@ -551,16 +590,16 @@ static void*  g_crashAddr = nullptr;
 // 渲染独立编辑窗口一帧的实际内容。抽成独立函数，便于在 MSVC 下用 SEH 包住。
 static void RenderEditorFrameBody(App& app, const float* clear) {
     {
-        // 强制 io.DisplaySize = 当前客户区：伸缩窗口时保证 ImGui 画布与交换链一致，
-        // 避免撑大后出现黑边/黑底（后端缓存的尺寸在缩放瞬间可能滞后一帧）。
+        ImGui_ImplDX11_NewFrame();
+        ImGui_ImplWin32_NewFrame();
+        // 后端 NewFrame 之后再强制一次：画布尺寸严格等于当前客户区，
+        // 任何"后端缓存/时序"造成的尺寸滞后都被这一步覆盖掉（否则会黑边或内容被裁）。
         RECT rc = {};
         if (::GetClientRect(g_edHwnd, &rc)) {
             ImGuiIO& io = ImGui::GetIO();
             io.DisplaySize = ImVec2((float)(rc.right - rc.left), (float)(rc.bottom - rc.top));
             io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
         }
-        ImGui_ImplDX11_NewFrame();
-        ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
         app.DrawEditorDetached();
         // 保险：DrawEditorDetached 内部可能打开模态对话框（BrowseSounds 的文件选择），
@@ -596,14 +635,14 @@ static void RenderEditorFrame(App& app, const float* clear) {
 // FSM/LMT 查询独立窗口
 static void RenderFsmFrameBody(App& app, const float* clear) {
     {
+        ImGui_ImplDX11_NewFrame();
+        ImGui_ImplWin32_NewFrame();
         RECT rc = {};
         if (::GetClientRect(g_fsHwnd, &rc)) {
             ImGuiIO& io = ImGui::GetIO();
             io.DisplaySize = ImVec2((float)(rc.right - rc.left), (float)(rc.bottom - rc.top));
             io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
         }
-        ImGui_ImplDX11_NewFrame();
-        ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
         app.DrawFsmWindow();
         // 保险：与编辑窗一致，确保后续提交/渲染始终在查询窗上下文
@@ -774,12 +813,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
             g_edVisible = false;
         }
         if (g_edInit && g_edVisible) {
-            if (g_edResizeWidth != 0 && g_edResizeHeight != 0) {
-                CleanupEditorRenderTarget();
-                g_edSwapChain->ResizeBuffers(0, g_edResizeWidth, g_edResizeHeight, DXGI_FORMAT_UNKNOWN, 0);
-                g_edResizeWidth = g_edResizeHeight = 0;
-                CreateEditorRenderTarget();
-            }
+            SyncSwapChainSize(g_edHwnd, g_edSwapChain, g_edBufW, g_edBufH,
+                              CleanupEditorRenderTarget, CreateEditorRenderTarget);
             RenderEditorFrame(app, clear);
         }
 
@@ -800,12 +835,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
             g_fsVisible = false;
         }
         if (g_fsInit && g_fsVisible) {
-            if (g_fsResizeWidth != 0 && g_fsResizeHeight != 0) {
-                CleanupFsmRenderTarget();
-                g_fsSwapChain->ResizeBuffers(0, g_fsResizeWidth, g_fsResizeHeight, DXGI_FORMAT_UNKNOWN, 0);
-                g_fsResizeWidth = g_fsResizeHeight = 0;
-                CreateFsmRenderTarget();
-            }
+            SyncSwapChainSize(g_fsHwnd, g_fsSwapChain, g_fsBufW, g_fsBufH,
+                              CleanupFsmRenderTarget, CreateFsmRenderTarget);
             RenderFsmFrame(app, clear);
         }
     }
