@@ -2506,26 +2506,28 @@ void App::MergeConfigFile(const std::string& p, bool importCombo) {
 
     // importCombo 时：把"默认组合"的条目改派到自动新建的「导入」组合
     // （按武器各自建一个；命名冲突自动加序号）。任意武器(-1)条目保持默认。
-    std::map<int, int> importSuffix;
     int relocated = 0;
     std::set<std::string> newCombos;
     std::map<int, std::string> newComboFirst;   // 武器 -> 第一个新建的组合（用于自动切换）
+    std::map<int, std::string> assignedReloc; // 武器 -> 本次导入给该武器默认条目分配的组合名（同武器只一个）
     auto importComboName = [&](const SoundEntry& e) -> std::string {
         if (!importCombo || e.weaponType < 0 || !e.combo.empty()) return e.combo;
-        for (;;) {
-            const int k = importSuffix[e.weaponType];
-            const std::string nm = (k == 0) ? std::string("导入")
-                                            : std::string("导入") + std::to_string(k + 1);
-            importSuffix[e.weaponType] = k + 1;
+        // 同一个武器的默认组合条目只分配一次【同一个】组合名（导入 / 导入2 / ...），
+        // 绝不按条数拆成 导入、导入2、导入3……
+        auto it = assignedReloc.find(e.weaponType);
+        if (it != assignedReloc.end()) return it->second;
+        std::string nm = "导入";
+        for (int k = 2;; ++k) {   // 本机已有同名组合时再加序号
             bool clash = false;
             for (const auto& x : cfg.entries)
                 if (x.weaponType == e.weaponType && x.combo == nm) { clash = true; break; }
-            if (!clash) {
-                newCombos.insert(nm);
-                if (!newComboFirst.count(e.weaponType)) newComboFirst[e.weaponType] = nm;
-                return nm;
-            }
+            if (!clash) break;
+            nm = "导入" + std::to_string(k);
         }
+        assignedReloc[e.weaponType] = nm;
+        newCombos.insert(nm);
+        if (!newComboFirst.count(e.weaponType)) newComboFirst[e.weaponType] = nm;
+        return nm;
     };
 
     auto keyOf = [](const SoundEntry& e) {
