@@ -53,6 +53,7 @@ struct App {
         char lmtBuf[128] = {};
         bool lmtAny = false;           // 勾选「LMT 不限」= 该 FSMId 的所有动作都触发
         std::string combo;             // 条目所属配置组合（"" = 默认组合），编辑器里可改
+        bool stop = false;             // Stop=1：命中此动作时停止正在播放的音效
         std::vector<SoundSpec> pool[5]; // 0 = 默认音效；1..4 = 无刃时/白刃时/黄刃时/红刃时
 
         // ---- 判定（延迟判定）----
@@ -127,7 +128,9 @@ private:
     void SubmitIdsToGithub();
     void FetchLatestFsmDb();
     void MergeOldIni();   // 合并旧版 ini 的动作条目（升级不丢配置）
-    void MergeConfigFile(const std::string& path);   // 合并指定 ini（旧配置 / 导入的组合文件共用）
+    void MergeConfigFile(const std::string& path, bool importCombo = false);
+    // 合并指定 ini：importCombo=true（组合导入/打包导入）时，导入的"默认组合"条目
+    // 会被放进自动新建的「导入」组合，绝不覆盖本地默认组合
     void ExportComboCurrent();   // 把当前武器的当前组合导出为分享文件
     void ImportComboFile();      // 导入别人分享的组合文件（按条目去重合并）
     // 提取组合条目 + 把用到的音效复制到 dir\sounds\ 并改写路径（可测试的导出核心）

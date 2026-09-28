@@ -20,6 +20,7 @@
 #include <cstring>
 #include <memory>
 #include <functional>
+#include <set>
 #include <map>
 
 #pragma comment(lib, "winmm.lib")
@@ -1263,6 +1264,12 @@ void App::DrawEntries() {
 
             ImGui::TableSetColumnIndex(3);
             ImGui::TextColored(C_ACCENT, "%d", e.fsmId);
+            if (e.stop) {
+                ImGui::SameLine(0, 8);
+                ImGui::TextColored(C_RED, "[停]");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Stop：命中此动作时停止正在播放的音效");
+            }
 
             ImGui::TableSetColumnIndex(4);
             size_t total = e.def.specs.size();
@@ -1406,6 +1413,7 @@ void App::OpenEditorNew(int weapon, int fsm, int lmt, const std::string& name) {
     if (lmt >= 0) editor.lmt.push_back(lmt);
     editor.lmtAny = editor.lmt.empty();
     editor.combo = (weapon >= 0) ? ActiveCombo(weapon) : std::string();   // 新条目默认进当前激活组合
+    editor.stop = false;                                                  // 新条目默认不停止
     FillLmtBuf(editor.lmtBuf, sizeof(editor.lmtBuf), editor.lmt);
     snprintf(editor.name, sizeof(editor.name), "%s", name.c_str());
 }
@@ -1424,6 +1432,7 @@ void App::OpenEditorEdit(int index) {
     editor.lmt = e.lmt;
     editor.lmtAny = e.lmt.empty();
     editor.combo = e.combo;
+    editor.stop = e.stop;
     FillLmtBuf(editor.lmtBuf, sizeof(editor.lmtBuf), editor.lmt);
     snprintf(editor.name, sizeof(editor.name), "%s", e.name.c_str());
     snprintf(editor.groupBuf, sizeof(editor.groupBuf), "%s", e.group.c_str());
@@ -1478,6 +1487,7 @@ bool App::ApplyEditor() {
     e.fsmTarget = editor.fsmTarget;
     e.name = Trim(editor.name);
     e.group = Trim(editor.groupBuf);
+    e.stop = editor.stop;   // Stop=1：命中即停止播放
     // 组合归属：编辑器里可以直接选（默认组合 / 该武器的任意命名组合）。
     // 任意武器(-1)没有组合概念，固定进默认组合（否则保存时会被丢掉）。
     if (editor.weaponType < 0) {
@@ -1669,6 +1679,12 @@ void App::DrawEditorDetached() {
             ImGui::TextDisabled("%s", w.c_str());
         }
     }
+
+    // ---- Stop：命中这条就停止正在播放的音效 ----
+    if (ImGui::Checkbox("Stop：命中此动作时停止正在播放的音效", &editor.stop)) { }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("勾选后这条只负责「停止」：匹配到该派生动作时，立刻打断当前正在播放的插件音效。\n"
+                          "典型用法：蓄力/长音效 + 出手动作触发 Stop；音效行不用填。");
 
     // =====================================================================
     //  判定：动作匹配上只是「开窗」，接着盯一段时间，按条件挑音效池。
@@ -2441,8 +2457,10 @@ void App::MergeOldIni() {
     MergeConfigFile(p);
 }
 
-// 合并指定 ini（旧配置 / 别人分享的组合导出文件共用）：按条目去重后追加
-void App::MergeConfigFile(const std::string& p) {
+// 合并指定 ini（旧配置 / 别人分享的组合导出文件共用）：按条目去重后追加。
+// importCombo=true（组合导入 / zip 组合包导入）时，被导入文件的"默认组合"条目
+// 会放进自动新建的「导入」组合里，绝不覆盖本地默认组合。
+void App::MergeConfigFile(const std::string& p, bool importCombo) {
     Config old;
     if (!LoadConfig(p, old)) { status = "读取失败: " + p; return; }
 
@@ -2486,6 +2504,25 @@ void App::MergeConfigFile(const std::string& p) {
         }
     }
 
+    // importCombo 时：把"默认组合"的条目改派到自动新建的「导入」组合
+    // （按武器各自建一个；命名冲突自动加序号）。任意武器(-1)条目保持默认。
+    std::map<int, int> importSuffix;
+    int relocated = 0;
+    std::set<std::string> newCombos;
+    auto importComboName = [&](const SoundEntry& e) -> std::string {
+        if (!importCombo || e.weaponType < 0 || !e.combo.empty()) return e.combo;
+        for (;;) {
+            const int k = importSuffix[e.weaponType];
+            const std::string nm = (k == 0) ? std::string("导入")
+                                            : std::string("导入") + std::to_string(k + 1);
+            importSuffix[e.weaponType] = k + 1;
+            bool clash = false;
+            for (const auto& x : cfg.entries)
+                if (x.weaponType == e.weaponType && x.combo == nm) { clash = true; break; }
+            if (!clash) { newCombos.insert(nm); return nm; }
+        }
+    };
+
     auto keyOf = [](const SoundEntry& e) {
         std::string k = std::to_string(e.weaponType) + "|" + e.combo + "|" +
                         std::to_string(e.fsmId) + "|" + std::to_string(e.fsmTarget) + "|";
@@ -2501,7 +2538,12 @@ void App::MergeConfigFile(const std::string& p) {
     for (const auto& e : cfg.entries) have.push_back(keyOf(e));
 
     int added = 0, skipped = 0;
-    for (const auto& e : old.entries) {
+    for (const auto& e0 : old.entries) {
+        SoundEntry e = e0;
+        if (importCombo && e.weaponType >= 0 && e.combo.empty()) {
+            e.combo = importComboName(e);   // 不碰本地默认组合
+            ++relocated;
+        }
         const std::string k = keyOf(e);
         bool dup = false;
         for (const auto& h : have) if (h == k) { dup = true; break; }
@@ -2516,7 +2558,14 @@ void App::MergeConfigFile(const std::string& p) {
         extra = "；音效: 复制 " + std::to_string(sndCopied) + " 个、已有跳过 " +
                 std::to_string(sndSkipped) + " 个 -> " + BaseDir() + "sounds\\";
     status = "导入配置: 新增 " + std::to_string(added) + " 条，跳过重复 " +
-             std::to_string(skipped) + " 条" + extra + "（记得保存）";
+             std::to_string(skipped) + " 条" + extra;
+    if (relocated > 0) {
+        std::string names;
+        for (const auto& c : newCombos) { if (!names.empty()) names += "、"; names += c; }
+        status += "；原「默认组合」的 " + std::to_string(relocated) + " 条已导入为新组合「" +
+                  names + "」，没有覆盖你的默认组合";
+    }
+    status += "（记得保存）";
 }
 
 // 导出核心：收集组合条目 + 把用到的音效复制到 dir\sounds\ 并改写条目路径
@@ -2712,7 +2761,7 @@ void App::ImportComboFile() {
     std::string low = p;
     for (auto& c : low) if (c >= 'A' && c <= 'Z') c += 32;
     const bool isZip = low.size() > 4 && low.substr(low.size() - 4) == ".zip";
-    if (!isZip) { MergeConfigFile(p); return; }
+    if (!isZip) { MergeConfigFile(p, true); return; }
 
     // zip：解包到临时目录，取出组合 txt 再走普通合并（旁边的 sounds\ 会自动复制进本地）
     char t[MAX_PATH] = {};
@@ -2727,7 +2776,7 @@ void App::ImportComboFile() {
         status = "这个 zip 里没有组合文件（*.txt / *.ini）";
         return;
     }
-    MergeConfigFile(found);
+    MergeConfigFile(found, true);
     DeleteTree(Utf8ToWide(ext));
 }
 

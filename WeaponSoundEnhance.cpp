@@ -331,7 +331,7 @@ void LogInit()
 {
     gLogPath = gDataDir + L"WeaponSoundEnhance.log";
     ::DeleteFileW(gLogPath.c_str());
-    Log("WeaponSoundEnhance 2.13 starting");
+    Log("WeaponSoundEnhance 2.18 starting");
     // 旧布局提示：wav 还在 plugins\sounds\ 时自动兼容，但建议搬进数据目录
     const std::wstring oldSounds = gModuleDir + L"sounds";
     if (gDataDir != gModuleDir && DirExistsW(oldSounds) &&
@@ -483,6 +483,14 @@ void ResampleTo(Wav& w, std::uint32_t targetRate = 44100)
 
 const int kMaxVoices = 6;   // simultaneous waveOut voices; excess is dropped
 std::atomic<int> gVoices{0};
+// 停止信号：StopAll() 每次 +1；正在播放的声部如果发现自己的起始代次和当前不符，
+// 立刻 waveOutReset 打断。用于「命中某派生动作就停止播放」的 Stop 条目。
+std::atomic<std::uint64_t> gStopEpoch{0};
+
+void StopAll()
+{
+    gStopEpoch.fetch_add(1, std::memory_order_relaxed);
+}
 
 struct Engine
 {
@@ -548,7 +556,14 @@ private:
     static void PlayWorker(PlayCtx& ctx)
     {
         if (ctx.samples.empty()) return;
-        if (ctx.delayMs > 0) ::Sleep(ctx.delayMs);
+        const std::uint64_t epoch = gStopEpoch.load(std::memory_order_relaxed);
+        // 延时期间也可被 Stop 打断（比如蓄力音效的延时还没到就出了下一招）
+        if (ctx.delayMs > 0) {
+            for (unsigned waited = 0; waited < ctx.delayMs; waited += 10) {
+                ::Sleep(10);
+                if (gStopEpoch.load(std::memory_order_relaxed) != epoch) return;
+            }
+        }
 
         WAVEFORMATEX wfx = {};
         wfx.wFormatTag = WAVE_FORMAT_PCM;
@@ -572,8 +587,15 @@ private:
             waveOutClose(hwo); return;
         }
         waveOutWrite(hwo, &hdr, sizeof(hdr));
-        while ((hdr.dwFlags & WHDR_DONE) == 0)
+        while ((hdr.dwFlags & WHDR_DONE) == 0) {
             ::Sleep(10);
+            if (gStopEpoch.load(std::memory_order_relaxed) != epoch) {
+                // 被 Stop 打断：waveOutReset 让当前缓冲立刻完成
+                ::waveOutReset(hwo);
+                while ((hdr.dwFlags & WHDR_DONE) == 0) ::Sleep(5);
+                break;
+            }
+        }
         waveOutUnprepareHeader(hwo, &hdr, sizeof(hdr));
         waveOutClose(hwo);
     }
@@ -838,6 +860,7 @@ struct Attack
                                   // once per action occurrence (first trigger wins)
     Pool defPool;                 // default pool (tag = "any")
     Pool gaugePool[4];            // LS gauge pools, keyed by level 0..3
+    bool stop = false;            // Stop=1：命中这条时停止正在播放的音效（无音效条目）
     bool inMatch = false;         // edge latch: fire once per action (ungrouped entries)
 
     // ---- 延迟判定（CheckTimeoutMs > 0 时启用）----
@@ -1491,6 +1514,8 @@ void LoadConfig()
             }
         } else if (key == "Name") {
             cur.name = val;
+        } else if (key == "Stop") {
+            cur.stop = std::atoi(val.c_str()) != 0;   // Stop=1：命中即停止播放
         } else if (key == "Group") {
             cur.group = val;
         } else if (key == "CheckDelayMs") {
@@ -1792,11 +1817,14 @@ inline bool HandleWseCommand(const std::string& rest, bool& used)
         gEnabled = 0; ShowMessage("wse disabled", true);
     } else if (rest == "more" || rest == "extra") {
         gMoreSounds = 1; ShowMessage("wse extra sounds ON", true);
+    } else if (rest == "stop") {
+        audio::StopAll();
+        ShowMessage("wse sounds stopped", true);
     } else if (rest == "one" || rest == "single") {
         gMoreSounds = 0; ShowMessage("wse extra sounds OFF (single)", true);
     } else if (rest == "help" || rest == "h") {
-        ShowMessage("/wse reload | on | off | more | one | vol N | vol+ | vol- | "
-                    "combo [名字] (切组合) | combos (列出组合)");
+        ShowMessage("/wse reload | on | off | more | one | stop | vol N | vol+ | vol- | "
+                    "combo [名字] | combos (列出组合)");
     } else if (rest == "combo" || rest.rfind("combo ", 0) == 0 || rest.rfind("cb", 0) == 0) {
         const int w = player::gWeapon;
         std::string arg = Trim((rest.rfind("combo", 0) == 0) ? rest.substr(5) : rest.substr(2));
@@ -2241,13 +2269,27 @@ DWORD WINAPI WorkerProc(LPVOID)
                 if (!lmtOk)
                     for (int x : e.lmt) if (x == lmt) { lmtOk = true; break; }
 
-                const bool match =
+                // 去掉 HasSounds 的“基础匹配”：Stop 条目没有音效也要能匹配
+                const bool matchBase =
                     (e.weaponType < 0 || e.weaponType == weapon) &&
                     (e.fsmId < 0 || e.fsmId == fsm) &&
                     (e.fsmTarget < 0 || e.fsmTarget == player::gFsmTarget) &&
-                    lmtOk &&
-                    e.HasSounds();
+                    lmtOk;
 
+                // Stop 条目：命中该派生动作就停止正在播放的音效（边沿触发，不进组/判定）
+                if (e.stop) {
+                    if (matchBase && !e.inMatch) {
+                        e.inMatch = true;
+                        audio::StopAll();
+                        LogD("[stop] %s (weapon=%d fsm=%d lmt=%d)",
+                             e.name.c_str(), weapon, fsm, lmt);
+                    } else if (!matchBase) {
+                        e.inMatch = false;
+                    }
+                    continue;
+                }
+
+                const bool match = matchBase && e.HasSounds();
                 const std::string tag = "a[" + e.name + "]";
 
                 // 延迟判定条目走独立的状态机；没配 CheckTimeoutMs 的条目

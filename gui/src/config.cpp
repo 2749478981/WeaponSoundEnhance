@@ -302,6 +302,8 @@ bool LoadConfig(const std::string& path, Config& cfg) {
             }
         } else if (key == "Name") {
             cur.name = val;
+        } else if (key == "Stop") {
+            cur.stop = std::atoi(val.c_str()) != 0;
         } else if (key == "CheckDelayMs") {
             cur.checkDelayMs = std::atoi(val.c_str());
         } else if (key == "CheckTimeoutMs") {
@@ -398,6 +400,7 @@ static void WriteEntry(const SoundEntry& e, int n, std::string& o) {
     o += "[Attack" + std::to_string(n) + "]\r\n";
     if (!e.name.empty()) o += "Name=" + e.name + "\r\n";
     if (!e.group.empty()) o += "Group=" + e.group + "\r\n";
+    if (e.stop) o += "Stop=1\r\n";
     o += "WeaponType=" + std::to_string(e.weaponType) + "\r\n";
     o += LmtLine(e) + "\r\n";
     o += "FSMId=" + std::to_string(e.fsmId) + "\r\n";

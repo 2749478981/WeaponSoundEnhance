@@ -35,6 +35,7 @@ struct SoundEntry {
     std::string name;           // 显示名（Name=，插件匹配时忽略）
     std::string group;          // 动作组（Group=）：同一招的多个触发条目填相同组名，
                                 // 整招只响一次且刃色在首个触发瞬间定格
+    bool stop = false;          // Stop=1：命中这条时停止正在播放的音效（不需要音效）
     PoolSpec def;               // 默认音效（Sound=）；启用判定时它是"都不成立"的兜底池
     PoolSpec gauge[4];          // 刃时音效 0..3（无/白/黄/红；Sound:none|white|yellow|red）
 
