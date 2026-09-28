@@ -252,6 +252,8 @@ bool LoadConfig(const std::string& path, Config& cfg) {
                 else if (key == "QuestRoot") cfg.global.questRoot = val;
                 else if (key == "QuestDmgOff") cfg.global.questDmgOff = val;
                 else if (key == "ChatEcho") cfg.global.chatEcho = std::atoi(val.c_str());
+        else if (key == "UpdateCheck") cfg.global.updateCheck = std::atoi(val.c_str());
+        else if (key == "UpdateProxy") cfg.global.updateProxy = val;
                 else if (key == "ChatCommands") cfg.global.chatCommands = std::atoi(val.c_str());
                 else if (key == "Hotkeys") cfg.global.hotkeysEnabled = std::atoi(val.c_str());
             } else if (section == "Hotkeys") {
@@ -470,6 +472,8 @@ bool SaveConfig(const std::string& path, const Config& cfg) {
     o += "QuestRoot=" + cfg.global.questRoot + "\r\n";
     o += "QuestDmgOff=" + cfg.global.questDmgOff + "\r\n";
     o += "ChatEcho=" + std::to_string(cfg.global.chatEcho) + "\r\n";
+    if (cfg.global.updateCheck != 1) o += "UpdateCheck=" + std::to_string(cfg.global.updateCheck) + "\r\n";
+    if (!cfg.global.updateProxy.empty()) o += "UpdateProxy=" + cfg.global.updateProxy + "\r\n";
     o += "ChatCommands=" + std::to_string(cfg.global.chatCommands) + "\r\n";
     o += "Hotkeys=" + std::to_string(cfg.global.hotkeysEnabled) + "\r\n\r\n";
 

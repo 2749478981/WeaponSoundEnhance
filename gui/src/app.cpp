@@ -5,6 +5,10 @@
 // 音效解码（wav/mp3/ogg/flac -> 16-bit PCM），试听与选择都用它
 #define WSE_AUDIO_IMPLEMENTATION
 #include "wse_audio.h"
+#include "update.h"   // 在线更新检查（WinHTTP）
+#include <thread>
+#include <mutex>
+#include <atomic>
 // zip 打包/解包（组合导出/导入用；miniz 单文件公有领域）
 #pragma warning(push)
 #pragma warning(disable: 4100 4201 4242 4244 4245 4267 4305 4324 4700 4701 4702 4706 4996 6011 6262 6387)
@@ -902,6 +906,25 @@ void App::DrawToolbar() {
             sd = legacy;
         CreateDirectoryW(sd.c_str(), nullptr);
         ShellExecuteW((HWND)hwnd, L"open", sd.c_str(), nullptr, nullptr, SW_SHOW);
+    }
+
+    // ---- 版本号 + 在线更新入口 ----
+    ImGui::SameLine(0, 16);
+    ImGui::AlignTextToFramePadding();
+    if (mUpdState == 3) {
+        ImGui::TextColored(C_AMBER, "v%s", kWseGuiVersion);
+        ImGui::SameLine(0, 6);
+        if (PrimaryButton("有新版 ⬆")) mUpdWinOpen = true;
+        if (ImGui::IsItemHovered()) { char tip[128]; snprintf(tip, sizeof(tip), "仓库有新版本 %s，点这里查看更新内容并一键安装", mUpdTag.c_str()); ImGui::SetTooltip("%s", tip); }
+    } else {
+        ImGui::TextDisabled("v%s", kWseGuiVersion);
+        ImGui::SameLine(0, 6);
+        if (mUpdState == 1) {
+            ImGui::TextDisabled("检查中…");
+        } else if (ImGui::SmallButton("检查更新")) {
+            mUpdWinOpen = true;      // 手动检查时把面板打开，让用户看到结果
+            CheckUpdateAsync(true);
+        }
     }
 }
 
@@ -2946,4 +2969,227 @@ void App::Draw() {
     // 编辑内容与 FSM/LMT 查询都放在独立原生窗口（main.cpp 各自的第二个/第三个 ImGui
     // 上下文）绘制：DrawEditorDetached / DrawFsmWindow 由那两个窗口的渲染循环调用。
     if (idWinOpen) DrawIdShareWindow();
+    DrawUpdateWindow();
+    // 启动后自动查一次最新版（ini 里 UpdateCheck=0 可关）
+    if (!mUpdAutoChecked) {
+        mUpdAutoChecked = true;
+        if (cfg.loaded) {   // 配置已加载时用 ini 里的开关/代理，否则用默认值
+            mUpdateCheckEnabled = cfg.global.updateCheck;
+            mUpdateProxy = cfg.global.updateProxy;
+        }
+        if (mUpdateCheckEnabled) CheckUpdateAsync(false);
+    }
+}
+
+// ===========================================================================
+//  在线更新：检查仓库最新版 / 一键下载安装
+// ===========================================================================
+static std::atomic<int> gUpdProgress{0};
+static void UpdProgressCb(std::size_t written, std::size_t total) {
+    if (total > 0) gUpdProgress.store((int)(written * 100 / total));
+    else gUpdProgress.store(-1);   // 未知总长
+}
+
+// 后台查最新 release
+void App::CheckUpdateAsync(bool userInitiated) {
+    if (mUpdState == 1) return;      // 正在查
+    mUpdState = 1;
+    mUpdUserAsked = userInitiated;
+    if (userInitiated) mUpdWinOpen = true;
+    if (mUpdWinOpen) mUpdMsg = "正在检查…";
+    const std::string proxy = mUpdateProxy;
+    const std::string cur = kWseGuiVersion;
+    std::thread([this, proxy, cur]() {
+        wseupd::Latest r = wseupd::FetchLatest(proxy);
+        if (!r.ok) {
+            mUpdErr = r.err.empty() ? "检查失败" : r.err;
+            mUpdMsg.clear();
+            mUpdState = 4;
+            return;
+        }
+        mUpdTag = r.tag;
+        mUpdUrl = r.zipUrl;
+        mUpdNotes = r.notes;
+        const int cmp = wseupd::CompareVer(r.tag, cur);
+        mUpdMsg.clear();   // 清掉「正在检查…」
+        mUpdState = (cmp > 0) ? 3 : 2;
+        if (cmp > 0 && !r.notes.empty()) mUpdWinOpen = true;   // 发现新版自动弹更新说明
+    }).detach();
+}
+
+// 下载 + 解包 + 覆盖安装（后台线程）；GUI.exe 走 .new + 重启脚本
+void App::StartInstallUpdate() {
+    if (mUpdInstalling) return;
+    if (mUpdUrl.empty()) { mUpdMsg = "没有可下载的组合包地址（release 里没有 zip 资产）"; return; }
+    mUpdInstalling = true;
+    gUpdProgress.store(0);
+    const std::string url = mUpdUrl;
+    const std::string proxy = mUpdateProxy;
+    const std::string dataDir = BaseDir();
+    const std::string pluginsDir = dataDir + "..\\";
+    std::thread([this, url, proxy, dataDir, pluginsDir]() {
+        std::string err;
+        // 1) 下载 zip 到临时目录
+        std::wstring tmpZip = Utf8ToWide(dataDir) + L"_update_tmp.zip";
+        // 解析 url: https://host/path
+        std::wstring wurl = wseupd::Widen(url);
+        std::wstring host, path;
+        bool https = true;
+        {
+            std::wstring u = wurl;
+            if (u.rfind(L"https://", 0) == 0) { u = u.substr(8); https = true; }
+            else if (u.rfind(L"http://", 0) == 0) { u = u.substr(7); https = false; }
+            const size_t sl = u.find(L'/');
+            host = (sl == std::wstring::npos) ? u : u.substr(0, sl);
+            path = (sl == std::wstring::npos) ? L"/" : u.substr(sl);
+        }
+        mUpdMsg = "正在下载…";
+        if (!wseupd::HttpGetFile(host, path, proxy, https, tmpZip, err, &UpdProgressCb)) {
+            mUpdMsg = "下载失败：" + err;
+            mUpdInstalling = false;
+            return;
+        }
+        // 2) 解包并安装
+        mUpdMsg = "正在安装…";
+        std::string bytes;
+        if (!ReadWideFile(tmpZip, bytes)) { mUpdMsg = "读取下载文件失败"; mUpdInstalling = false; DeleteFileW(tmpZip.c_str()); return; }
+        mz_zip_archive z{};
+        if (mz_zip_reader_init_mem(&z, bytes.data(), bytes.size(), 0) == MZ_FALSE) {
+            mUpdMsg = "下载的 zip 无法解析";
+            mUpdInstalling = false;
+            DeleteFileW(tmpZip.c_str());
+            return;
+        }
+        const std::string kPlug = "nativePC/plugins/";
+        const std::string kData = "nativePC/plugins/WeaponSoundEnhance/";
+        int done = 0, failed = 0;
+        bool needRestart = false;
+        const mz_uint num = mz_zip_reader_get_num_files(&z);
+        for (mz_uint i = 0; i < num; ++i) {
+            mz_zip_archive_file_stat st;
+            if (mz_zip_reader_file_stat(&z, i, &st) == MZ_FALSE) continue;
+            std::string name = st.m_filename;
+            if (name.empty()) continue;
+            for (auto& c : name) if (c == '\\') c = '/';
+            if (name.back() == '/') continue;      // 目录项（miniz 1.x 的 stat 没有 is_directory 字段）
+
+            std::string dst;      // 目标（UTF-8）
+            bool isGuiExe = false;
+            if (name.rfind(kData, 0) == 0) {
+                std::string rel = name.substr(kData.size());
+                if (rel == "WeaponSoundEnhance.ini") continue;         // 永不覆盖用户配置
+                if (rel == "WeaponSoundEnhanceGUI.exe") { isGuiExe = true; rel = "WeaponSoundEnhanceGUI.new.exe"; }
+                dst = dataDir + rel;
+            } else if (name.rfind(kPlug, 0) == 0) {
+                std::string rel = name.substr(kPlug.size());
+                if (rel.find('/') != std::string::npos) continue;      // plugins\ 下只放 DLL
+                dst = pluginsDir + rel;
+            } else {
+                continue;                                              // 其它路径忽略
+            }
+            std::size_t len = 0;
+            void* buf = mz_zip_reader_extract_to_heap(&z, i, &len, 0);
+            if (!buf) { ++failed; continue; }
+            std::wstring wdst = Utf8ToWide(dst);
+            const size_t slash = wdst.find_last_of(L'\\');
+            if (slash != std::wstring::npos) MakeDirs(wdst.substr(0, slash + 1));
+            const bool ok = WriteWideFile(wdst, buf, len);
+            mz_free(buf);
+            if (ok) { ++done; if (isGuiExe) needRestart = true; }
+            else ++failed;
+        }
+        mz_zip_reader_end(&z);
+        DeleteFileW(tmpZip.c_str());
+
+        mUpdNeedRestart = needRestart;
+        mUpdInstalling = false;
+        mUpdState = 2;   // 装完就等于最新了（除非有失败）
+        if (failed > 0 && done == 0) {
+            mUpdMsg = "安装失败：文件被占用（游戏/GUI 正在运行？）。可关掉游戏后重试。";
+            mUpdState = 3;
+            return;
+        }
+        mUpdMsg = "已更新 " + std::to_string(done) + " 个文件" +
+                  (failed ? ("（" + std::to_string(failed) + " 个失败，可能被占用）") : "") +
+                  (needRestart ? "；点下方按钮重启 GUI 完成替换" : "；重启游戏生效");
+        if (needRestart) {
+            // 写一个重启脚本：等 GUI 退出 → 替换 exe → 重新启动
+            const std::string cmdPath = dataDir + "_wse_apply_update.cmd";
+            std::string cmd =
+                "@echo off\r\n"
+                ":wait\r\n"
+                "tasklist /FI \"IMAGENAME eq WeaponSoundEnhanceGUI.exe\" 2>nul | find /I \"WeaponSoundEnhanceGUI.exe\" >nul\r\n"
+                "if not errorlevel 1 ( ping -n 2 127.0.0.1 >nul & goto wait )\r\n"
+                "move /Y \"%~dp0WeaponSoundEnhanceGUI.new.exe\" \"%~dp0WeaponSoundEnhanceGUI.exe\" >nul\r\n"
+                "start \"\" \"%~dp0WeaponSoundEnhanceGUI.exe\"\r\n"
+                "del \"%~f0\"\r\n";
+            FsWrite(cmdPath, cmd);
+        }
+    }).detach();
+}
+
+// 「关于 / 更新」小窗（主窗内弹窗，内容少，不必独立窗口）
+void App::DrawUpdateWindow() {
+    if (!mUpdWinOpen) return;
+    ImGui::SetNextWindowSize(ImVec2(560 * dpiScale, 420 * dpiScale), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("版本 / 在线更新", &mUpdWinOpen)) { ImGui::End(); return; }
+
+    ImGui::Text("当前 GUI 版本：v%s", kWseGuiVersion);
+    if (mUpdState == 1) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("（正在检查仓库最新版…）");
+    } else if (mUpdState == 2) {
+        ImGui::SameLine();
+        ImGui::TextColored(C_GREEN, "已是最新");
+        if (!mUpdTag.empty()) ImGui::TextDisabled("仓库最新：%s", mUpdTag.c_str());
+    } else if (mUpdState == 3) {
+        ImGui::SameLine();
+        ImGui::TextColored(C_RED, "有新版 %s", mUpdTag.c_str());
+    } else if (mUpdState == 4) {
+        ImGui::SameLine();
+        ImGui::TextColored(C_AMBER, "检查失败");
+        ImGui::TextWrapped("%s", mUpdErr.c_str());
+        ImGui::TextDisabled("可在 ini 里设 UpdateProxy=http://127.0.0.1:7897（本地代理）后重试。");
+    }
+
+    ImGui::Separator();
+    if (mUpdState == 3 && !mUpdNotes.empty()) {
+        ImGui::TextDisabled("更新内容：");
+        ImGui::BeginChild("##notes", ImVec2(0, 180 * dpiScale), true);
+        ImGui::TextWrapped("%s", mUpdNotes.c_str());
+        ImGui::EndChild();
+    }
+    if (!mUpdMsg.empty()) ImGui::TextWrapped("%s", mUpdMsg.c_str());
+    if (mUpdInstalling) {
+        int pr = gUpdProgress.load();
+        if (pr >= 0) ImGui::ProgressBar(pr / 100.0f, ImVec2(-1, 0));
+        else ImGui::TextDisabled("下载中…");
+    }
+
+    ImGui::Separator();
+    if (ImGui::Button("检查更新", ImVec2(110 * dpiScale, 0))) CheckUpdateAsync(true);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(mUpdState != 3 || mUpdInstalling || mUpdUrl.empty());
+    if (PrimaryButton("下载并安装")) StartInstallUpdate();
+    ImGui::EndDisabled();
+    if (mUpdState == 3 && mUpdUrl.empty()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(该版本没有 zip 资产)");
+    }
+    if (mUpdNeedRestart && !mUpdInstalling) {
+        ImGui::SameLine();
+        if (PrimaryButton("重启 GUI 完成更新")) {
+            const std::string cmd = BaseDir() + "_wse_apply_update.cmd";
+            if (FsExists(cmd)) {
+                ShellExecuteW((HWND)hwnd, L"open", Utf8ToWide(cmd).c_str(), nullptr, nullptr, SW_HIDE);
+                PostMessageW((HWND)hwnd, WM_CLOSE, 0, 0);
+            } else {
+                mUpdMsg = "没找到重启脚本，请手动关闭并重新打开 GUI";
+            }
+        }
+    }
+    if (mUpdNeedRestart)
+        ImGui::TextDisabled("（GUI 程序正在运行，需重启才能替换它自己；DLL/模板已就位）");
+
+    ImGui::End();
 }

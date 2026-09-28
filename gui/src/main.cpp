@@ -818,6 +818,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         app.fsmWinOpen = true;
     if (GetEnvironmentVariableA("WSE_OPEN_EDITOR", envBuf, sizeof(envBuf)) > 0 && envBuf[0] == '1')
         app.OpenEditorNew(3);   // 打开太刀的编辑窗口（冒烟用）
+    if (GetEnvironmentVariableA("WSE_OPEN_UPDATE", envBuf, sizeof(envBuf)) > 0 && envBuf[0] == '1')
+        app.mUpdWinOpen = true;   // 打开「版本/在线更新」窗口（冒烟用）
 
     bool done = false;
     while (!done) {

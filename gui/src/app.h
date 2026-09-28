@@ -3,6 +3,10 @@
 #include "game.h"
 #include <string>
 #include <vector>
+#include <atomic>
+
+// 当前 GUI 版本（显示在界面上、也用于和仓库最新版比较）
+inline constexpr const char* kWseGuiVersion = "2.25";
 
 // 条件表达式里的一项：<变量> <比较符> <数值>
 struct CondTerm {
@@ -74,6 +78,19 @@ struct App {
     char fsmQuery[160] = {};
     int fsmWeaponFilter = -1;
 
+    // ---- 版本 / 在线更新状态 ----
+    // mUpdState: 0=未查 1=查询中 2=已是最新 3=有新版 4=出错
+    int         mUpdState = 0;
+    bool        mUpdWinOpen = false;
+    bool        mUpdUserAsked = false;      // 用户手动点过「检查更新」（出错时才弹提示）
+    bool        mUpdInstalling = false;
+    int         mUpdProgress = 0;           // 0..100
+    std::string mUpdTag, mUpdUrl, mUpdNotes, mUpdErr, mUpdMsg;
+    bool        mUpdNeedRestart = false;
+    bool        mUpdAutoChecked = false;
+    std::string mUpdateProxy;                // ini: UpdateProxy=  (如 http://127.0.0.1:7897)
+    int         mUpdateCheckEnabled = 1;     // ini: UpdateCheck=1
+
     // 抓取历史：记录 fsm/lmt/weapon 的变化（fsm≠0 的派生动作会被高亮）
     struct HistEntry {
         int fsm;
@@ -138,6 +155,10 @@ private:
     bool PackComboToDir(int w, const std::string& combo, const std::string& dir,
                         std::vector<SoundEntry>& outEntries, int& copied, int& missing);
     void SwitchToGameIni();   // 切到游戏实际读取的 ini（当前那份不是它时用）
+    // ---- 版本 / 在线更新 ----
+    void CheckUpdateAsync(bool userInitiated);   // 后台线程查最新 release
+    void DrawUpdateWindow();                     // 「关于/更新」小窗口
+    void StartInstallUpdate();                   // 下载 + 解包 + 覆盖安装（后台线程）
     // ---- 配置组合管理 ----
     std::vector<std::string> WeaponCombos(int w) const;              // "" 在最前 + 命名组合(按出现顺序)
     void ComboRename(int w, const std::string& from, const std::string& to);

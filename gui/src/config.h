@@ -72,6 +72,8 @@ struct GlobalSettings {
     std::string questDmgOff = "0x17088";  // 任务累计伤害偏移（十六进制）
     int debug = 0;              // 调试日志（插件侧 Debug=1）
     int chatEcho = 1;
+    int updateCheck = 1;        // GUI 启动时自动查一次新版（UpdateCheck=0 关闭）
+    std::string updateProxy;    // 走代理查更新时填，如 http://127.0.0.1:7897
     int chatCommands = 1;
     int hotkeysEnabled = 1;     // 启用热键（插件侧 Hotkeys=1）
 };
