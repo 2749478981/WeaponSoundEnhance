@@ -38,14 +38,29 @@ static bool                     g_edInit = false;
 static bool                     g_edVisible = false;
 static bool                     g_edCloseRequested = false;
 
+// ---------------- 独立 FSM/LMT 查询窗口 ----------------
+static ID3D11Device*            g_fsDevice = nullptr;
+static ID3D11DeviceContext*     g_fsDeviceCtx = nullptr;
+static IDXGISwapChain*          g_fsSwapChain = nullptr;
+static ID3D11RenderTargetView*  g_fsRtv = nullptr;
+static UINT                     g_fsResizeWidth = 0, g_fsResizeHeight = 0;
+static ImGuiContext*            g_fsCtx = nullptr;
+static HWND                     g_fsHwnd = nullptr;
+static bool                     g_fsInit = false;
+static bool                     g_fsVisible = false;
+static bool                     g_fsCloseRequested = false;
+
 LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 LRESULT WINAPI EditorWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+LRESULT WINAPI FsmWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 void CreateRenderTarget();
 void CleanupRenderTarget();
 bool CreateDeviceD3D(HWND hWnd);
 void CleanupDeviceD3D();
 bool CreateEditorWindow(HINSTANCE hInstance, float dpiScale);
 void CleanupEditor();
+bool CreateFsmWindow(HINSTANCE hInstance, float dpiScale);
+void CleanupFsm();
 
 // 统一浅色主题（主窗与编辑窗套用同一份）
 static void ApplyLightStyle() {
@@ -216,6 +231,41 @@ LRESULT WINAPI EditorWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
     return result;
 }
 
+LRESULT WINAPI FsmWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    // 与 EditorWndProc 相同：保存/恢复上下文，防止模态对话框消息把 GImGui 切走
+    ImGuiContext* prevCtx = ImGui::GetCurrentContext();
+    if (g_fsCtx && prevCtx != g_fsCtx) ImGui::SetCurrentContext(g_fsCtx);
+    bool handled = false;
+    if (g_fsCtx && ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
+        handled = true;
+    LRESULT result = 0;
+    if (handled) {
+        result = true;
+    } else {
+        switch (msg) {
+        case WM_SIZE:
+            if (wParam != SIZE_MINIMIZED) {
+                g_fsResizeWidth = (UINT)LOWORD(lParam);
+                g_fsResizeHeight = (UINT)HIWORD(lParam);
+            }
+            result = 0;
+            handled = true;
+            break;
+        case WM_CLOSE:
+            g_fsCloseRequested = true;
+            result = 0;
+            handled = true;
+            break;
+        default:
+            break;
+        }
+        if (!handled)
+            result = DefWindowProcW(hWnd, msg, wParam, lParam);
+    }
+    if (prevCtx) ImGui::SetCurrentContext(prevCtx);
+    return result;
+}
+
 void CreateRenderTarget() {
     ID3D11Texture2D* pBackBuffer = nullptr;
     g_pSwapChain->GetBuffer(0, IID_PPV_ARGS(&pBackBuffer));
@@ -240,6 +290,19 @@ void CreateEditorRenderTarget() {
 
 void CleanupEditorRenderTarget() {
     if (g_edRtv) { g_edRtv->Release(); g_edRtv = nullptr; }
+}
+
+void CreateFsmRenderTarget() {
+    ID3D11Texture2D* pBackBuffer = nullptr;
+    g_fsSwapChain->GetBuffer(0, IID_PPV_ARGS(&pBackBuffer));
+    if (pBackBuffer) {
+        g_fsDevice->CreateRenderTargetView(pBackBuffer, nullptr, &g_fsRtv);
+        pBackBuffer->Release();
+    }
+}
+
+void CleanupFsmRenderTarget() {
+    if (g_fsRtv) { g_fsRtv->Release(); g_fsRtv = nullptr; }
 }
 
 bool CreateDeviceD3D(HWND hWnd) {
@@ -379,6 +442,103 @@ void CleanupEditor() {
     ImGui::SetCurrentContext(g_mainCtx);
 }
 
+bool CreateFsmWindow(HINSTANCE hInstance, float dpiScale) {
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.style = CS_CLASSDC;
+    wc.lpfnWndProc = FsmWndProc;
+    wc.hInstance = hInstance;
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.hIcon = (HICON)LoadImageW(hInstance, MAKEINTRESOURCE(IDI_APP), IMAGE_ICON,
+                                 GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_DEFAULTSIZE);
+    wc.hIconSm = (HICON)LoadImageW(hInstance, MAKEINTRESOURCE(IDI_APP), IMAGE_ICON,
+                                   GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTSIZE);
+    wc.lpszClassName = L"WSEFsmClass";
+    RegisterClassExW(&wc);
+
+    int ww = (int)(430 * dpiScale), wh = (int)(540 * dpiScale);
+    // 独立查询窗：允许拉伸（WS_THICKFRAME），标题栏可拖动
+    const DWORD fsStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_THICKFRAME;
+    const int sx = GetSystemMetrics(SM_CXSCREEN), sy = GetSystemMetrics(SM_CYSCREEN);
+    g_fsHwnd = CreateWindowExW(0, wc.lpszClassName, L"FSM/LMT 查询", fsStyle,
+                               (sx - ww) / 2 + 40, (sy - wh) / 2 + 40, ww, wh,
+                               nullptr, nullptr, wc.hInstance, nullptr);
+    if (!g_fsHwnd) return false;
+
+    D3D_FEATURE_LEVEL featureLevel;
+    const D3D_FEATURE_LEVEL featureLevels[2] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0 };
+    if (D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, featureLevels, 2,
+                          D3D11_SDK_VERSION, &g_fsDevice, &featureLevel, &g_fsDeviceCtx) != S_OK)
+        return false;
+
+    DXGI_SWAP_CHAIN_DESC sd{};
+    sd.BufferCount = 2;
+    sd.BufferDesc.Width = 0;
+    sd.BufferDesc.Height = 0;
+    sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    sd.BufferDesc.RefreshRate.Numerator = 60;
+    sd.BufferDesc.RefreshRate.Denominator = 1;
+    sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    sd.OutputWindow = g_fsHwnd;
+    sd.SampleDesc.Count = 1;
+    sd.SampleDesc.Quality = 0;
+    sd.Windowed = TRUE;
+    sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+
+    IDXGIDevice* pdxgi = nullptr;
+    IDXGIAdapter* pAdapter = nullptr;
+    IDXGIFactory* pFactory = nullptr;
+    if (g_fsDevice->QueryInterface(IID_PPV_ARGS(&pdxgi)) == S_OK &&
+        pdxgi->GetAdapter(&pAdapter) == S_OK &&
+        pAdapter->GetParent(IID_PPV_ARGS(&pFactory)) == S_OK) {
+        HRESULT hr = pFactory->CreateSwapChain(g_fsDevice, &sd, &g_fsSwapChain);
+        pFactory->Release();
+        pAdapter->Release();
+        pdxgi->Release();
+        if (hr != S_OK) return false;
+    } else {
+        return false;
+    }
+    CreateFsmRenderTarget();
+
+    // 独立 ImGui 上下文（FSM 查询窗用）
+    g_fsCtx = ImGui::CreateContext();
+    ImGui::SetCurrentContext(g_fsCtx);
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.IniFilename = nullptr;
+    LoadChineseFont(16.0f * dpiScale);
+    ApplyLightStyle();
+
+    ImGui_ImplWin32_Init(g_fsHwnd);
+    ImGui_ImplDX11_Init(g_fsDevice, g_fsDeviceCtx);
+    g_fsInit = true;
+    g_fsVisible = true;
+    g_fsCloseRequested = false;
+    ShowWindow(g_fsHwnd, SW_SHOW);
+    UpdateWindow(g_fsHwnd);
+    ImGui::SetCurrentContext(g_mainCtx);
+    return true;
+}
+
+void CleanupFsm() {
+    if (!g_fsInit) return;
+    ImGui::SetCurrentContext(g_fsCtx);
+    ImGui_ImplDX11_Shutdown();
+    ImGui_ImplWin32_Shutdown();
+    ImGui::DestroyContext(g_fsCtx);
+    g_fsCtx = nullptr;
+    g_fsInit = false;
+
+    CleanupFsmRenderTarget();
+    if (g_fsSwapChain) { g_fsSwapChain->Release(); g_fsSwapChain = nullptr; }
+    if (g_fsDeviceCtx) { g_fsDeviceCtx->Release(); g_fsDeviceCtx = nullptr; }
+    if (g_fsDevice) { g_fsDevice->Release(); g_fsDevice = nullptr; }
+    if (g_fsHwnd) { DestroyWindow(g_fsHwnd); g_fsHwnd = nullptr; }
+    UnregisterClassW(L"WSEFsmClass", GetModuleHandleW(nullptr));
+    ImGui::SetCurrentContext(g_mainCtx);
+}
+
 // 记录并在弹窗提示一次崩溃，避免程序直接闪退、便于定位。
 // 只有 MSVC 的 SEH 路径用得到，非 MSVC 下整块不编译，免得报 unused。
 #ifdef _MSC_VER
@@ -421,6 +581,39 @@ static void RenderEditorFrame(App& app, const float* clear) {
     }
 #else
     RenderEditorFrameBody(app, clear);
+#endif
+    ImGui::SetCurrentContext(g_mainCtx);
+}
+
+// FSM/LMT 查询独立窗口
+static void RenderFsmFrameBody(App& app, const float* clear) {
+    {
+        ImGui_ImplDX11_NewFrame();
+        ImGui_ImplWin32_NewFrame();
+        ImGui::NewFrame();
+        app.DrawFsmWindow();
+        // 保险：与编辑窗一致，确保后续提交/渲染始终在查询窗上下文
+        ImGui::SetCurrentContext(g_fsCtx);
+        ImGui::Render();
+        g_fsDeviceCtx->OMSetRenderTargets(1, &g_fsRtv, nullptr);
+        g_fsDeviceCtx->ClearRenderTargetView(g_fsRtv, clear);
+        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+        g_fsSwapChain->Present(1, 0);
+    }
+}
+
+static void RenderFsmFrame(App& app, const float* clear) {
+    ImGui::SetCurrentContext(g_fsCtx);
+#ifdef _MSC_VER
+    __try {
+        RenderFsmFrameBody(app, clear);
+    } __except ((g_crashCode = GetExceptionCode(),
+                 g_crashAddr = (void*)GetExceptionInformation()->ExceptionRecord->ExceptionAddress,
+                 EXCEPTION_EXECUTE_HANDLER)) {
+        ReportCrash(g_crashCode, g_crashAddr);
+    }
+#else
+    RenderFsmFrameBody(app, clear);
 #endif
     ImGui::SetCurrentContext(g_mainCtx);
 }
@@ -512,6 +705,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     App app;
     app.hwnd = hwnd;
     app.dpiScale = dpiScale;
+    // 调试钩子：设置环境变量 WSE_OPEN_FSM=1 时启动即打开 FSM 查询独立窗口（用于冒烟/截图；不设置时无影响）
+    char envBuf[16] = {};
+    if (GetEnvironmentVariableA("WSE_OPEN_FSM", envBuf, sizeof(envBuf)) > 0 && envBuf[0] == '1')
+        app.fsmWinOpen = true;
 
     bool done = false;
     while (!done) {
@@ -569,8 +766,35 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
             }
             RenderEditorFrame(app, clear);
         }
+
+        // ---- 独立 FSM/LMT 查询窗口 ----
+        if (g_fsCloseRequested) {
+            app.fsmWinOpen = false;
+            g_fsCloseRequested = false;
+        }
+        if (app.fsmWinOpen && !g_fsInit) {
+            CreateFsmWindow(hInstance, dpiScale);
+        }
+        if (app.fsmWinOpen && g_fsInit && !g_fsVisible) {
+            ShowWindow(g_fsHwnd, SW_SHOW);
+            g_fsVisible = true;
+        }
+        if (!app.fsmWinOpen && g_fsInit && g_fsVisible) {
+            ShowWindow(g_fsHwnd, SW_HIDE);
+            g_fsVisible = false;
+        }
+        if (g_fsInit && g_fsVisible) {
+            if (g_fsResizeWidth != 0 && g_fsResizeHeight != 0) {
+                CleanupFsmRenderTarget();
+                g_fsSwapChain->ResizeBuffers(0, g_fsResizeWidth, g_fsResizeHeight, DXGI_FORMAT_UNKNOWN, 0);
+                g_fsResizeWidth = g_fsResizeHeight = 0;
+                CreateFsmRenderTarget();
+            }
+            RenderFsmFrame(app, clear);
+        }
     }
 
+    CleanupFsm();
     CleanupEditor();
     app.editHwnd = nullptr;
 

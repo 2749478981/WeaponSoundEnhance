@@ -54,6 +54,7 @@ struct App {
         bool lmtAny = false;           // 勾选「LMT 不限」= 该 FSMId 的所有动作都触发
         std::string combo;             // 条目所属配置组合（"" = 默认组合），编辑器里可改
         bool stop = false;             // Stop=1：命中此动作时停止正在播放的音效
+        bool advOpen = false;          // 「高级设置」折叠区是否展开（默认折叠）
         std::vector<SoundSpec> pool[5]; // 0 = 默认音效；1..4 = 无刃时/白刃时/黄刃时/红刃时
 
         // ---- 判定（延迟判定）----
@@ -87,6 +88,7 @@ struct App {
 
     // 在独立编辑窗口（第二个 ImGui 上下文）中绘制编辑内容；由 main.cpp 的编辑窗渲染循环调用
     void DrawEditorDetached();
+    void DrawFsmWindow();   // FSM/LMT 查询（独立原生窗口里绘制）
 
 private:
     unsigned long long mLastPoll = 0;
@@ -102,7 +104,6 @@ private:
     void OpenEditorNew(int weapon);
     void OpenEditorEdit(int index);
     bool ApplyEditor();   // false = 输入有问题（例如 LMT 填了无法识别的项），不落地
-    void DrawFsmWindow();
     void DrawIdShareWindow();   // 共享动作 ID 库（上传/获取）
     void Save();
     void SaveAs();

@@ -1586,11 +1586,6 @@ void App::DrawEditorDetached() {
 
     ImGui::SetNextItemWidth(420 * dpiScale);
     ImGui::InputText("名称", editor.name, sizeof(editor.name));
-    ImGui::SetNextItemWidth(340 * dpiScale);
-    ImGui::InputTextWithHint("动作组(可空)", "如：气刃4（同一招多帧填同组，只响一次）", editor.groupBuf, sizeof(editor.groupBuf));
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("动作组：把同一招的多个触发条目（判定帧、升刃前后的帧等）填相同组名，"
-                          "整招只响一次；刃色以首个触发瞬间为准，命中升刃不会重复播放。");
 
     static const char* wItems[] = {
         "任意 (-1)", "0 大剑", "1 片手", "2 双刀", "3 太刀", "4 大锤", "5 笛子",
@@ -1645,10 +1640,12 @@ void App::DrawEditorDetached() {
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("动作状态机 ID；同一招在不同 FSM 层(target)里 id 可能重号");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(180 * dpiScale);
-    ImGui::InputInt("FSMTarget (-1=不限)", &editor.fsmTarget, 1, 100);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("FSM 目标层。填上可避免跨层 id 重号误触发；-1 = 只比 FSMId（旧行为）");
+    if (editor.advOpen) {
+        ImGui::SetNextItemWidth(180 * dpiScale);
+        ImGui::InputInt("FSMTarget (-1=不限)", &editor.fsmTarget, 1, 100);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("FSM 目标层。填上可避免跨层 id 重号误触发；-1 = 只比 FSMId（旧行为）");
+    }
 
     // ---- LMT：勾「不限」= 该 FSMId 的所有动作都触发（等同于写 -1）----
     if (ImGui::Checkbox("LMT 不限（该 FSMId 的所有动作都触发）", &editor.lmtAny)) {
@@ -1680,17 +1677,38 @@ void App::DrawEditorDetached() {
         }
     }
 
-    // ---- Stop：命中这条就停止正在播放的音效 ----
-    if (ImGui::Checkbox("Stop：命中此动作时停止正在播放的音效", &editor.stop)) { }
+    // =====================================================================
+    //  高级设置（默认折叠）：一般添加条目只用 名称/武器/FSMId/LMT + 默认音效，
+    //  动作组 / FSMTarget / Stop / 判定模式 这些按需展开即可。
+    // =====================================================================
+    ImGui::Separator();
+    ImGui::CollapsingHeader("高级设置（动作组 · FSMTarget · Stop · 判定 · 刃时音效）",
+                            &editor.advOpen);   // 不传 DefaultOpen → 默认折叠
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("勾选后这条只负责「停止」：匹配到该派生动作时，立刻打断当前正在播放的插件音效。\n"
-                          "典型用法：蓄力/长音效 + 出手动作触发 Stop；音效行不用填。");
+        ImGui::SetTooltip("一般只用填 FSMId 和 LMT；这些高级项按需展开");
 
-    // =====================================================================
-    //  判定：动作匹配上只是「开窗」，接着盯一段时间，按条件挑音效池。
-    //  用来做「打中/落空」「掉刃/升刃」这类必须观察一段时间才知道结果的触发。
-    //  两层：预设（挑个现成的，只填 wav）/ 高级（自己配条件）。
-    // =====================================================================
+    if (editor.advOpen) {
+        ImGui::Indent();
+
+        // ---- 动作组 ----
+        ImGui::SetNextItemWidth(340 * dpiScale);
+        ImGui::InputTextWithHint("动作组(可空)", "如：气刃4（同一招多帧填同组，只响一次）", editor.groupBuf, sizeof(editor.groupBuf));
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("动作组：把同一招的多个触发条目（判定帧、升刃前后的帧等）填相同组名，"
+                              "整招只响一次；刃色以首个触发瞬间为准，命中升刃不会重复播放。");
+        ImGui::Spacing();
+
+        // ---- Stop：命中这条就停止正在播放的音效 ----
+        if (ImGui::Checkbox("Stop：命中此动作时停止正在播放的音效", &editor.stop)) { }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("勾选后这条只负责「停止」：匹配到该派生动作时，立刻打断当前正在播放的插件音效。\n"
+                              "典型用法：蓄力/长音效 + 出手动作触发 Stop；音效行不用填。");
+
+        // =====================================================================
+        //  判定：动作匹配上只是「开窗」，接着盯一段时间，按条件挑音效池。
+        //  用来做「打中/落空」「掉刃/升刃」这类必须观察一段时间才知道结果的触发。
+        //  两层：预设（挑个现成的，只填 wav）/ 高级（自己配条件）。
+        // =====================================================================
     static int pendingCondRm = -1;                                  // 待删除的条件行
     static std::vector<std::pair<int, std::string>> pendingCondAdd; // 待加入的音效
     if (pendingCondRm >= 0 && pendingCondRm < (int)editor.conds.size())
@@ -1890,19 +1908,23 @@ void App::DrawEditorDetached() {
         else
             ImGui::TextDisabled("以上都不成立时，播下面的「默认音效」。");
     }
+        ImGui::Unindent();
+    }
 
     ImGui::Separator();
     ImGui::TextDisabled("命中动作时：固定(F)音效全部播放 + 未固定中随机一条，同时叠播；");
     const bool ls = (editor.weaponType == 3);
-    if (ls)
-        ImGui::TextDisabled("无刃时/白刃时/黄刃时/红刃时 未配置时，回退默认音效。");
+    if (ls && !editor.advOpen)
+        ImGui::TextDisabled("刃时音效（无/白/黄/红，太刀专用）在「高级设置」里；未配置时回退默认音效。");
+    else if (ls)
+        ImGui::TextDisabled("刃时音效：未配置的刃色回退默认音效。");
     else
         ImGui::TextDisabled("刃时音效(无/白/黄/红)仅对太刀可用，当前武器只有默认音效。");
     ImGui::Spacing();
 
     static char newPath[5][512] = {};
     for (int p = 0; p < 5; ++p) {
-        if (p > 0 && !ls) continue;   // 非太刀：不显示刃时池
+        if (p > 0 && (!ls || !editor.advOpen)) continue;   // 非太刀 / 未展开高级：不显示刃时池
         std::vector<SoundSpec>& pool = editor.pool[p];
         char head[160];
         if (p == 0)
@@ -1995,15 +2017,15 @@ void App::DrawEditorDetached() {
 }
 
 void App::DrawFsmWindow() {
-    ImGui::SetNextWindowSize(ImVec2(380 * dpiScale, 440 * dpiScale), ImGuiCond_FirstUseEver);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
-    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.72f, 0.72f, 0.75f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_TitleBg, ImVec4(0.93f, 0.93f, 0.95f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.93f, 0.93f, 0.95f, 1.0f));
-    if (!ImGui::Begin("FSM/LMT 查询", &fsmWinOpen)) {
+    // 独立原生窗口里的“宿主”式绘制：内容占满窗口客户区，
+    // 标题栏/关闭/拉伸由 OS 窗口自己管（main.cpp 的 FsmWndProc）。
+    ImGui::SetNextWindowPos(ImVec2(0, 0));
+    ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
+    if (!ImGui::Begin("##fsmhost", nullptr,
+                      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoResize |
+                      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                      ImGuiWindowFlags_NoBringToFrontOnFocus)) {
         ImGui::End();
-        ImGui::PopStyleVar();
-        ImGui::PopStyleColor(3);
         return;
     }
 
@@ -2041,8 +2063,6 @@ void App::DrawFsmWindow() {
     ImGui::TextDisabled("上传/获取共享 ID 库 → 工具栏「上传ID」（当前库 %d 条）", (int)GetFsmDb().size());
 
     ImGui::End();
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor(3);
 }
 
 // 共享动作 ID 库：导出实测 / 导入合并 / 提交到共享库 / 获取最新库
@@ -2896,8 +2916,7 @@ void App::Draw() {
     DrawStatus();
     ImGui::End();
 
-    // 编辑内容改由独立原生窗口（main.cpp 的第二个 ImGui 上下文）绘制，
-    // 不再作为主窗内弹窗。DrawEditorDetached 由编辑窗渲染循环调用。
-    if (fsmWinOpen) DrawFsmWindow();
+    // 编辑内容与 FSM/LMT 查询都放在独立原生窗口（main.cpp 各自的第二个/第三个 ImGui
+    // 上下文）绘制：DrawEditorDetached / DrawFsmWindow 由那两个窗口的渲染循环调用。
     if (idWinOpen) DrawIdShareWindow();
 }
