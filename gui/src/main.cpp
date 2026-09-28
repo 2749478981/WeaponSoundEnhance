@@ -358,9 +358,9 @@ bool CreateEditorWindow(HINSTANCE hInstance, float dpiScale) {
     wc.lpszClassName = L"WSEEditorClass";
     RegisterClassExW(&wc);
 
-    int ww = (int)(640 * dpiScale), wh = (int)(760 * dpiScale);
-    // 独立编辑窗：固定尺寸（无右下缩放三角/最大化），保留标题栏可拖动与系统菜单。
-    const DWORD edStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+    int ww = (int)(680 * dpiScale), wh = (int)(820 * dpiScale);
+    // 独立编辑窗：可自由拉伸（WS_THICKFRAME）、可最大化，标题栏可拖动
+    const DWORD edStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_THICKFRAME;
     const int sx = GetSystemMetrics(SM_CXSCREEN), sy = GetSystemMetrics(SM_CYSCREEN);
     g_edHwnd = CreateWindowExW(0, wc.lpszClassName, L"编辑条目", edStyle,
                                (sx - ww) / 2, (sy - wh) / 2, ww, wh,
@@ -551,6 +551,14 @@ static void*  g_crashAddr = nullptr;
 // 渲染独立编辑窗口一帧的实际内容。抽成独立函数，便于在 MSVC 下用 SEH 包住。
 static void RenderEditorFrameBody(App& app, const float* clear) {
     {
+        // 强制 io.DisplaySize = 当前客户区：伸缩窗口时保证 ImGui 画布与交换链一致，
+        // 避免撑大后出现黑边/黑底（后端缓存的尺寸在缩放瞬间可能滞后一帧）。
+        RECT rc = {};
+        if (::GetClientRect(g_edHwnd, &rc)) {
+            ImGuiIO& io = ImGui::GetIO();
+            io.DisplaySize = ImVec2((float)(rc.right - rc.left), (float)(rc.bottom - rc.top));
+            io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
+        }
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
@@ -588,6 +596,12 @@ static void RenderEditorFrame(App& app, const float* clear) {
 // FSM/LMT 查询独立窗口
 static void RenderFsmFrameBody(App& app, const float* clear) {
     {
+        RECT rc = {};
+        if (::GetClientRect(g_fsHwnd, &rc)) {
+            ImGuiIO& io = ImGui::GetIO();
+            io.DisplaySize = ImVec2((float)(rc.right - rc.left), (float)(rc.bottom - rc.top));
+            io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
+        }
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
@@ -709,6 +723,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     char envBuf[16] = {};
     if (GetEnvironmentVariableA("WSE_OPEN_FSM", envBuf, sizeof(envBuf)) > 0 && envBuf[0] == '1')
         app.fsmWinOpen = true;
+    if (GetEnvironmentVariableA("WSE_OPEN_EDITOR", envBuf, sizeof(envBuf)) > 0 && envBuf[0] == '1')
+        app.OpenEditorNew(3);   // 打开太刀的编辑窗口（冒烟用）
 
     bool done = false;
     while (!done) {

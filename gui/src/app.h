@@ -89,6 +89,8 @@ struct App {
     // 在独立编辑窗口（第二个 ImGui 上下文）中绘制编辑内容；由 main.cpp 的编辑窗渲染循环调用
     void DrawEditorDetached();
     void DrawFsmWindow();   // FSM/LMT 查询（独立原生窗口里绘制）
+    void OpenEditorNew(int weapon, int fsm, int lmt, const std::string& name);
+    void OpenEditorNew(int weapon);
 
 private:
     unsigned long long mLastPoll = 0;
@@ -100,8 +102,6 @@ private:
     void DrawCapturePanel();
     void DrawEntries();
     void DrawStatus();
-    void OpenEditorNew(int weapon, int fsm, int lmt, const std::string& name);
-    void OpenEditorNew(int weapon);
     void OpenEditorEdit(int index);
     bool ApplyEditor();   // false = 输入有问题（例如 LMT 填了无法识别的项），不落地
     void DrawIdShareWindow();   // 共享动作 ID 库（上传/获取）

@@ -1584,7 +1584,15 @@ void App::DrawEditorDetached() {
                        ImGui::GetStyle().FramePadding.y * 2.0f + 10.0f * dpiScale;
     ImGui::BeginChild("##edit", ImVec2(0, -btnH), false);
 
-    ImGui::SetNextItemWidth(420 * dpiScale);
+    // 自适应宽度：窗口可拉伸后，控件宽度取「固定理想宽」与「可用宽」的较小值，
+    // 保证任何尺寸下都不被横向裁掉（拖窄窗口时自动收窄）。
+    auto ew = [&](float fixed) {
+        const float avail = ImGui::GetContentRegionAvail().x;
+        const float w = fixed * dpiScale;
+        return (w < avail) ? w : avail;
+    };
+
+    ImGui::SetNextItemWidth(ew(360));
     ImGui::InputText("名称", editor.name, sizeof(editor.name));
 
     static const char* wItems[] = {
@@ -1594,7 +1602,7 @@ void App::DrawEditorDetached() {
     int wi = editor.weaponType + 1;
     if (wi < 0) wi = 0;
     if (wi > 14) wi = 0;
-    ImGui::SetNextItemWidth(200 * dpiScale);
+    ImGui::SetNextItemWidth(ew(200));
     ImGui::Combo("武器", &wi, wItems, 15);
     const int prevWeapon = editor.weaponType;
     editor.weaponType = wi - 1;
@@ -1616,7 +1624,7 @@ void App::DrawEditorDetached() {
         }
         int ci = 0;
         for (size_t i = 0; i < cbList.size(); ++i) if (cbList[i] == editor.combo) ci = (int)i;
-        ImGui::SetNextItemWidth(200 * dpiScale);
+        ImGui::SetNextItemWidth(ew(200));
         std::string curLbl = cbList[ci].empty() ? std::string("默认组合") : cbList[ci];
         if (!cbList[ci].empty() && cbList[ci] == ActiveCombo(editor.weaponType))
             curLbl += "（当前激活）";
@@ -1635,13 +1643,13 @@ void App::DrawEditorDetached() {
                               "放到别的组合 = 那份配置专用的条目，不会与当前组合互相影响。");
     }
 
-    ImGui::SetNextItemWidth(190 * dpiScale);
+    ImGui::SetNextItemWidth(ew(170));
     ImGui::InputInt("FSMId (-1=不限)", &editor.fsmId, 1, 100);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("动作状态机 ID；同一招在不同 FSM 层(target)里 id 可能重号");
     ImGui::SameLine();
     if (editor.advOpen) {
-        ImGui::SetNextItemWidth(180 * dpiScale);
+        ImGui::SetNextItemWidth(ew(170));
         ImGui::InputInt("FSMTarget (-1=不限)", &editor.fsmTarget, 1, 100);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("FSM 目标层。填上可避免跨层 id 重号误触发；-1 = 只比 FSMId（旧行为）");
@@ -1653,7 +1661,7 @@ void App::DrawEditorDetached() {
     }
     ImGui::SameLine();
     ImGui::BeginDisabled(editor.lmtAny);
-    ImGui::SetNextItemWidth(300 * dpiScale);
+    ImGui::SetNextItemWidth(ew(320));
     ImGui::InputTextWithHint("LMT", "如 49265,49256；空或 -1 = 不限",
                              editor.lmtBuf, sizeof(editor.lmtBuf));
     ImGui::EndDisabled();
@@ -1691,7 +1699,7 @@ void App::DrawEditorDetached() {
         ImGui::Indent();
 
         // ---- 动作组 ----
-        ImGui::SetNextItemWidth(340 * dpiScale);
+        ImGui::SetNextItemWidth(ew(320));
         ImGui::InputTextWithHint("动作组(可空)", "如：气刃4（同一招多帧填同组，只响一次）", editor.groupBuf, sizeof(editor.groupBuf));
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("动作组：把同一招的多个触发条目（判定帧、升刃前后的帧等）填相同组名，"
@@ -1732,7 +1740,7 @@ void App::DrawEditorDetached() {
     jItems.push_back("自定义");
 
     const int prevPreset = editor.judgePreset;
-    ImGui::SetNextItemWidth(430 * dpiScale);
+    ImGui::SetNextItemWidth(ew(360));
     ImGui::Combo("##judgemode", &editor.judgePreset, jItems.data(), (int)jItems.size());
     if (editor.judgePreset != prevPreset) {
         // 换预设时保留用户已经挑好的 wav（按行号对应），其余按预设重填
@@ -1828,18 +1836,18 @@ void App::DrawEditorDetached() {
                             if (ti > 0) {
                                 int oi = t.orBefore ? 1 : 0;
                                 static const char* lk[] = { "并且", "或者" };
-                                ImGui::SetNextItemWidth(75 * dpiScale);
+                                ImGui::SetNextItemWidth(ew(70));
                                 ImGui::Combo("##lk", &oi, lk, 2);
                                 t.orBefore = (oi == 1);
                                 ImGui::SameLine();
                             }
-                            ImGui::SetNextItemWidth(125 * dpiScale);
+                            ImGui::SetNextItemWidth(ew(110));
                             ImGui::Combo("##var", &t.var, kCondVarLabels, kCondVarCount);
                             ImGui::SameLine();
-                            ImGui::SetNextItemWidth(110 * dpiScale);
+                            ImGui::SetNextItemWidth(ew(95));
                             ImGui::Combo("##op", &t.op, kCondOpLabels, kCondOpCount);
                             ImGui::SameLine();
-                            ImGui::SetNextItemWidth(95 * dpiScale);
+                            ImGui::SetNextItemWidth(ew(85));
                             ImGui::InputInt("##val", &t.val, 0, 0);
                             if (r.terms.size() > 1) {
                                 ImGui::SameLine();
@@ -1866,7 +1874,10 @@ void App::DrawEditorDetached() {
                 for (size_t i = 0; i < r.pool.size(); ++i) {
                     ImGui::PushID((int)i);
                     SoundSpec& sp = r.pool[i];
-                    ImGui::TextColored(C_AMBER, "%s", sp.path.c_str());
+                    const float cw = ImGui::GetContentRegionAvail().x - 170 * dpiScale;
+                    ImGui::TextColored(C_AMBER, "%s", ClipText(sp.path, cw > 60 ? cw : 60).c_str());
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("%s", sp.path.c_str());
                     ImGui::SameLine(0, 10);
                     if (ImGui::Button("试听")) PlaySoundPreview(sp.path, sp.vol, sp.delay);
                     ImGui::SameLine(0, 8);
@@ -1942,8 +1953,13 @@ void App::DrawEditorDetached() {
                 ImGui::PushID((int)i);
                 SoundSpec& sp = pool[i];
 
-                ImGui::TextColored(C_AMBER, "%s", sp.path.c_str());
+                // 行1：路径（窄窗口自动截断，悬停看完整路径）+ F/固定/移除/换/试听
+                const float pathW = ImGui::GetContentRegionAvail().x - 160 * dpiScale;
+                const std::string pathTxt = ClipText(sp.path, pathW > 60 ? pathW : 60);
+                ImGui::TextColored(C_AMBER, "%s", pathTxt.c_str());
                 if (sp.fixed) { ImGui::SameLine(0, 4); ImGui::TextColored(C_RED, "F"); }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("%s", sp.path.c_str());
                 ImGui::SameLine(0, 10);
                 if (ImGui::Checkbox("固定##fx", &sp.fixed)) {}
                 if (ImGui::IsItemHovered())
@@ -1962,18 +1978,23 @@ void App::DrawEditorDetached() {
                 }
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("替换这条音效的文件（路径），固定/延时/音量不变");
+                ImGui::SameLine(0, 8);
+                if (ImGui::Button("试听")) PlaySoundPreview(sp.path, sp.vol, sp.delay);
 
+                // 行2：延时 / 音量（缩进，避免与行1按钮挤在一条线上被裁掉）
+                ImGui::Indent();
                 ImGui::AlignTextToFramePadding();
                 ImGui::TextDisabled("延时");
                 ImGui::SameLine();
                 MacSlider("##delay", sp.delay, 0, 2000, 120 * dpiScale, " ms", dpiScale);
-                ImGui::SameLine(0, 12);
+                ImGui::SameLine(0, 16);
                 ImGui::AlignTextToFramePadding();
                 ImGui::TextDisabled("音量");
                 ImGui::SameLine();
                 MacSlider("##vol", sp.vol, 0, 100, 90 * dpiScale, "", dpiScale);
-                ImGui::SameLine(0, 14);
-                if (ImGui::Button("试听")) PlaySoundPreview(sp.path, sp.vol, sp.delay);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("0..100，相对插件总音量（工具栏「音量」）再乘百分比");
+                ImGui::Unindent();
 
                 ImGui::PopID();
             }
@@ -1985,7 +2006,7 @@ void App::DrawEditorDetached() {
             snprintf(addId, sizeof(addId), "##add%d", p);
             snprintf(b1, sizeof(b1), "添加##p%d", p);
             snprintf(b2, sizeof(b2), "浏览...##p%d", p);
-            ImGui::SetNextItemWidth(300 * dpiScale);
+            ImGui::SetNextItemWidth(ew(320));
             ImGui::InputTextWithHint(addId, "路径，如 sounds/xxx.wav", newPath[p], sizeof(newPath[p]));
             ImGui::SameLine();
             if (ImGui::Button(b1)) {
