@@ -6,7 +6,7 @@
 #include <atomic>
 
 // 当前 GUI 版本（显示在界面上、也用于和仓库最新版比较）
-inline constexpr const char* kWseGuiVersion = "2.31";
+inline constexpr const char* kWseGuiVersion = "2.32";
 
 // 条件表达式里的一项：<变量> <比较符> <数值>
 struct CondTerm {
@@ -109,6 +109,10 @@ struct App {
     // 在独立编辑窗口（第二个 ImGui 上下文）中绘制编辑内容；由 main.cpp 的编辑窗渲染循环调用
     void DrawEditorDetached();
     void DrawFsmWindow();   // FSM/LMT 查询（独立原生窗口里绘制）
+    // 一条音效的编辑卡片（路径/固定/延时/音量/冷却/播放期间不重复/试听）。
+    // 普通音效池和判定条件池共用，保证两边的可调项完全一致。
+    // 返回 0=无操作 1=请求换文件 2=请求移除（调用方负责改容器）。
+    int DrawSoundSpecRow(SoundSpec& sp, int index, float dpiScale);
     void OpenEditorNew(int weapon, int fsm, int lmt, const std::string& name);
     void OpenEditorNew(int weapon);
     void OpenEditorEdit(int index);

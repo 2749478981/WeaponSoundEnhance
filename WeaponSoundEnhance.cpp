@@ -139,6 +139,20 @@ inline std::int32_t ReadI32(std::uintptr_t a, std::int32_t dflt)
     return v;
 }
 
+inline std::uintptr_t ReadPtr(std::uintptr_t a)
+{
+    std::uintptr_t v = 0;
+    if (IsReadable(a, sizeof(v))) std::memcpy(&v, reinterpret_cast<const void*>(a), sizeof(v));
+    return v;
+}
+
+inline float ReadF32(std::uintptr_t a, float dflt)
+{
+    float v = dflt;
+    if (IsReadable(a, 4)) std::memcpy(&v, reinterpret_cast<const void*>(a), 4);
+    return v;
+}
+
 } // namespace mem
 
 // ===========================================================================
@@ -198,6 +212,28 @@ std::int32_t   gQuestDmg     = -1;
 std::uintptr_t gQuestRoot    = 0x14500ED30ULL;
 std::uint32_t  gQuestDmgOff  = 0x17088;
 
+// ---------------------------------------------------------------------------
+//  命中信号（零 hook）：直接盯**怪物血量**有没有掉。
+//
+//  为什么不能只靠任务累计伤害：
+//    QuestDmg 在部分场景/版本里读不到（对象没建、换区重置、练习场），
+//    一旦读成 -1，条件里的 dmg>0 就永远不成立 —— 玩家的判定模式就"没生效"。
+//    血量信号更原始，只要有怪在场就有值。
+//
+//  为什么不担心队友：dmg 条件只看"相对开窗基准掉了多少"。多人时队友的伤害
+//  确实会让血量掉 —— 但那是**开窗这几十~几百毫秒内**、且判定点通常紧贴自己
+//  出伤时刻的信号，作为"我这一下打中没有"的近似比 QuestDmg 读不到要好得多。
+//  两个信号取"任一有效"：QuestDmg 能读就优先用它（最干净），读不到才用血量。
+// ---------------------------------------------------------------------------
+float          gMonHp      = -1.0f;   // 当前血量（-1 = 未知）
+float          gMonHpMax   = -1.0f;   // 血量上限（用来判掉练习场木桩）
+std::uintptr_t gMonPtr     = 0;       // 被盯的怪物实体
+float          gMonHpLimit = 1000000.0f;  // 上限保护：读到离谱值说明链子错了
+std::uint32_t  gMonHpPtrOff = 0x7670; // *(monster + off) = 生命对象
+std::uint32_t  gMonHpMaxOff = 0x60;   // 上限
+std::uint32_t  gMonHpCurOff = 0x64;   // 当前值
+std::uint32_t  gHitMonOff   = 0x12958;// *(entity + off) = 武器最近命中的怪物
+
 void Refresh()
 {
     gLmt = -1; gFsm = -1; gWeapon = -1; gWeaponId = -1; gGauge = -1;
@@ -245,6 +281,31 @@ void Refresh()
         if (mem::ReadVal(entity + gGaugePtrOff, sp) && sp) {
             const int v = mem::ReadI32(sp + gChargeValOff, -1);
             if (v >= 0 && v <= 3) gCharge = v;
+        }
+    }
+
+    // ---- 被盯怪物的血量：命中判定的备用信号 ----
+    // 0x12958 是"武器最近命中的怪"，命中过就一直保留（粘滞），所以它只用来
+    // **锁定目标**，掉血与否仍靠逐帧比较血量。目标为空/血量对象读不出时，
+    // 保留上一帧的值不动（宁可用稍旧的血量，也别把信号打成"不可用"）。
+    {
+        const std::uintptr_t mon = mem::ReadPtr(entity + gHitMonOff);
+        if (mon != gMonPtr) {
+            gMonPtr   = mon;
+            gMonHp    = -1.0f;
+            gMonHpMax = -1.0f;
+        }
+        if (mon) {
+            const std::uintptr_t hp = mem::ReadPtr(mon + gMonHpPtrOff);
+            if (hp) {
+                const float mx = mem::ReadF32(hp + gMonHpMaxOff, -1.0f);
+                const float cu = mem::ReadF32(hp + gMonHpCurOff, -1.0f);
+                // 上限超出保护范围 = 读到别的结构了（换区/加载中的垃圾值），丢弃
+                if (mx >= 0.0f && mx <= gMonHpLimit) {
+                    gMonHpMax = mx;
+                    gMonHp    = cu;
+                }
+            }
         }
     }
 }
@@ -631,6 +692,12 @@ std::uint32_t gFsmTargetOff = 0x6274;          // FSM target 值偏移
 std::uintptr_t gQuestRoot   = 0x14500ED30ULL;  // 任务结构入口
 std::uint32_t gQuestDmgOff  = 0x17088;         // 任务累计伤害（只含你自己）
 
+// 命中判定的备用信号：怪物血量（QuestDmg 读不到时用）
+std::uint32_t gHitMonOff   = 0x12958;   // *(entity + off) = 武器最近命中的怪物
+std::uint32_t gMonHpPtrOff = 0x7670;    // *(monster + off) = 生命对象
+std::uint32_t gMonHpMaxOff = 0x60;      // float 上限
+std::uint32_t gMonHpCurOff = 0x64;      // float 当前值
+
 volatile int g_useChatEcho = 1;
 volatile int g_useChatCommands = 1;
 volatile int g_hotkeysEnabled = 1;   // 启用/关闭热键（ini [WeaponSoundEnhance] Hotkeys=0）
@@ -913,6 +980,12 @@ struct Attack
     int           winDmg0   = 0;       // 计伤起点
     int           baseAura  = -1;
     int           baseCharge= -1;
+    // 血量信号基准（QuestDmg 读不到时用它判 dmg）
+    float         winHp0    = -1.0f;   // 计伤起点的怪物血量
+    int           hpDmg     = 0;       // 窗口内累计掉血（血量信号口径，向上取整）
+#ifdef WSE_PROBE_NO_MAIN
+    int           lastDmg   = -99999;  // 测试探针用：记录最后一次算出的 V_DMG
+#endif
 
     bool HasSounds() const
     {
@@ -1465,6 +1538,10 @@ void LoadConfig()
                 else if (key == "FsmTargetOff") gFsmTargetOff = (std::uint32_t)ParseHex(val);
                 else if (key == "QuestRoot")    gQuestRoot    = ParseHex(val);
                 else if (key == "QuestDmgOff")  gQuestDmgOff  = (std::uint32_t)ParseHex(val);
+                else if (key == "HitMonsterOff")   gHitMonOff   = (std::uint32_t)ParseHex(val);
+                else if (key == "MonHealthPtrOff") gMonHpPtrOff = (std::uint32_t)ParseHex(val);
+                else if (key == "MonHealthMaxOff") gMonHpMaxOff = (std::uint32_t)ParseHex(val);
+                else if (key == "MonHealthCurOff") gMonHpCurOff = (std::uint32_t)ParseHex(val);
             } else if (section == "Hotkeys") {
                 if (key == "ModifierKey") gModifierKey = std::atoi(val.c_str());
                 else if (key == "ReloadKey")   gReloadKey   = std::atoi(val.c_str());
@@ -1605,6 +1682,10 @@ void LoadConfig()
     player::gFsmTargetOff = gFsmTargetOff;
     player::gQuestRoot    = gQuestRoot;
     player::gQuestDmgOff  = gQuestDmgOff;
+    player::gHitMonOff    = gHitMonOff;
+    player::gMonHpPtrOff  = gMonHpPtrOff;
+    player::gMonHpMaxOff  = gMonHpMaxOff;
+    player::gMonHpCurOff  = gMonHpCurOff;
 
     // 组装 per-weapon combos 结构（按出现顺序记 order）
     g_combos.clear();
@@ -2166,10 +2247,12 @@ void TickJudgeEntry(Attack& e, bool match, std::uint64_t nowMs,
             e.dmgHits    = 0;
             e.baseTaken  = (e.checkDelayMs <= 0);
             e.winDmg0    = player::gQuestDmg;
+            e.winHp0     = player::gMonHp;
+            e.hpDmg      = 0;
             e.baseAura   = player::gGauge;
             e.baseCharge = player::gCharge;
-            LogD("%s judge: window open (dmg0=%d aura=%d charge=%d)",
-                 tag.c_str(), e.winDmg0, e.baseAura, e.baseCharge);
+            LogD("%s judge: window open (dmg0=%d hp0=%.1f aura=%d charge=%d)",
+                 tag.c_str(), e.winDmg0, e.winHp0, e.baseAura, e.baseCharge);
         }
         e.inMatch = match;
         return;
@@ -2182,11 +2265,43 @@ void TickJudgeEntry(Attack& e, bool match, std::uint64_t nowMs,
     if (!e.baseTaken && (int)el >= e.checkDelayMs) {
         e.baseTaken = true;
         e.winDmg0   = player::gQuestDmg;
+        e.winHp0    = player::gMonHp;
+        e.hpDmg     = 0;
     }
 
+    // ---- 窗口内掉血量（血量信号）----
+    // 只在开窗/重取基准之后累计；回血（换区回满、队友奶）只抬高基准，不计负数。
+    if (e.baseTaken && e.winHp0 >= 0.0f && player::gMonHp >= 0.0f) {
+        if (player::gMonHp < e.winHp0) {
+            // 血量比基准低 = 掉了这么多（同一只怪；换怪时 plugin 侧已把 gMonHp 重置为 -1）
+            const float drop = e.winHp0 - player::gMonHp;
+            const int   d    = (int)(drop + 0.5f);
+            if (d > e.hpDmg) e.hpDmg = d;
+        } else if (player::gMonHp > e.winHp0 + 0.5f) {
+            e.winHp0 = player::gMonHp;   // 回血：抬高基准，别把之后的正常掉血算漏
+            e.hpDmg  = 0;
+        }
+    }
+
+    // ---- dmg 变量：两个信号取"较大者" ----
+    //   ① QuestDmg（只记你自己的伤害，联机最干净）—— 能读出来时优先。
+    //   ② 怪物血量掉幅 —— QuestDmg 读不到（对象没建/换区/练习场）**或读到但一直
+    //      不动**（个别版本/场景里它不涨）时兜底。
+    //   这正是"自定义判定没生效"的根因：原先只认 QuestDmg，它一旦无效，
+    //   dmg 恒为 0，dmg>0 就永远不成立，判定模式的音效自然一声不响。
+    //   取 max 而不是"二选一"：有效的那路给出了伤害就用它，另一路是 0 也无妨。
+    const bool questOk = (player::gQuestDmg >= 0 && e.winDmg0 >= 0);
+    const bool hpOk    = (player::gMonHp >= 0.0f && e.winHp0 >= 0.0f &&
+                          player::gMonHpMax >= 10.0f);   // 木桩(1/1)不算真怪
     cond::Vars v{};
-    v.v[cond::V_DMG]     = (e.baseTaken && player::gQuestDmg >= 0 && e.winDmg0 >= 0)
-                             ? (player::gQuestDmg - e.winDmg0) : 0;
+    if (e.baseTaken) {
+        const int qd = questOk ? (player::gQuestDmg - e.winDmg0) : 0;
+        const int hd = hpOk ? e.hpDmg : 0;
+        v.v[cond::V_DMG] = (qd > hd) ? qd : hd;
+    } else {
+        v.v[cond::V_DMG] = 0;
+    }
+
     v.v[cond::V_AURA]    = player::gGauge;
     v.v[cond::V_DAURA]   = (player::gGauge >= 0 && e.baseAura >= 0)
                              ? (player::gGauge - e.baseAura) : 0;
@@ -2197,6 +2312,9 @@ void TickJudgeEntry(Attack& e, bool match, std::uint64_t nowMs,
     v.v[cond::V_FSM]     = player::gFsm;
     v.v[cond::V_FSMTGT]  = player::gFsmTarget;
     v.v[cond::V_MS]      = (int)el;
+#ifdef WSE_PROBE_NO_MAIN
+    e.lastDmg = v.v[cond::V_DMG];
+#endif
 
     // 窗口结算时机
     //   EndOn=time  (默认) : 只看 CheckTimeoutMs

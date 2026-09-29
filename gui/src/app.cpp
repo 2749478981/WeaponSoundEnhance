@@ -312,6 +312,41 @@ bool PrimaryButton(const char* label) {
     return r;
 }
 
+// 分组色按钮：同一类动作（配置 / 工具 / 组合 / 游戏）用同一种淡色调，
+// 一眼能分清楚，又不像主按钮那样抢眼。底色浅、文字用深色保证对比度。
+enum BtnTone { TONE_NEUTRAL, TONE_BLUE, TONE_GREEN, TONE_AMBER, TONE_RED, TONE_PURPLE };
+
+ImVec4 ToneColor(BtnTone t, bool hovered, bool active) {
+    auto mix = [](ImVec4 a, ImVec4 b, float k) {
+        return ImVec4(a.x + (b.x - a.x) * k, a.y + (b.y - a.y) * k,
+                      a.z + (b.z - a.z) * k, 1.0f);
+    };
+    ImVec4 base;
+    switch (t) {
+        case TONE_BLUE:   base = ImVec4(0.82f, 0.89f, 0.99f, 1.0f); break;
+        case TONE_GREEN:  base = ImVec4(0.83f, 0.94f, 0.85f, 1.0f); break;
+        case TONE_AMBER:  base = ImVec4(0.99f, 0.92f, 0.79f, 1.0f); break;
+        case TONE_RED:    base = ImVec4(0.99f, 0.85f, 0.84f, 1.0f); break;
+        case TONE_PURPLE: base = ImVec4(0.90f, 0.86f, 0.98f, 1.0f); break;
+        default:          base = ImVec4(0.93f, 0.93f, 0.94f, 1.0f); break;
+    }
+    const ImVec4 dark(0.16f, 0.17f, 0.19f, 1.0f);
+    if (active)  return mix(base, dark, 0.22f);
+    if (hovered) return mix(base, dark, 0.12f);
+    return base;
+}
+
+// 带色调的按钮；文字用深色（浅底按钮配白字会看不清）
+bool ToneButton(const char* label, BtnTone tone) {
+    ImGui::PushStyleColor(ImGuiCol_Button,        ToneColor(tone, false, false));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ToneColor(tone, true,  false));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ToneColor(tone, false, true));
+    ImGui::PushStyleColor(ImGuiCol_Text,          ImVec4(0.13f, 0.14f, 0.16f, 1.0f));
+    const bool r = ImGui::Button(label);
+    ImGui::PopStyleColor(4);
+    return r;
+}
+
 // macOS 风格滑杆：圆角轨道、左侧蓝色填充、圆点手柄、拖拽改值；
 // 数值在右侧固定宽度区域内右对齐显示（数字变多不会使后续元素偏移）。
 bool MacSlider(const char* id, int& v, int vmin, int vmax, float width, const char* suffix, float dpi) {
@@ -828,7 +863,9 @@ void App::DrawToolbar() {
     // 右侧文件操作按钮（右对齐）；左侧预留“保存成功”反馈区，避免按钮被挤动
     ImGuiStyle& sst = ImGui::GetStyle();
     float flashW = 84.0f * dpiScale;
-    const char* btns[] = { "打开 ini", "保存", "另存为" };
+    // 第一行：跟"配置读写"有关的都放一起 —— 打开/保存/另存为 + 让游戏重载配置。
+    // （重载就是"保存的下一步"，贴在一起顺手；启动游戏属于另一个场景，挪到动作行末尾。）
+    const char* btns[] = { "打开 ini", "保存", "另存为", "重载游戏配置" };
     float total = 0;
     for (auto b : btns) total += ImGui::CalcTextSize(b).x + sst.FramePadding.x * 2 + sst.ItemSpacing.x;
     total += flashW;
@@ -846,14 +883,22 @@ void App::DrawToolbar() {
         }
     }
     ImGui::SameLine();
-    if (ImGui::Button("打开 ini")) {
+    if (ToneButton("打开 ini", TONE_BLUE)) {
         std::string p = OpenFileDialogIni();
         if (!p.empty()) Load(p);
     }
     ImGui::SameLine();
     if (PrimaryButton("保存")) Save();
     ImGui::SameLine();
-    if (ImGui::Button("另存为")) SaveAs();
+    if (ToneButton("另存为", TONE_BLUE)) SaveAs();
+    ImGui::SameLine();
+    if (ToneButton("重载游戏配置", TONE_GREEN)) {
+        FsWrite(BaseDir() + "_wse_reload.flag", "1");   // 游戏内轮询到就立即重载（等价 /wse reload）
+        status = "已请求游戏重载配置（游戏内会立即生效；顺便把正在播的音效停掉）";
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("不用回游戏按 Ctrl+F5：写一个请求文件，游戏内插件轮询到就立刻重载。\n"
+                          "注意：GUI 里改完要先点【保存】，重载才是新内容。");
 
     ImGui::Separator();
 
@@ -885,25 +930,27 @@ void App::DrawToolbar() {
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("插件侧 Hotkeys=1：关闭后游戏内 Ctrl 组合热键全部失效（聊天框 /wse 指令不受影响）");
     ImGui::Spacing();   // 动作按钮另起一行：窄窗口也不会把右侧按钮推到看不见
-    if (ImGui::Button("FSM 查询")) fsmWinOpen = !fsmWinOpen;
+    // 工具组（蓝）：查询 / 共享 ID 库 / 旧版迁移
+    if (ToneButton("FSM 查询", TONE_BLUE)) fsmWinOpen = !fsmWinOpen;
     if (fitsOnLine("上传ID")) ImGui::SameLine();
-    if (ImGui::Button("上传ID")) idWinOpen = !idWinOpen;
+    if (ToneButton("上传ID", TONE_BLUE)) idWinOpen = !idWinOpen;
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("共享动作 ID 库：导出你的实测 FSM/LMT、导入别人的、提交到共享库、获取最新库");
     if (fitsOnLine("合并旧版ini")) ImGui::SameLine();
-    if (ImGui::Button("合并旧版ini")) MergeOldIni();
+    if (ToneButton("合并旧版ini", TONE_BLUE)) MergeOldIni();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("把旧版 ini 里的动作合并进来（不替换当前配置），换新版时不用重填");
+    // 组合组（紫）：导出 / 导入 / 打开音效目录
     if (fitsOnLine("导出组合")) ImGui::SameLine();
-    if (ImGui::Button("导出组合")) ExportComboCurrent();
+    if (ToneButton("导出组合", TONE_PURPLE)) ExportComboCurrent();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("把当前武器当前激活的组合导出为 zip 组合包（内含组合 txt + sounds\\ 音效），发给别人直接【导入】");
     if (fitsOnLine("导入组合")) ImGui::SameLine();
-    if (ImGui::Button("导入组合")) ImportComboFile();
+    if (ToneButton("导入组合", TONE_PURPLE)) ImportComboFile();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("导入别人分享的组合包（zip/txt/ini 都行，按条目去重合并；zip 里的音效会自动复制进本地）");
     if (fitsOnLine("打开 sounds\\")) ImGui::SameLine();
-    if (ImGui::Button("打开 sounds\\")) {
+    if (ToneButton("打开 sounds\\", TONE_PURPLE)) {
         // 数据目录下没有 sounds\ 但旧布局(与 DLL 同级)有 → 打开旧目录，避免用户找不到音效
         std::wstring sd = Utf8ToWide(BaseDir() + "sounds");
         std::wstring legacy = Utf8ToWide(ExeDir() + "sounds");
@@ -914,9 +961,18 @@ void App::DrawToolbar() {
         ShellExecuteW((HWND)hwnd, L"open", sd.c_str(), nullptr, nullptr, SW_SHOW);
     }
 
-    // ---- 启动游戏 / 让游戏内立即重载配置 / 停止正在播放的音效 ----
-    if (fitsOnLine("怪物猎人，启动！")) ImGui::SameLine();
-    if (ImGui::Button("怪物猎人，启动！")) {
+    // ---- 游戏组（绿）：停止音效 + 启动游戏，和"改配置"隔开一段 ----
+    if (fitsOnLine("停止音效")) ImGui::SameLine(0, 20);
+    if (ToneButton("停止音效", TONE_GREEN)) {
+        FsWrite(BaseDir() + "_wse_stop.flag", "1");     // 游戏内轮询到就停止所有正在播放的音效
+        status = "已请求停止游戏内正在播放的音效（等价 /wse stop）";
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("让游戏内的插件立刻停掉所有正在播放的音效（等价聊天框 /wse stop）");
+
+    // ---- 启动游戏：属于"玩游戏"那一档，不再和配置按钮挤一起，放最右边用琥珀色突出 ----
+    if (fitsOnLine("怪物猎人，启动！")) ImGui::SameLine(0, 12);
+    if (ToneButton("怪物猎人，启动！", TONE_AMBER)) {
         std::string gdir;
         if (FindGameDirFromSelf(gdir)) {
             // 已经在跑就把它切到前台，否则启动
@@ -939,21 +995,6 @@ void App::DrawToolbar() {
     }
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("直接启动《怪物猎人：世界》（游戏已在运行时则切到游戏窗口）");
-    if (fitsOnLine("重载游戏配置")) ImGui::SameLine();
-    if (ImGui::Button("重载游戏配置")) {
-        FsWrite(BaseDir() + "_wse_reload.flag", "1");   // 游戏内轮询到就立即重载（等价 /wse reload）
-        status = "已请求游戏重载配置（游戏内会立即生效；顺便把正在播的音效停掉）";
-    }
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("不用回游戏按 Ctrl+F5：写一个请求文件，游戏内插件轮询到就立刻重载。\n"
-                          "注意：GUI 里改完要先点【保存】，重载才是新内容。");
-    if (fitsOnLine("停止音效")) ImGui::SameLine();
-    if (ImGui::Button("停止音效")) {
-        FsWrite(BaseDir() + "_wse_stop.flag", "1");     // 游戏内轮询到就停止所有正在播放的音效
-        status = "已请求停止游戏内正在播放的音效（等价 /wse stop）";
-    }
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("让游戏内的插件立刻停掉所有正在播放的音效（等价聊天框 /wse stop）");
     // ---- 版本号 + 在线更新入口 ----
     // 空间不够时自动换行（窄窗口不再把右侧按钮裁掉）
     if (ImGui::GetContentRegionAvail().x > 210 * dpiScale) ImGui::SameLine(0, 16);
@@ -1675,6 +1716,95 @@ bool App::ApplyEditor() {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// 一条音效的完整编辑卡片（三行）：
+//    行1 路径 + F 标记 + 固定勾选 + 移除 + 换
+//    行2 延时（滑杆+数字）/ 音量（滑杆+数字）/ 试听
+//    行3 冷却(ms) / 播放期间不重复
+//  普通音效池（默认 / 刃时）和判定条件池共用这一个函数 —— 两边控件完全一致，
+//  不会出现"判定模式里加的音响没有延时、音量设置"这种差异。
+//  返回 0=无操作 1=请求换文件 2=请求移除（由调用方改容器，避免在遍历中动 vector）。
+// ---------------------------------------------------------------------------
+int App::DrawSoundSpecRow(SoundSpec& sp, int index, float dpiScale) {
+    if (index > 0) { ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing(); }
+
+    // 行1：路径（窄窗口自动截断，悬停看完整路径）+ F 标记 + 固定/移除/换
+    //     按钮占宽固定预留，路径按剩余宽度截断 —— 保证按钮永远点得到
+    const float pathW = ImGui::GetContentRegionAvail().x - 210 * dpiScale;
+    const std::string pathTxt = ClipText(sp.path, pathW > 60 ? pathW : 60);
+    ImGui::TextColored(C_AMBER, "%s", pathTxt.c_str());
+    if (sp.fixed) { ImGui::SameLine(0, 4); ImGui::TextColored(C_RED, "F"); }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", sp.path.c_str());
+    ImGui::SameLine(0, 10);
+    ImGui::Checkbox("固定##fx", &sp.fixed);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("固定：命中该动作时总是播放这条；同文件 400ms 内不重复");
+    ImGui::SameLine(0, 10);
+    int action = 0;
+    if (ImGui::Button("移除")) action = 2;
+    ImGui::SameLine(0, 8);
+    if (ImGui::Button("换")) action = 1;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("替换这条音效的文件（路径），固定/延时/音量不变");
+    if (action != 0) return action;   // 本帧到此为止，别在可能失效的引用上继续画
+
+    // 行2：延时 / 音量（缩进；试听也放这一行，行1 只留路径与按钮，避免拥挤点不到）
+    ImGui::Indent();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("延时");
+    ImGui::SameLine();
+    MacSlider("##delay", sp.delay, 0, 5000, 130 * dpiScale, " ms", dpiScale);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("拖动调延时（0..5000ms）；也可以在右边直接输入数字");
+    ImGui::SameLine(0, 6);
+    ImGui::SetNextItemWidth(74 * dpiScale);
+    if (ImGui::InputInt("##delaynum", &sp.delay, 0, 0)) {
+        if (sp.delay < 0) sp.delay = 0;
+        if (sp.delay > 5000) sp.delay = 5000;
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("手动输入延时（ms），上限 5000");
+    ImGui::SameLine(0, 14);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("音量");
+    ImGui::SameLine();
+    MacSlider("##vol", sp.vol, 0, 100, 80 * dpiScale, "", dpiScale);
+    ImGui::SameLine(0, 6);
+    ImGui::SetNextItemWidth(60 * dpiScale);
+    if (ImGui::InputInt("##volnum", &sp.vol, 0, 0)) {
+        if (sp.vol < 0) sp.vol = 0;
+        if (sp.vol > 100) sp.vol = 100;
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("0..100，相对插件总音量（工具栏「音量」）再乘百分比");
+    ImGui::SameLine(0, 14);
+    if (ImGui::Button("试听")) PlaySoundPreview(sp.path, sp.vol, sp.delay);
+
+    // 行3：重复触发控制（自身冷却 / 播放期间不重复）
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("冷却");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(74 * dpiScale);
+    if (ImGui::InputInt("##cd", &sp.cdMs, 0, 0)) {
+        if (sp.cdMs < 0) sp.cdMs = 0;
+        if (sp.cdMs > 60000) sp.cdMs = 60000;
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("这条音效自己的再触发冷却（ms）：这段时间内不再被重复触发。\n"
+                          "0 = 用默认（同一个文件 400ms 内不重复）");
+    ImGui::SameLine(0, 4);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("ms");
+    ImGui::SameLine(0, 16);
+    ImGui::Checkbox("播放期间不重复##pl", &sp.playLock);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("勾选后：这条音效正在播放（含延时等待）期间不会被再次触发，\n"
+                          "长音效连续派生时不会叠在一起");
+    ImGui::Unindent();
+    return 0;
+}
+
 void App::DrawEditorDetached() {
     if (!editor.open) return;
     // 延迟添加/移除：在控件提交前先应用"上一帧请求"的变更，避免在 ImGui 提交
@@ -1854,6 +1984,15 @@ void App::DrawEditorDetached() {
         // =====================================================================
     static int pendingCondRm = -1;                                  // 待删除的条件行
     static std::vector<std::pair<int, std::string>> pendingCondAdd; // 待加入的音效
+    // 判定池里"移除某条音效"同样延迟到下一帧：同帧内改正在遍历的 vector 会踩内存。
+    static int pendingCondSpecRm = -1, pendingCondSpecIdx = -1;
+    if (pendingCondSpecRm >= 0 && pendingCondSpecRm < (int)editor.conds.size() &&
+        pendingCondSpecIdx >= 0 &&
+        pendingCondSpecIdx < (int)editor.conds[pendingCondSpecRm].pool.size()) {
+        auto& pl = editor.conds[pendingCondSpecRm].pool;
+        pl.erase(pl.begin() + pendingCondSpecIdx);
+    }
+    pendingCondSpecRm = pendingCondSpecIdx = -1;
     if (pendingCondRm >= 0 && pendingCondRm < (int)editor.conds.size())
         editor.conds.erase(editor.conds.begin() + pendingCondRm);
     pendingCondRm = -1;
@@ -2008,35 +2147,43 @@ void App::DrawEditorDetached() {
 
                 for (size_t i = 0; i < r.pool.size(); ++i) {
                     ImGui::PushID((int)i);
-                    SoundSpec& sp = r.pool[i];
-                    if (i > 0) { ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing(); }
-                    const float cw = ImGui::GetContentRegionAvail().x - 170 * dpiScale;
-                    ImGui::TextColored(C_AMBER, "%s", ClipText(sp.path, cw > 60 ? cw : 60).c_str());
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("%s", sp.path.c_str());
-                    ImGui::SameLine(0, 10);
-                    if (ImGui::Button("试听")) PlaySoundPreview(sp.path, sp.vol, sp.delay);
-                    ImGui::SameLine(0, 8);
-                    if (ImGui::Button("换")) {
+                    // 判定池里的音效和普通池完全同权：延时/音量/固定/冷却/播放期间不重复/试听
+                    // 全都有，走的就是同一个渲染函数。
+                    const int act = DrawSoundSpecRow(r.pool[i], (int)i, dpiScale);
+                    ImGui::PopID();
+                    if (act == 1) {                        // 换
                         const std::string rel = PickSoundFile();
-                        if (!rel.empty()) sp.path = rel;   // 只换文件，保留延时/音量
-                    }
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("替换这条音效的文件（路径），延迟/音量/固定不变");
-                    ImGui::SameLine(0, 8);
-                    if (ImGui::Button("移除")) {
-                        r.pool.erase(r.pool.begin() + i);
-                        ImGui::PopID();
+                        if (!rel.empty()) r.pool[i].path = rel;   // 只换文件，保留延时/音量
+                    } else if (act == 2) {                 // 移除（下一帧真正生效）
+                        pendingCondSpecRm = ci;
+                        pendingCondSpecIdx = (int)i;
                         break;
                     }
-                    ImGui::PopID();
                 }
                 if (r.pool.empty()) ImGui::TextDisabled("(未添加音效)");
-                if (ImGui::Button("浏览...")) {
-                    std::vector<SoundSpec> tmp;
-                    if (BrowseSounds(tmp) > 0)
-                        for (size_t k = 0; k < tmp.size(); ++k)
-                            pendingCondAdd.push_back(std::make_pair(ci, tmp[k].path));
+                // 添加行也和普通音效池保持一致：手输路径 + 添加 / 浏览...
+                {
+                    static char condNewPath[512] = {};
+                    char addId[32];
+                    snprintf(addId, sizeof(addId), "##condadd%d", ci);
+                    ImGui::SetNextItemWidth(ew(240));
+                    ImGui::InputTextWithHint(addId, "路径，如 sounds/xxx.wav",
+                                             condNewPath, sizeof(condNewPath));
+                    ImGui::SameLine();
+                    if (ImGui::Button("添加##condspec")) {
+                        const std::string s = Trim(condNewPath);
+                        if (!s.empty()) {
+                            pendingCondAdd.push_back(std::make_pair(ci, s));
+                            condNewPath[0] = 0;
+                        }
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("浏览...")) {
+                        std::vector<SoundSpec> tmp;
+                        if (BrowseSounds(tmp) > 0)
+                            for (size_t k = 0; k < tmp.size(); ++k)
+                                pendingCondAdd.push_back(std::make_pair(ci, tmp[k].path));
+                    }
                 }
                 ImGui::Unindent();
             }
@@ -2087,97 +2234,18 @@ void App::DrawEditorDetached() {
 
             for (size_t i = 0; i < pool.size(); ++i) {
                 ImGui::PushID((int)i);
-                SoundSpec& sp = pool[i];
-
-                // 每条音效之间用分隔线隔开，避免挤成一坨
-                if (i > 0) {
-                    ImGui::Spacing();
-                    ImGui::Separator();
-                    ImGui::Spacing();
-                }
-
-                // 行1：路径（窄窗口自动截断，悬停看完整路径）+ F/固定/移除/换
-                //     按钮占宽固定预留，路径按剩余宽度截断 —— 保证按钮永远点得到
-                const float pathW = ImGui::GetContentRegionAvail().x - 210 * dpiScale;
-                const std::string pathTxt = ClipText(sp.path, pathW > 60 ? pathW : 60);
-                ImGui::TextColored(C_AMBER, "%s", pathTxt.c_str());
-                if (sp.fixed) { ImGui::SameLine(0, 4); ImGui::TextColored(C_RED, "F"); }
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("%s", sp.path.c_str());
-                ImGui::SameLine(0, 10);
-                if (ImGui::Checkbox("固定##fx", &sp.fixed)) {}
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("固定：命中该动作时总是播放这条；同文件 400ms 内不重复");
-                ImGui::SameLine(0, 10);
-                if (ImGui::Button("移除")) {
+                // 与判定池共用同一个渲染函数：普通音效有的设置（延时/音量/固定/
+                // 冷却/播放期间不重复/试听）判定音效也全都有，两边控件保持一致。
+                const int act = DrawSoundSpecRow(pool[i], (int)i, dpiScale);
+                ImGui::PopID();
+                if (act == 1) {                        // 换
+                    const std::string rel = PickSoundFile();
+                    if (!rel.empty()) pool[i].path = rel;   // 只换文件，保留 固定/延时/音量
+                } else if (act == 2) {                 // 移除（下一帧真正生效）
                     pendingRmPool = p;
                     pendingRmIndex = (int)i;
-                    ImGui::PopID();
                     break;
                 }
-                ImGui::SameLine(0, 8);
-                if (ImGui::Button("换")) {
-                    const std::string rel = PickSoundFile();
-                    if (!rel.empty()) sp.path = rel;   // 只换文件，保留 固定/延时/音量
-                }
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("替换这条音效的文件（路径），固定/延时/音量不变");
-
-                // 行2：延时 / 音量（缩进；试听也放这一行，行1 只留路径与按钮，避免拥挤点不到）
-                ImGui::Indent();
-                ImGui::AlignTextToFramePadding();
-                ImGui::TextDisabled("延时");
-                ImGui::SameLine();
-                MacSlider("##delay", sp.delay, 0, 5000, 130 * dpiScale, " ms", dpiScale);
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("拖动调延时（0..5000ms）；也可以在右边直接输入数字");
-                ImGui::SameLine(0, 6);
-                ImGui::SetNextItemWidth(74 * dpiScale);
-                if (ImGui::InputInt("##delaynum", &sp.delay, 0, 0)) {
-                    if (sp.delay < 0) sp.delay = 0;
-                    if (sp.delay > 5000) sp.delay = 5000;
-                }
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("手动输入延时（ms），上限 5000");
-                ImGui::SameLine(0, 14);
-                ImGui::AlignTextToFramePadding();
-                ImGui::TextDisabled("音量");
-                ImGui::SameLine();
-                MacSlider("##vol", sp.vol, 0, 100, 80 * dpiScale, "", dpiScale);
-                ImGui::SameLine(0, 6);
-                ImGui::SetNextItemWidth(60 * dpiScale);
-                if (ImGui::InputInt("##volnum", &sp.vol, 0, 0)) {
-                    if (sp.vol < 0) sp.vol = 0;
-                    if (sp.vol > 100) sp.vol = 100;
-                }
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("0..100，相对插件总音量（工具栏「音量」）再乘百分比");
-                ImGui::SameLine(0, 14);
-                if (ImGui::Button("试听")) PlaySoundPreview(sp.path, sp.vol, sp.delay);
-
-                // 行3：重复触发控制（自身冷却 / 播放期间不重复）
-                ImGui::AlignTextToFramePadding();
-                ImGui::TextDisabled("冷却");
-                ImGui::SameLine();
-                ImGui::SetNextItemWidth(74 * dpiScale);
-                if (ImGui::InputInt("##cd", &sp.cdMs, 0, 0)) {
-                    if (sp.cdMs < 0) sp.cdMs = 0;
-                    if (sp.cdMs > 60000) sp.cdMs = 60000;
-                }
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("这条音效自己的再触发冷却（ms）：这段时间内不再被重复触发。\n"
-                                      "0 = 用默认（同一个文件 400ms 内不重复）");
-                ImGui::SameLine(0, 4);
-                ImGui::AlignTextToFramePadding();
-                ImGui::TextDisabled("ms");
-                ImGui::SameLine(0, 16);
-                if (ImGui::Checkbox("播放期间不重复##pl", &sp.playLock)) {}
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("勾选后：这条音效正在播放（含延时等待）期间不会被再次触发，\n"
-                                      "长音效连续派生时不会叠在一起");
-                ImGui::Unindent();
-
-                ImGui::PopID();
             }
             if (pool.empty())
                 ImGui::TextDisabled(ls ? "(空：命中时无音效，未配置的刃时回退默认音效)"
