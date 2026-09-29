@@ -838,7 +838,7 @@ static void ReportCrash(DWORD code, void* addr) {
     char msg[512];
     snprintf(msg, sizeof(msg),
              "编辑器发生访问违例(code=0x%08X, RVA=0x%llX)，已拦截避免闪退。\n"
-             "请把本窗口截图，或 %s 发给我。",
+             "详细信息已写入：%s",
              (unsigned)code, (unsigned long long)rva, path);
     MessageBoxA(nullptr, msg, "Sonar GUI", MB_ICONERROR);
 }

@@ -4,17 +4,23 @@ $headers = @{ Authorization = "Bearer $token"; Accept = 'application/vnd.github+
 $root = 'D:\mod3\MHW plugins\dll\WeaponSoundEnhance'
 $tag = $env:REL_TAG
 
-# 从 RELEASE.md 取 v2.26 段落作为 release 正文
+# 从 RELEASE.md 取对应版本的段落作为 release 正文
+# 标题形如 "# Sonar v2.33" 或历史遗留的 "# WeaponSoundEnhance v2.32"
 $lines = [System.IO.File]::ReadAllLines("$root\RELEASE.md", [System.Text.Encoding]::UTF8)
 $body = ''
 $cur = $null
 foreach ($l in $lines) {
-    if ($l -match '^# WeaponSoundEnhance v(2\.\d+)') { $cur = $Matches[1] }
+    if ($l -match '^# (?:Sonar|WeaponSoundEnhance) v(2\.\d+)') { $cur = $Matches[1] }
     if ($cur -eq $env:REL_VER) { $body += $l + "`n" }
 }
-if (-not $body) { $body = 'WeaponSoundEnhance ' + $env:REL_TAG }
+if (-not $body) { $body = 'Sonar ' + $env:REL_TAG }
 
-$payload = @{ tag_name = $tag; name = "WeaponSoundEnhance $tag"; body = $body; draft = $false; prerelease = $false } | ConvertTo-Json -Depth 4 -Compress
+# 关键：手工拼 JSON 并用 UTF-8 字节发送。
+# ConvertTo-Json 会把中文转义成 \uXXXX，某些路径下会变成 '?'（仓库描述就被写坏过一次）。
+$payload = '{"tag_name":' + (ConvertTo-Json $tag -Compress) +
+           ',"name":' + (ConvertTo-Json ("Sonar " + $tag) -Compress) +
+           ',"body":' + (ConvertTo-Json $body -Compress) +
+           ',"draft":false,"prerelease":false}'
 $json = [System.Text.Encoding]::UTF8.GetBytes($payload)
 $rel = $null
 for ($i = 1; $i -le 4; $i++) {
