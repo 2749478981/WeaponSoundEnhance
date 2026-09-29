@@ -1470,6 +1470,13 @@ void App::DrawStatus() {
 }
 
 void App::OpenEditorNew(int weapon, int fsm, int lmt, const std::string& name) {
+    // 已经有一个「新增条目」窗口开着 → 只把它弹到最前，不要清掉用户正在填的内容
+    if (editor.open) {
+        mRaiseEditor = true;
+        status = editor.isNew ? "「新增条目」窗口已打开，已切到该窗口"
+                              : "编辑窗口已打开，已切到该窗口";
+        return;
+    }
     editor = Editor{};
     editor.open = true;
     mRaiseEditor = true;   // 让编辑窗置顶（重新点「新增条目」时也回到最前）
@@ -1948,6 +1955,7 @@ void App::DrawEditorDetached() {
                 for (size_t i = 0; i < r.pool.size(); ++i) {
                     ImGui::PushID((int)i);
                     SoundSpec& sp = r.pool[i];
+                    if (i > 0) { ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing(); }
                     const float cw = ImGui::GetContentRegionAvail().x - 170 * dpiScale;
                     ImGui::TextColored(C_AMBER, "%s", ClipText(sp.path, cw > 60 ? cw : 60).c_str());
                     if (ImGui::IsItemHovered())
@@ -2026,6 +2034,13 @@ void App::DrawEditorDetached() {
             for (size_t i = 0; i < pool.size(); ++i) {
                 ImGui::PushID((int)i);
                 SoundSpec& sp = pool[i];
+
+                // 每条音效之间用分隔线隔开，避免挤成一坨
+                if (i > 0) {
+                    ImGui::Spacing();
+                    ImGui::Separator();
+                    ImGui::Spacing();
+                }
 
                 // 行1：路径（窄窗口自动截断，悬停看完整路径）+ F/固定/移除/换
                 //     按钮占宽固定预留，路径按剩余宽度截断 —— 保证按钮永远点得到
