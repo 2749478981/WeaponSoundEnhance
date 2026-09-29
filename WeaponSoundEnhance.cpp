@@ -502,7 +502,7 @@ struct Engine
 
     // Copy PCM with per-sound gain, then hand to a worker thread. Returns true
     // once the copy was accepted; the voice cap is enforced inside the worker.
-    bool Play(const Wav& w, float volume, unsigned delayMs = 0)
+    bool Play(const Wav& w, float volume, unsigned delayMs = 0, unsigned* durMs = nullptr)
     {
         if (!w.valid || w.data.empty()) { mLastHr = E_INVALIDARG; return false; }
         if (w.bitsPer != 16) { mLastHr = E_INVALIDARG; return false; }
@@ -518,6 +518,11 @@ struct Engine
         ctx->rate = w.sampleRate;
         ctx->bits = w.bitsPer;
         ctx->delayMs = delayMs;
+        if (durMs) {
+            const unsigned ch = ctx->channels ? ctx->channels : 1;
+            const unsigned rate = ctx->rate ? ctx->rate : 44100;
+            *durMs = (unsigned)((ctx->samples.size() / ch) * 1000ull / rate);
+        }
 
         HANDLE th = ::CreateThread(nullptr, 0, &PlayWorker_Host, ctx, 0, nullptr);
         if (!th) { delete ctx; mLastHr = E_OUTOFMEMORY; return false; }
@@ -817,6 +822,8 @@ struct SoundSpec
     int delay = 0;    // ms to wait before playback
     int vol = 100;    // 0..100, 100 = no extra gain beyond master volume
     bool fixed = false; // F flag: always plays when its pool is hit
+    int  cdMs = 0;      // C<ms> flag: 自身再触发冷却（0 = 用默认 400ms）
+    bool playLock = false; // P flag: 播放期间(含延时)不再被重复触发
     bool plain = true;  // pure legacy token (no |d|v|F) -> SoundDelay/SoundVol apply
 };
 
@@ -945,7 +952,9 @@ std::vector<std::pair<std::string, audio::Wav>> gCache;
 
 // Per-file replay cooldown (random AND fixed layer), ms: stops the same sound
 // file from stacking on itself across duplicate trigger instants/entries.
-std::vector<std::pair<std::string, std::uint64_t>> soundCooldown;
+// 每个音效文件的运行状态：上次触发时间 + 预计播放结束时间（用于 C<ms> 冷却 / P 播放锁）
+struct SoundFileRt { std::string key; std::uint64_t lastMs = 0; std::uint64_t playingUntilMs = 0; };
+std::vector<SoundFileRt> soundCooldown;
 const int kSoundCooldownMs = 400;
 
 // Action-group state: entries sharing one Group= name belong to a single
@@ -1065,22 +1074,36 @@ void ParseSoundSpec(const std::string& token, SoundSpec& sp)
         sp.plain = false;
         sp.delay = parts[1].empty() ? 0 : std::atoi(parts[1].c_str());
         if (sp.delay < 0) sp.delay = 0;
+        if (sp.delay > 5000) sp.delay = 5000;
         int v = parts[2].empty() ? 100 : std::atoi(parts[2].c_str());
         sp.vol = v < 0 ? 0 : (v > 100 ? 100 : v);
         std::string flags = ToLower(parts[3]);
         sp.fixed = flags.find('f') != std::string::npos;
+        sp.playLock = flags.find('p') != std::string::npos;
+        {
+            const std::size_t cp = flags.find('c');
+            if (cp != std::string::npos) {
+                int n = 0; std::size_t i = cp + 1;
+                while (i < flags.size() && flags[i] >= '0' && flags[i] <= '9') { n = n * 10 + (flags[i] - '0'); ++i; }
+                if (n < 0) n = 0;
+                if (n > 60000) n = 60000;
+                sp.cdMs = n;
+            }
+        }
     }
     // parts.size() == 2 / 3 without flags: accept path|delay|vol too
     else if (parts.size() == 3) {
         sp.plain = false;
         sp.delay = parts[1].empty() ? 0 : std::atoi(parts[1].c_str());
         if (sp.delay < 0) sp.delay = 0;
+        if (sp.delay > 5000) sp.delay = 5000;
         int v = parts[2].empty() ? 100 : std::atoi(parts[2].c_str());
         sp.vol = v < 0 ? 0 : (v > 100 ? 100 : v);
     } else if (parts.size() == 2) {
         sp.plain = false;
         sp.delay = parts[1].empty() ? 0 : std::atoi(parts[1].c_str());
         if (sp.delay < 0) sp.delay = 0;
+        if (sp.delay > 5000) sp.delay = 5000;
     }
 }
 
@@ -1957,25 +1980,50 @@ bool PollChatCommand()
 //  Trigger evaluation + playback selection
 // ===========================================================================
 
-// Per-file cooldown used by the random layer. Returns true when the file must
-// be skipped; refreshes/registers the timestamp exactly like v1 did.
-bool CooldownHit(const std::string& pathKey, std::uint64_t nowMs)
+// 取/建某个音效文件的运行状态
+SoundFileRt& FileRt(const std::string& pathKey)
 {
-    for (auto& sc : soundCooldown) {
-        if (sc.first == pathKey) {
-            const bool cool = (nowMs - sc.second) < (std::uint64_t)kSoundCooldownMs;
-            sc.second = nowMs;
-            return cool;
-        }
-    }
-    soundCooldown.push_back(std::make_pair(pathKey, nowMs));
+    for (auto& sc : soundCooldown)
+        if (sc.key == pathKey) return sc;
+    soundCooldown.push_back(SoundFileRt{pathKey, 0, 0});
     if (soundCooldown.size() > 64)
         soundCooldown.erase(soundCooldown.begin());
-    return false;
+    return soundCooldown.back();
+}
+
+// 是否该跳过这条音效：
+//  - P（playLock）：这条音效还在播放（含延时等待）时不再被重复触发
+//  - C<ms>：这条音效自己的再触发冷却；没写 C 时沿用默认 400ms 的同文件冷却
+bool SpecBlocked(const SoundSpec& sp, const std::string& pathKey, std::uint64_t nowMs)
+{
+    SoundFileRt& rt = FileRt(pathKey);
+    if (rt.lastMs == 0 && rt.playingUntilMs == 0) return false;   // 第一次触发
+    if (sp.playLock && nowMs < rt.playingUntilMs) return true;
+    if (sp.cdMs > 0) return (nowMs - rt.lastMs) < (std::uint64_t)sp.cdMs;
+    return (nowMs - rt.lastMs) < (std::uint64_t)kSoundCooldownMs;
+}
+
+// 播放成功后登记：上次触发时间 + 预计播完时间（延时 + 音频时长）
+void NotePlayed(const SoundSpec& sp, const std::string& pathKey, std::uint64_t nowMs, unsigned durMs)
+{
+    SoundFileRt& rt = FileRt(pathKey);
+    rt.lastMs = nowMs;
+    const std::uint64_t end = nowMs + (std::uint64_t)sp.delay + (std::uint64_t)durMs;
+    if (end > rt.playingUntilMs) rt.playingUntilMs = end;
+}
+
+// 兼容旧调用点：随机层用的「同文件冷却」
+bool CooldownHit(const std::string& pathKey, std::uint64_t nowMs)
+{
+    SoundFileRt& rt = FileRt(pathKey);
+    const bool cool = (nowMs - rt.lastMs) < (std::uint64_t)kSoundCooldownMs;
+    rt.lastMs = nowMs;
+    return cool;
 }
 
 // Play one spec. Caller already decided cooldown policy.
-bool PlayOne(const SoundSpec& sp, const std::string& what)
+// durMsOut 返回本次音频时长（ms），用于「播放期间不重复」策略
+bool PlayOne(const SoundSpec& sp, const std::string& what, unsigned* durMsOut = nullptr)
 {
     if (sp.path.empty()) return false;
     const std::wstring abs = AbsFor(sp.path);
@@ -1990,7 +2038,7 @@ bool PlayOne(const SoundSpec& sp, const std::string& what)
             wch = w->channels; wrate = w->sampleRate; wbits = w->bitsPer;
             wsz = w->data.size();
             const float volF = ((float)gVolumePct / 100.0f) * ((float)sp.vol / 100.0f);
-            ok = audio::g_audio.Play(*w, volF, (unsigned)sp.delay);
+            ok = audio::g_audio.Play(*w, volF, (unsigned)sp.delay, durMsOut);
         }
     }
     if (!hasWav) {
@@ -2027,15 +2075,20 @@ bool FirePool(const Pool* pool, std::mt19937& rng, std::uint64_t nowMs,
     bool any = false;
 
     // fixed layer: always plays per action, but the same file is still subject
-    // to the per-file cooldown so duplicate trigger entries cannot stack it.
+    // to the cooldown /「播放期间不重复」策略，避免重复触发条目把它叠起来。
     for (int i : fixedIdx) {
         const SoundSpec& sp = pool->specs[i];
         const std::string pathKey = strconv::ToUtf8(AbsFor(sp.path));
-        if (CooldownHit(pathKey, nowMs)) {
-            LogD("COOLDOWN(fixed): skip %s", pathKey.c_str());
+        if (SpecBlocked(sp, pathKey, nowMs)) {
+            LogD("SKIP(fixed): cooldown/playing %s (cd=%d lock=%d)", pathKey.c_str(),
+                 sp.cdMs, (int)sp.playLock);
             continue;
         }
-        if (PlayOne(sp, what)) any = true;
+        unsigned dur = 0;
+        if (PlayOne(sp, what, &dur)) {
+            NotePlayed(sp, pathKey, nowMs, dur);
+            any = true;
+        }
     }
 
     // random layer: one pick from the non-fixed set; without any fixed sounds
@@ -2049,8 +2102,9 @@ bool FirePool(const Pool* pool, std::mt19937& rng, std::uint64_t nowMs,
         for (int t = 0; t < n; ++t) {
             const SoundSpec& sp = pool->specs[randomIdx[(start + t) % n]];
             const std::string pathKey = strconv::ToUtf8(AbsFor(sp.path));
-            if (CooldownHit(pathKey, nowMs)) continue;
-            if (PlayOne(sp, what)) { any = true; break; }
+            if (SpecBlocked(sp, pathKey, nowMs)) continue;
+            unsigned dur = 0;
+            if (PlayOne(sp, what, &dur)) { NotePlayed(sp, pathKey, nowMs, dur); any = true; break; }
         }
         return any;
     }
@@ -2067,8 +2121,9 @@ bool FirePool(const Pool* pool, std::mt19937& rng, std::uint64_t nowMs,
     for (int t = 0; t < count; ++t) {
         const SoundSpec& sp = pool->specs[(start + t) % n];
         const std::string pathKey = strconv::ToUtf8(AbsFor(sp.path));
-        if (CooldownHit(pathKey, nowMs)) continue;
-        if (PlayOne(sp, what)) { any = true; break; }
+        if (SpecBlocked(sp, pathKey, nowMs)) continue;
+        unsigned dur = 0;
+        if (PlayOne(sp, what, &dur)) { NotePlayed(sp, pathKey, nowMs, dur); any = true; break; }
     }
     return any;
 }

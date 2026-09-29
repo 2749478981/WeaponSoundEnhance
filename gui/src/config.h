@@ -10,6 +10,8 @@ struct SoundSpec {
     int delay = 0;        // 播放延时(ms)
     int vol = 100;        // 0..100；100 = 相对主音量无额外调整
     bool fixed = false;   // |F 固定：命中该池时恒播；同池未固定者仍随机抽一条
+    int  cdMs = 0;        // |C<ms> 该音效自身的再触发冷却（0 = 用默认 400ms）
+    bool playLock = false;// |P 播放期间不再被重复触发（播放中/延时中都算）
 };
 
 // 一个音效组（默认音效或某刃时音效）

@@ -57,8 +57,20 @@ void ParseSpec(const std::string& token, SoundSpec& sp) {
         if (sp.delay < 0) sp.delay = 0;
         int v = parts[2].empty() ? 100 : std::atoi(parts[2].c_str());
         sp.vol = v < 0 ? 0 : (v > 100 ? 100 : v);
+        // 第 4 段是标志位：可组合 F(固定) / C<ms>(自身冷却) / P(播放中不重复)
         std::string fl = ToLower(parts[3]);
         sp.fixed = fl.find('f') != std::string::npos;
+        sp.playLock = fl.find('p') != std::string::npos;
+        {
+            const size_t cp = fl.find('c');
+            if (cp != std::string::npos) {
+                int n = 0; size_t i = cp + 1;
+                while (i < fl.size() && fl[i] >= '0' && fl[i] <= '9') { n = n * 10 + (fl[i] - '0'); ++i; }
+                if (n < 0) n = 0;
+                if (n > 60000) n = 60000;
+                sp.cdMs = n;
+            }
+        }
     } else if (parts.size() == 3) {
         sp.delay = parts[1].empty() ? 0 : std::atoi(parts[1].c_str());
         if (sp.delay < 0) sp.delay = 0;
@@ -369,11 +381,15 @@ bool LoadConfig(const std::string& path, Config& cfg) {
     return true;
 }
 
-// 一条音效的规范写法：默认属性且未固定 → 纯路径；否则 path|delay|vol[|F]
+// 一条音效的规范写法：默认属性且未固定/无冷却 → 纯路径；否则 path|delay|vol[|F][|C<ms>][|P]
 static std::string SpecToken(const SoundSpec& s) {
-    if (!s.fixed && s.delay == 0 && s.vol == 100) return s.path;
+    if (!s.fixed && s.delay == 0 && s.vol == 100 && s.cdMs == 0 && !s.playLock) return s.path;
     std::string t = s.path + "|" + std::to_string(s.delay) + "|" + std::to_string(s.vol);
-    if (s.fixed) t += "|F";
+    std::string flags;
+    if (s.fixed) flags += "F";
+    if (s.cdMs > 0) flags += "C" + std::to_string(s.cdMs);
+    if (s.playLock) flags += "P";
+    if (!flags.empty()) t += "|" + flags;
     return t;
 }
 

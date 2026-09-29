@@ -2021,14 +2021,51 @@ void App::DrawEditorDetached() {
                 ImGui::AlignTextToFramePadding();
                 ImGui::TextDisabled("延时");
                 ImGui::SameLine();
-                MacSlider("##delay", sp.delay, 0, 2000, 120 * dpiScale, " ms", dpiScale);
+                MacSlider("##delay", sp.delay, 0, 5000, 150 * dpiScale, " ms", dpiScale);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("拖动调延时（0..5000ms）；也可以在右边直接输入数字");
+                ImGui::SameLine(0, 6);
+                ImGui::SetNextItemWidth(78 * dpiScale);
+                if (ImGui::InputInt("##delaynum", &sp.delay, 10, 100)) {
+                    if (sp.delay < 0) sp.delay = 0;
+                    if (sp.delay > 5000) sp.delay = 5000;
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("手动输入延时（ms），上限 5000");
                 ImGui::SameLine(0, 16);
                 ImGui::AlignTextToFramePadding();
                 ImGui::TextDisabled("音量");
                 ImGui::SameLine();
                 MacSlider("##vol", sp.vol, 0, 100, 90 * dpiScale, "", dpiScale);
+                ImGui::SameLine(0, 6);
+                ImGui::SetNextItemWidth(64 * dpiScale);
+                if (ImGui::InputInt("##volnum", &sp.vol, 5, 10)) {
+                    if (sp.vol < 0) sp.vol = 0;
+                    if (sp.vol > 100) sp.vol = 100;
+                }
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("0..100，相对插件总音量（工具栏「音量」）再乘百分比");
+
+                // 行3：重复触发控制（自身冷却 / 播放期间不重复）
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextDisabled("冷却");
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(78 * dpiScale);
+                if (ImGui::InputInt("##cd", &sp.cdMs, 100, 500)) {
+                    if (sp.cdMs < 0) sp.cdMs = 0;
+                    if (sp.cdMs > 60000) sp.cdMs = 60000;
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("这条音效自己的再触发冷却（ms）：这段时间内不再被重复触发。\n"
+                                      "0 = 用默认（同一个文件 400ms 内不重复）");
+                ImGui::SameLine(0, 4);
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextDisabled("ms");
+                ImGui::SameLine(0, 16);
+                if (ImGui::Checkbox("播放期间不重复##pl", &sp.playLock)) {}
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("勾选后：这条音效正在播放（含延时等待）期间不会被再次触发，\n"
+                                      "长音效连续派生时不会叠在一起");
                 ImGui::Unindent();
 
                 ImGui::PopID();
@@ -2975,6 +3012,26 @@ void App::Draw() {
     // 编辑内容与 FSM/LMT 查询都放在独立原生窗口（main.cpp 各自的第二个/第三个 ImGui
     // 上下文）绘制：DrawEditorDetached / DrawFsmWindow 由那两个窗口的渲染循环调用。
     if (idWinOpen) DrawIdShareWindow();
+    // 更新包里若带了 ini：在（主线程）这里把内容“合并”进用户配置，而不是替换
+    if (mUpdIniPending) {
+        mUpdIniPending = false;
+        const std::string inc = BaseDir() + "_update_incoming.ini";
+        if (FsExists(inc)) {
+            if (!cfg.loaded || cfg.path.empty()) {
+                // 还没有配置：直接采用这份
+                Load(inc);
+                mUpdMsg += "；已采用更新包里的 ini";
+            } else {
+                const std::string before = std::to_string(cfg.entries.size());
+                MergeConfigFile(inc, false);   // 按条目去重合并，保留本地已有配置
+                Save();
+                mSaveFlash = 2.0f;
+                mUpdMsg += "；已把更新包 ini 合并进你的配置（条目 " + before + " → " +
+                           std::to_string(cfg.entries.size()) + "，未替换）";
+            }
+            DeleteFileW(Utf8ToWide(inc).c_str());
+        }
+    }
     DrawUpdateWindow();
     // 启动后自动查一次最新版（ini 里 UpdateCheck=0 可关）
     if (!mUpdAutoChecked) {
@@ -3083,7 +3140,17 @@ void App::StartInstallUpdate() {
             bool isGuiExe = false;
             if (name.rfind(kData, 0) == 0) {
                 std::string rel = name.substr(kData.size());
-                if (rel == "WeaponSoundEnhance.ini") continue;         // 永不覆盖用户配置
+                if (rel == "WeaponSoundEnhance.ini") {
+                    // 包里带了 ini：不直接覆盖，先落到临时文件，主线程再“合并”进用户配置
+                    std::size_t l2 = 0;
+                    void* b2 = mz_zip_reader_extract_to_heap(&z, i, &l2, 0);
+                    if (b2) {
+                        if (WriteWideFile(Utf8ToWide(dataDir + "_update_incoming.ini"), b2, l2))
+                            mUpdIniPending = true;
+                        mz_free(b2);
+                    }
+                    continue;
+                }
                 if (rel == "WeaponSoundEnhanceGUI.exe") { isGuiExe = true; rel = "WeaponSoundEnhanceGUI.new.exe"; }
                 dst = dataDir + rel;
             } else if (name.rfind(kPlug, 0) == 0) {

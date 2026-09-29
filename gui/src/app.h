@@ -6,7 +6,7 @@
 #include <atomic>
 
 // 当前 GUI 版本（显示在界面上、也用于和仓库最新版比较）
-inline constexpr const char* kWseGuiVersion = "2.26";
+inline constexpr const char* kWseGuiVersion = "2.27";
 
 // 条件表达式里的一项：<变量> <比较符> <数值>
 struct CondTerm {
@@ -87,6 +87,7 @@ struct App {
     int         mUpdProgress = 0;           // 0..100
     std::string mUpdTag, mUpdUrl, mUpdNotes, mUpdErr, mUpdMsg;
     bool        mUpdNeedRestart = false;
+    bool        mUpdIniPending = false;     // 更新包里带 ini → 等主线程合并进用户配置（不替换）
     bool        mUpdAutoChecked = false;
     std::string mUpdateProxy;                // ini: UpdateProxy=  (如 http://127.0.0.1:7897)
     int         mUpdateCheckEnabled = 1;     // ini: UpdateCheck=1
