@@ -191,6 +191,14 @@ struct JudgePreset {
     const char* note;
 };
 static const JudgePreset kPresets[] = {
+    // 最常用的一条：只要"这一下打出了伤害"就播。不限定武器/动作，任何招式都能用。
+    // 放在第一位 —— 想配"命中就响、落空不响"不用先学条件表达式。
+    { "造成伤害（命中/落空·任意武器）", -1, "", 0, 2500, 150,
+      { { "dmg>0", false, "命中" }, { nullptr, false, nullptr } },
+      "落空",
+      "只要这一下打出了伤害就播【命中】的音效；完全没打中则播【落空】的音效。"
+      "不限定武器和动作，任何武器的任何招式都能用。" },
+
     { "太刀 · 登龙 命中/落空", 3, "49326", 0, 2500, 150,
       { { "dmg>0", false, "命中" }, { nullptr, false, nullptr } },
       "落空",
@@ -208,7 +216,7 @@ static const JudgePreset kPresets[] = {
       "真蓄两段：第一段约 0.65 秒、伤害小，第二段约 1.7~2.1 秒、伤害大。"
       "计伤起点设在 1200ms 正好卡在两段中间，只认第二段。" },
 };
-static const int kPresetCount = 3;
+static const int kPresetCount = 4;
 
 void FillLmtBuf(char* buf, size_t n, const std::vector<int>& lmt) {
     std::string s;
@@ -1623,12 +1631,32 @@ void App::OpenEditorEdit(int index) {
         r.pool = c.pool.specs;
         editor.conds.push_back(std::move(r));
     }
-    // 认一下这条目是不是某个内置预设生成的（LMT + 条件表达式都对得上）
+    // 认一下这条目是不是某个内置预设生成的。
+    // 【必须同时比对 武器 + LMT + 三个时间参数 + 条件表达式】——
+    // 早先只比武器和表达式，"自定义"里默认种下的 dmg>0 恰好和
+    // 「太刀·登龙」完全一样，于是自定义条目一存一开就被认成登龙，
+    // 下拉框跳回预设、用户改的东西看起来"没保存"。
     editor.judgePreset = editor.conds.empty() ? 0 : (kPresetCount + 1);
     if (!editor.conds.empty()) {
+        // 条目实际的 LMT（空 = 不限）
+        std::string lmtNow;
+        if (!editor.lmtAny) {
+            for (size_t i = 0; i < editor.lmt.size(); ++i) {
+                if (i) lmtNow += ",";
+                lmtNow += std::to_string(editor.lmt[i]);
+            }
+        }
         for (int pi = 0; pi < kPresetCount; ++pi) {
             const JudgePreset& ps = kPresets[pi];
             if (ps.weapon != e.weaponType) continue;
+            // 时间参数与 LMT 也要一致，否则就是用户自己调过的 = 自定义
+            if (editor.checkDelayMs   != ps.delayMs)   continue;
+            if (editor.checkTimeoutMs != ps.timeoutMs) continue;
+            if (editor.checkOffsetMs  != ps.offsetMs)  continue;
+            std::string a3, b3;
+            for (const char* q = ps.lmt; q && *q; ++q) if (*q != ' ') a3 += *q;
+            for (char c2 : lmtNow) if (c2 != ' ') b3 += c2;
+            if (a3 != b3) continue;
             int n = 0; while (ps.conds[n].expr) ++n;
             if ((int)editor.conds.size() != n) continue;
             bool same = true;
@@ -2011,11 +2039,13 @@ void App::DrawEditorDetached() {
     std::vector<const char*> jItems;
     jItems.push_back("不判定");
     for (int i = 0; i < kPresetCount; ++i) jItems.push_back(kPresets[i].name);
-    jItems.push_back("自定义");
+    jItems.push_back("自定义（自己写条件）");
 
     const int prevPreset = editor.judgePreset;
     ImGui::SetNextItemWidth(ew(360));
     ImGui::Combo("##judgemode", &editor.judgePreset, jItems.data(), (int)jItems.size());
+    // 自定义下标 = kPresetCount + 1，保存/重开后按"武器+LMT+时间+表达式"整套比对，
+    // 只要有一项和预设不同就会被正确认成自定义（不会再被误认成登龙）。
     if (editor.judgePreset != prevPreset) {
         // 换预设时保留用户已经挑好的 wav（按行号对应），其余按预设重填
         std::vector<std::vector<SoundSpec>> keep;
@@ -2054,7 +2084,12 @@ void App::DrawEditorDetached() {
     if (editor.judgePreset > 0) {
         if (editor.judgePreset <= kPresetCount) {
             ImGui::TextWrapped("%s", kPresets[editor.judgePreset - 1].note);
-            ImGui::TextDisabled("动作和时间参数已按实测填好，只需要给不同情况选择你想要的wav文件即可。");
+            // 「造成伤害」不填动作（任意武器/任意招式），提示文案要跟着变，
+            // 否则会让人以为动作已经自动填好了。
+            if (kPresets[editor.judgePreset - 1].weapon < 0)
+                ImGui::TextDisabled("只填两个 wav 即可；动作照常在上面选（不限定武器时任意招式都生效）。");
+            else
+                ImGui::TextDisabled("动作和时间参数已按实测填好，只需要给不同情况选择你想要的wav文件即可。");
         }
         ImGui::Checkbox("高级设置", &editor.advanced);
         if (ImGui::IsItemHovered())
