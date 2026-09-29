@@ -917,78 +917,72 @@ void App::RecordHistory() {
 }
 
 void App::DrawToolbar() {
-    // macOS 红绿灯
-    ImVec2 p0 = ImGui::GetCursorScreenPos();
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    float r = 5.5f * dpiScale;
-    float y = p0.y + 10 * dpiScale;
-    // ---- 图标：优先用随附的绿色猫（icons/…），读不到就退回原来的三个圆点 ----
-    // 图标是 2048 的大图，这里只画成文字高度左右的小标；失败不影响任何功能。
-    bool drewIcon = false;
-    if (d3dDevice) {
-        // 数据目录优先，其次 exe 同目录（两种安装布局都照顾到）
-        static ID3D11ShaderResourceView* srv = nullptr;
-        static bool tried = false;
-        if (!tried) {
-            tried = true;
-            const std::wstring cands[] = {
-                Utf8ToWide(BaseDir() + "sonar_icon.png"),
-                Utf8ToWide(BaseDir() + "icons/sonar_icon.png"),
-                Utf8ToWide(ExeDir()  + "sonar_icon.png"),
-                Utf8ToWide(ExeDir()  + "icons/sonar_icon.png"),
-            };
-            for (const auto& c : cands) {
-                if (GetFileAttributesW(c.c_str()) == INVALID_FILE_ATTRIBUTES) continue;
-                srv = WseGetLogoTexture((ID3D11Device*)d3dDevice, c.c_str());
-                if (srv) break;
-            }
-        }
-        if (srv) {
-            const float side = ImGui::GetTextLineHeight() * 1.6f;
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 58 * dpiScale);
-            const ImVec2 ip = ImGui::GetCursorScreenPos();
-            // 图标底边与文字基线大致对齐（稍微上提一点，视觉居中）
-            ImGui::SetCursorScreenPos(ImVec2(ip.x, ip.y - (side - ImGui::GetTextLineHeight()) * 0.5f));
-            ImGui::Image((ImTextureID)(intptr_t)srv, ImVec2(side, side));
-            ImGui::SetCursorScreenPos(ImVec2(ip.x + side + 6 * dpiScale, ip.y));
-            drewIcon = true;
-        }
-    }
-    if (!drewIcon) {
-        float r = 5.0f * dpiScale;
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        dl->AddCircleFilled(ImVec2(p0.x + 13 * dpiScale, y), r, IM_COL32(255, 95, 87, 255));
-        dl->AddCircleFilled(ImVec2(p0.x + 31 * dpiScale, y), r, IM_COL32(254, 188, 46, 255));
-        dl->AddCircleFilled(ImVec2(p0.x + 49 * dpiScale, y), r, IM_COL32(40, 200, 64, 255));
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 62 * dpiScale);
-    }
-    ImGui::Text("Sonar");
-    ImGui::SameLine(0, 8);
-    ImGui::TextDisabled("怪物猎人：世界 动作音效 (15.23.00)");
+    // ---- 品牌头部：大图标 + Sonar 标题 + 一行副标题 ----
+    // 布局全部交给 ImGui 自己算（Image + SameLine + BeginGroup/EndGroup），
+    // 不手算光标 Y —— 手算和 Image/Dummy 的实际高度对不上时，后面的按钮会被
+    // 画到品牌区背后，表现为"整行按钮消失"。
+    const float brandIcon = 40.0f * dpiScale;
+    const float pad = 10 * dpiScale;
+    const float brandY0 = ImGui::GetCursorPosY();      // 品牌区起始 Y（后面算下一行用）
 
-    // 右侧文件操作按钮（右对齐）；左侧预留“保存成功”反馈区，避免按钮被挤动
-    ImGuiStyle& sst = ImGui::GetStyle();
-    float flashW = 84.0f * dpiScale;
-    // 第一行：跟"配置读写"有关的都放一起 —— 打开/保存/另存为 + 让游戏重载配置。
-    // （重载就是"保存的下一步"，贴在一起顺手；启动游戏属于另一个场景，挪到动作行末尾。）
-    const char* btns[] = { "打开 ini", "保存", "另存为", "重载游戏配置" };
-    float total = 0;
-    for (auto b : btns) total += ImGui::CalcTextSize(b).x + sst.FramePadding.x * 2 + sst.ItemSpacing.x;
-    total += flashW;
-    float x = ImGui::GetWindowContentRegionMax().x - total;
-    if (x > ImGui::GetCursorPosX()) ImGui::SetCursorPosX(x);
-    {
-        ImVec2 fp0 = ImGui::GetCursorScreenPos();
-        ImGui::Dummy(ImVec2(flashW, ImGui::GetTextLineHeight() + sst.FramePadding.y * 2.0f));
-        if (mSaveFlash > 0.0f) {
-            const char* t = "✓ 已保存";
-            float tw = ImGui::CalcTextSize(t).x;
-            ImGui::GetWindowDrawList()->AddText(
-                ImVec2(fp0.x + flashW - tw, fp0.y + sst.FramePadding.y),
-                ImGui::GetColorU32(C_GREEN), t);
+    // 一次加载，缓存住（三个窗口各有自己的设备，这里只用主窗口那台）
+    static ID3D11ShaderResourceView* srv = nullptr;
+    static bool triedLoad = false;
+    if (!triedLoad && d3dDevice) {
+        triedLoad = true;
+        const std::wstring cands[] = {
+            Utf8ToWide(BaseDir() + "sonar_icon.png"),
+            Utf8ToWide(BaseDir() + "icons/sonar_icon.png"),
+            Utf8ToWide(ExeDir()  + "sonar_icon.png"),
+            Utf8ToWide(ExeDir()  + "icons/sonar_icon.png"),
+        };
+        for (const auto& c : cands) {
+            if (GetFileAttributesW(c.c_str()) == INVALID_FILE_ATTRIBUTES) continue;
+            srv = WseGetLogoTexture((ID3D11Device*)d3dDevice, c.c_str());
+            if (srv) break;
         }
     }
-    ImGui::SameLine();
+
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + pad);
+    if (srv) {
+        ImGui::Image((ImTextureID)(intptr_t)srv, ImVec2(brandIcon, brandIcon));
+    } else {
+        // 没有图标时的兜底：画三个圆点占位（占位高度与图标一致，布局不变）
+        const ImVec2 ip = ImGui::GetCursorScreenPos();
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const float cy = ip.y + brandIcon * 0.5f;
+        const float rr = 5.0f * dpiScale;
+        dl->AddCircleFilled(ImVec2(ip.x + 10 * dpiScale, cy), rr, IM_COL32(255, 95, 87, 255));
+        dl->AddCircleFilled(ImVec2(ip.x + 28 * dpiScale, cy), rr, IM_COL32(254, 188, 46, 255));
+        dl->AddCircleFilled(ImVec2(ip.x + 46 * dpiScale, cy), rr, IM_COL32(40, 200, 64, 255));
+        ImGui::Dummy(ImVec2(brandIcon, brandIcon));
+    }
+
+    // 标题两行紧跟图标右侧：SameLine 之后用 BeginGroup 把两行文字当一个整体，
+    // 整体高度由 ImGui 记账，不用手算居中。
+    ImGui::SameLine(0, 12 * dpiScale);
+    ImGui::BeginGroup();
+    ImGui::TextColored(C_ACCENT, "Sonar");
+    ImGui::TextDisabled("怪物猎人：世界 动作音效  (15.23.00)");
+    ImGui::EndGroup();
+
+    // 品牌区到此结束。用一个占位 Dummy 把"品牌区高度"定死成图标高度，
+    // 之后 NewLine 换到下一行 —— ImGui 的换行基于已记账的行高，
+    // 只要品牌区这一行的高度 >= 图标，下一行就一定在它下面。
+    // （顺序很重要：Dummy 必须在 EndGroup 之后、NewLine 之前调用。）
+    ImGui::NewLine();
+
+    // 文件操作行：**左对齐**排在品牌区下面一行。
+    // 不再做右对齐 —— 右对齐要算"可用宽度 - 总宽"，一旦 ImGui 记住的窗口尺寸
+    // 和当前实际窗口不一致（改过分辨率/拖过窗口），算出的 X 就把整行推到窗口外，
+    // 表现是"这一行按钮整个消失"。左对齐没有这个风险，任何宽度下都看得见。
+    ImGuiStyle& sst = ImGui::GetStyle();
+    const float flashW = 84.0f * dpiScale;
+    if (mSaveFlash > 0.0f) {
+        const char* t = "✓ 已保存";
+        ImGui::TextColored(C_GREEN, "%s", t);
+        ImGui::SameLine(0, 10 * dpiScale);
+    }
     if (ToneButton("打开 ini", TONE_BLUE)) {
         std::string p = OpenFileDialogIni();
         if (!p.empty()) Load(p);
@@ -1010,9 +1004,12 @@ void App::DrawToolbar() {
 
     // 设置栏
     // 按钮行空间不够时自动换行（窄窗口不再把右侧按钮裁掉）
+    // 用 GetContentRegionAvail() 而不是 GetContentRegionMax()：后者取自 ImGui
+    // 记住的窗口大小，可能比当前真实窗口大很多，会让"放得下"的判断过于乐观，
+    // 结果按钮照旧被裁在窗口外。
     auto fitsOnLine = [&](const char* label) {
         const float need = ImGui::CalcTextSize(label).x + ImGui::GetStyle().FramePadding.x * 2.0f + ImGui::GetStyle().ItemSpacing.x;
-        return (ImGui::GetContentRegionMax().x - ImGui::GetCursorPosX()) >= need;
+        return ImGui::GetContentRegionAvail().x >= need;
     };
     bool en = cfg.global.enabled != 0;
     if (ImGui::Checkbox("总开关", &en)) { cfg.global.enabled = en ? 1 : 0; mDirty = true; }
@@ -1185,7 +1182,7 @@ void App::DrawWeaponTree() {
             const float need = ImGui::CalcTextSize(label).x +
                                ImGui::GetStyle().FramePadding.x * 2.0f +
                                ImGui::GetStyle().ItemSpacing.x;
-            return (ImGui::GetContentRegionMax().x - ImGui::GetCursorPosX()) >= need;
+            return ImGui::GetContentRegionAvail().x >= need;
         };
         ImGui::BeginDisabled(sel.empty());
         if (ImGui::SmallButton("改名")) ImGui::OpenPopup("##rencombo");
