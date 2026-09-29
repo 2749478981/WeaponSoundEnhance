@@ -1,5 +1,5 @@
 $token = $env:GH_TOKEN
-$owner = '2749478981'; $repo = 'WeaponSoundEnhance'; $proxy = 'http://127.0.0.1:7897'
+$owner = '2749478981'; $repo = 'sonar'; $proxy = 'http://127.0.0.1:7897'
 $headers = @{ Authorization = "Bearer $token"; Accept = 'application/vnd.github+json'; 'User-Agent' = 'wse-release-script' }
 $root = 'D:\mod3\MHW plugins\dll\WeaponSoundEnhance'
 $tag = $env:REL_TAG

@@ -9,12 +9,15 @@
 #include <thread>
 #include <mutex>
 #include <atomic>
+// D3D 头要在 miniz 之前包含：miniz.c 里会定义一批短名字的宏，
+// 之后再把 d3d11.h 拉进来就会撞上它的结构体成员（D3D11_VIDEO_COLOR_RGBA 的 R/G/B/A）。
+#include <windows.h>
+#include "logo.h"    // 界面图标（WIC 解 PNG -> D3D11 纹理）
 // zip 打包/解包（组合导出/导入用；miniz 单文件公有领域）
 #pragma warning(push)
 #pragma warning(disable: 4100 4201 4242 4244 4245 4267 4305 4324 4700 4701 4702 4706 4996 6011 6262 6387)
 #include "miniz.c"
 #pragma warning(pop)
-#include <windows.h>
 #include <shellapi.h>
 #include <commdlg.h>
 #include <mmsystem.h>
@@ -34,8 +37,9 @@
 #pragma comment(lib, "urlmon.lib")
 
 // 共享动作 ID 库：仓库里的 fsm_db.csv（“获取最新库”从这里下载）
+// 仓库已更名为 sonar（GitHub 对旧地址有 301 重定向，但直接用新名更可靠）
 static const wchar_t* const kSharedFsmDbUrl =
-    L"https://raw.githubusercontent.com/2749478981/WeaponSoundEnhance/main/fsm_db.csv";
+    L"https://raw.githubusercontent.com/2749478981/sonar/main/fsm_db.csv";
 // 提交入口：GitHub 新建 issue（把导出的 CSV 粘进去/附件即可）
 static const wchar_t* const kSubmitIssueUrl =
     L"https://github.com/2749478981/WeaponSoundEnhance/issues/new"
@@ -918,13 +922,49 @@ void App::DrawToolbar() {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     float r = 5.5f * dpiScale;
     float y = p0.y + 10 * dpiScale;
-    dl->AddCircleFilled(ImVec2(p0.x + 13 * dpiScale, y), r, IM_COL32(255, 95, 87, 255));
-    dl->AddCircleFilled(ImVec2(p0.x + 31 * dpiScale, y), r, IM_COL32(254, 188, 46, 255));
-    dl->AddCircleFilled(ImVec2(p0.x + 49 * dpiScale, y), r, IM_COL32(40, 200, 64, 255));
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 62 * dpiScale);
-    ImGui::Text("WeaponSoundEnhance");
+    // ---- 图标：优先用随附的绿色猫（icons/…），读不到就退回原来的三个圆点 ----
+    // 图标是 2048 的大图，这里只画成文字高度左右的小标；失败不影响任何功能。
+    bool drewIcon = false;
+    if (d3dDevice) {
+        // 数据目录优先，其次 exe 同目录（两种安装布局都照顾到）
+        static ID3D11ShaderResourceView* srv = nullptr;
+        static bool tried = false;
+        if (!tried) {
+            tried = true;
+            const std::wstring cands[] = {
+                Utf8ToWide(BaseDir() + "sonar_icon.png"),
+                Utf8ToWide(BaseDir() + "icons/sonar_icon.png"),
+                Utf8ToWide(ExeDir()  + "sonar_icon.png"),
+                Utf8ToWide(ExeDir()  + "icons/sonar_icon.png"),
+            };
+            for (const auto& c : cands) {
+                if (GetFileAttributesW(c.c_str()) == INVALID_FILE_ATTRIBUTES) continue;
+                srv = WseGetLogoTexture((ID3D11Device*)d3dDevice, c.c_str());
+                if (srv) break;
+            }
+        }
+        if (srv) {
+            const float side = ImGui::GetTextLineHeight() * 1.6f;
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 58 * dpiScale);
+            const ImVec2 ip = ImGui::GetCursorScreenPos();
+            // 图标底边与文字基线大致对齐（稍微上提一点，视觉居中）
+            ImGui::SetCursorScreenPos(ImVec2(ip.x, ip.y - (side - ImGui::GetTextLineHeight()) * 0.5f));
+            ImGui::Image((ImTextureID)(intptr_t)srv, ImVec2(side, side));
+            ImGui::SetCursorScreenPos(ImVec2(ip.x + side + 6 * dpiScale, ip.y));
+            drewIcon = true;
+        }
+    }
+    if (!drewIcon) {
+        float r = 5.0f * dpiScale;
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->AddCircleFilled(ImVec2(p0.x + 13 * dpiScale, y), r, IM_COL32(255, 95, 87, 255));
+        dl->AddCircleFilled(ImVec2(p0.x + 31 * dpiScale, y), r, IM_COL32(254, 188, 46, 255));
+        dl->AddCircleFilled(ImVec2(p0.x + 49 * dpiScale, y), r, IM_COL32(40, 200, 64, 255));
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 62 * dpiScale);
+    }
+    ImGui::Text("Sonar");
     ImGui::SameLine(0, 8);
-    ImGui::TextDisabled("武器音效配置工具 (15.23.00)");
+    ImGui::TextDisabled("怪物猎人：世界 动作音效 (15.23.00)");
 
     // 右侧文件操作按钮（右对齐）；左侧预留“保存成功”反馈区，避免按钮被挤动
     ImGuiStyle& sst = ImGui::GetStyle();
@@ -3175,8 +3215,8 @@ void App::ExportComboCurrent() {
     const std::string combo = ActiveCombo(w);
     const std::string comboName = combo.empty() ? "默认" : combo;
 
-    // 默认文件名：WeaponSoundEnhance_太刀_白刃流.zip（组合名里的非法字符换成 _）
-    std::string fname = "WeaponSoundEnhance_" + std::string(WeaponName(w)) + "_" + comboName;
+    // 默认文件名：Sonar_太刀_白刃流.zip（组合名里的非法字符换成 _）
+    std::string fname = "Sonar_" + std::string(WeaponName(w)) + "_" + comboName;
     for (auto& c : fname) {
         if (c == '<' || c == '>' || c == ':' || c == '"' || c == '/' || c == '\\' || c == '|' || c == '?' || c == '*')
             c = '_';
@@ -3323,7 +3363,7 @@ void App::Draw() {
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos);
     ImGui::SetNextWindowSize(vp->WorkSize);
-    ImGui::Begin("WeaponSoundEnhance 配置工具", nullptr,
+    ImGui::Begin("Sonar 配置工具", nullptr,
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                  ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
                  ImGuiWindowFlags_NoBringToFrontOnFocus);

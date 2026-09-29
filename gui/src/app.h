@@ -6,7 +6,7 @@
 #include <atomic>
 
 // 当前 GUI 版本（显示在界面上、也用于和仓库最新版比较）
-inline constexpr const char* kWseGuiVersion = "2.32";
+inline constexpr const char* kWseGuiVersion = "2.33";
 
 // 条件表达式里的一项：<变量> <比较符> <数值>
 struct CondTerm {
@@ -34,6 +34,10 @@ struct App {
     void* hwnd = nullptr;      // 主窗口 HWND
     void* editHwnd = nullptr;  // 独立编辑窗口 HWND（main.cpp 创建编辑窗口后赋值；文件对话框后用于把编辑窗口带回最前）
     float dpiScale = 1.0f;
+
+    // 主窗口那台 D3D11 设备（main.cpp 注入）——界面图标要建纹理。
+    // 为空时界面只是不画图标，功能不受影响。
+    void* d3dDevice = nullptr;
 
     Config cfg;
     GameReader game;

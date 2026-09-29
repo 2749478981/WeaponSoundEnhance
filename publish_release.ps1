@@ -10,7 +10,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $owner = '2749478981'
-$repo = 'WeaponSoundEnhance'
+$repo = 'sonar'
 $api = "https://api.github.com/repos/$owner/$repo"
 $headers = @{
     Authorization = "Bearer $Token"

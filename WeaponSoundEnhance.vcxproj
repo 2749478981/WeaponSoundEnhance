@@ -13,6 +13,9 @@
   <ItemGroup>
     <ClCompile Include="WeaponSoundEnhance.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="resource.rc" />
+  </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>16.0</VCProjectVersion>
     <ProjectGuid>{0B2C31A4-E5F6-4C9E-8A27-5D9B7C1C9B3A}</ProjectGuid>

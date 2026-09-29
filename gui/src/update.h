@@ -241,7 +241,8 @@ inline std::string JsonStr(const std::string& j, const std::string& key, size_t 
 inline Latest FetchLatest(const std::string& proxyUtf8, std::size_t notesMaxChars = 4000) {
     Latest r;
     const std::wstring host = L"api.github.com";
-    const std::wstring path = L"/repos/2749478981/WeaponSoundEnhance/releases/latest";
+    // 仓库已更名为 sonar（GitHub 会把旧地址 301 重定向过来，但 API 用新名最稳）
+    const std::wstring path = L"/repos/2749478981/sonar/releases/latest";
     std::string body, err;
     if (!HttpGetString(host, path, proxyUtf8, true, body, err)) {
         r.err = err;

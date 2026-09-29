@@ -41,6 +41,8 @@ Copy-IfExists (Join-Path $Root 'out\x64\Release\WeaponSoundEnhance.dll') $dist
 Copy-IfExists (Join-Path $Root 'gui\out\x64\Release\WeaponSoundEnhanceGUI.exe') $data
 Copy-IfExists (Join-Path $Root 'fsm_db.csv') $data
 Copy-IfExists (Join-Path $Root 'RELEASE.md') $data
+# Sonar logo shown next to the GUI title (optional: GUI falls back to dots if missing)
+Copy-IfExists (Join-Path $Root 'gui\sonar_icon.png') $data
 
 # config: shipped as *.ini.template so a release never overwrites the user's own ini
 Copy-IfExists (Join-Path $Root 'WeaponSoundEnhance.ini') $data

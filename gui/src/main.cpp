@@ -1,4 +1,5 @@
 #include "app.h"
+#include "logo.h"
 #include "imgui.h"
 #include "imgui_impl_win32.h"
 #include "imgui_impl_dx11.h"
@@ -839,7 +840,7 @@ static void ReportCrash(DWORD code, void* addr) {
              "编辑器发生访问违例(code=0x%08X, RVA=0x%llX)，已拦截避免闪退。\n"
              "请把本窗口截图，或 %s 发给我。",
              (unsigned)code, (unsigned long long)rva, path);
-    MessageBoxA(nullptr, msg, "WeaponSoundEnhance GUI", MB_ICONERROR);
+    MessageBoxA(nullptr, msg, "Sonar GUI", MB_ICONERROR);
 }
 #endif // _MSC_VER
 
@@ -863,7 +864,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     wc.hbrBackground = LightBrush();   // 拖动缩放时新露出区域由系统用浅色填充（否则是黑块）
     wc.lpszClassName = L"WeaponSoundEnhanceGUI";
     RegisterClassExW(&wc);
-    HWND hwnd = CreateWindowW(wc.lpszClassName, L"WeaponSoundEnhance 配置工具 (15.23.00)",
+    HWND hwnd = CreateWindowW(wc.lpszClassName, L"Sonar 配置工具 (15.23.00)",
                               WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, ww, wh,
                               nullptr, nullptr, wc.hInstance, nullptr);
 
@@ -914,6 +915,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     App app;
     app.hwnd = hwnd;
     app.dpiScale = dpiScale;
+    app.d3dDevice = g_pd3dDevice;   // 界面图标（绿色猫）要在这台设备上建纹理
     g_app = &app;   // 供窗口过程在拖动缩放的模态循环里即时重绘
     // 调试钩子：设置环境变量 WSE_OPEN_FSM=1 时启动即打开 FSM 查询独立窗口（用于冒烟/截图；不设置时无影响）
     char envBuf[16] = {};
@@ -1014,6 +1016,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext(g_mainCtx);
 
+    WseFreeLogoTextures();   // 界面图标的纹理（必须在设备释放前）
     CleanupDeviceD3D();
     DestroyWindow(hwnd);
     UnregisterClassW(wc.lpszClassName, wc.hInstance);

@@ -448,7 +448,7 @@ bool SaveConfig(const std::string& path, const Config& cfg) {
     std::string o;
     o += "; ============================================================================\r\n";
     o += ";  WeaponSoundEnhance.ini —— 武器音效拓展插件配置\r\n";
-    o += ";  (由 WeaponSoundEnhanceGUI 生成)\r\n";
+    o += ";  (由 Sonar GUI 生成)\r\n";
     o += ";  路径：本文件在 plugins\\WeaponSoundEnhance\\ 下（与 DLL 同目录的旧布局也兼容）；\r\n";
     o += ";        音效 wav 放在本文件同级的 sounds\\ 文件夹里（旧位置 plugins\\sounds\\ 仍自动兼容）。\r\n";
     o += ";\r\n";
@@ -594,7 +594,7 @@ bool BuildComboExportText(int weapon, const std::string& combo,
     outText.clear();
     outText = "\xEF\xBB\xBF";
     outText += "; ============================================================================\r\n";
-    outText += ";  WeaponSoundEnhance 组合导出 v1\r\n";
+    outText += ";  Sonar 组合导出 v1\r\n";
     outText += ";  武器: " + std::string(WeaponName(weapon)) + " (" + std::to_string(weapon) + ")\r\n";
     outText += ";  组合: " + (combo.empty() ? "默认" : combo) + "\r\n";
     outText += ";  导入：GUI 工具栏「导入组合」选择本文件（或它对应的 .zip），按条目去重合并。\r\n";

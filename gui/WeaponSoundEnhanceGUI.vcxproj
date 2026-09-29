@@ -97,6 +97,7 @@
     <ClCompile Include="src\config.cpp" />
     <ClCompile Include="src\game.cpp" />
     <ClCompile Include="src\fsmdb.cpp" />
+    <ClCompile Include="src\logo.cpp" />
     <ClCompile Include="third_party\imgui\imgui.cpp" />
     <ClCompile Include="third_party\imgui\imgui_draw.cpp" />
     <ClCompile Include="third_party\imgui\imgui_tables.cpp" />
@@ -110,6 +111,7 @@
     <ClInclude Include="src\game.h" />
     <ClInclude Include="src\fsmdb.h" />
     <ClInclude Include="src\fsutil.h" />
+    <ClInclude Include="src\logo.h" />
     <ClInclude Include="third_party\imgui\imgui.h" />
     <ClInclude Include="third_party\imgui\imgui_internal.h" />
     <ClInclude Include="third_party\imgui\imconfig.h" />
