@@ -6,7 +6,7 @@
 #include <atomic>
 
 // 当前 GUI 版本（显示在界面上、也用于和仓库最新版比较）
-inline constexpr const char* kWseGuiVersion = "2.30";
+inline constexpr const char* kWseGuiVersion = "2.31";
 
 // 条件表达式里的一项：<变量> <比较符> <数值>
 struct CondTerm {
@@ -102,6 +102,7 @@ struct App {
         std::string time;      // "HH:MM:SS"
     };
     std::vector<HistEntry> history;
+    bool histExpanded = false;   // 实时捕获历史：展开显示全部
 
     std::string status;
 

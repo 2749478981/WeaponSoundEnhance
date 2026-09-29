@@ -914,6 +914,46 @@ void App::DrawToolbar() {
         ShellExecuteW((HWND)hwnd, L"open", sd.c_str(), nullptr, nullptr, SW_SHOW);
     }
 
+    // ---- 启动游戏 / 让游戏内立即重载配置 / 停止正在播放的音效 ----
+    if (fitsOnLine("怪物猎人，启动！")) ImGui::SameLine();
+    if (ImGui::Button("怪物猎人，启动！")) {
+        std::string gdir;
+        if (FindGameDirFromSelf(gdir)) {
+            // 已经在跑就把它切到前台，否则启动
+            HWND h = FindWindowW(nullptr, L"MONSTER HUNTER: WORLD");
+            if (!h) h = FindWindowW(L"MonsterHunterWorld", nullptr);
+            if (h) {
+                ShowWindow(h, SW_RESTORE);
+                SetForegroundWindow(h);
+                status = "怪物猎人已在运行，已切换到游戏窗口";
+            } else {
+                const std::wstring exe = Utf8ToWide(gdir + "MonsterHunterWorld.exe");
+                HINSTANCE r = ShellExecuteW((HWND)hwnd, L"open", exe.c_str(), nullptr,
+                                            Utf8ToWide(gdir).c_str(), SW_SHOWNORMAL);
+                status = ((INT_PTR)r > 32) ? ("已启动怪物猎人：" + gdir + "MonsterHunterWorld.exe")
+                                           : ("启动失败，请手动运行 " + gdir + "MonsterHunterWorld.exe");
+            }
+        } else {
+            status = "找不到 MonsterHunterWorld.exe（GUI 需放在游戏的 nativePC\\plugins\\WeaponSoundEnhance\\ 下）";
+        }
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("直接启动《怪物猎人：世界》（游戏已在运行时则切到游戏窗口）");
+    if (fitsOnLine("重载游戏配置")) ImGui::SameLine();
+    if (ImGui::Button("重载游戏配置")) {
+        FsWrite(BaseDir() + "_wse_reload.flag", "1");   // 游戏内轮询到就立即重载（等价 /wse reload）
+        status = "已请求游戏重载配置（游戏内会立即生效；顺便把正在播的音效停掉）";
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("不用回游戏按 Ctrl+F5：写一个请求文件，游戏内插件轮询到就立刻重载。\n"
+                          "注意：GUI 里改完要先点【保存】，重载才是新内容。");
+    if (fitsOnLine("停止音效")) ImGui::SameLine();
+    if (ImGui::Button("停止音效")) {
+        FsWrite(BaseDir() + "_wse_stop.flag", "1");     // 游戏内轮询到就停止所有正在播放的音效
+        status = "已请求停止游戏内正在播放的音效（等价 /wse stop）";
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("让游戏内的插件立刻停掉所有正在播放的音效（等价聊天框 /wse stop）");
     // ---- 版本号 + 在线更新入口 ----
     // 空间不够时自动换行（窄窗口不再把右侧按钮裁掉）
     if (ImGui::GetContentRegionAvail().x > 210 * dpiScale) ImGui::SameLine(0, 16);
@@ -1139,12 +1179,15 @@ void App::DrawCapturePanel() {
     float gap = 1.0f * dpiScale;
     float cardW = ImGui::GetContentRegionAvail().x - 14.0f * dpiScale;   // 名称截断用（卡片内缩进留白）
     if (cardW < 40) cardW = 40;
+    // 「更早」可展开：展开后用可滚动子区列出全部历史
+    const bool histFull = histExpanded;
+    if (histFull) ImGui::BeginChild("##histfull", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
     int shown = 0;
     for (int i = (int)history.size() - 1; i >= 0; --i) {
         const HistEntry& h = history[i];
         float rowH = (h.fsm == 0) ? (lineH2 + 10.0f * dpiScale) : (cardH + gap + 8.0f * dpiScale);
         // 每次用“实际剩余高度”判断后再显示，避免估算误差累积导致溢出/滚动条
-        if (ImGui::GetContentRegionAvail().y - rowH < 2.0f * dpiScale) break;
+        if (!histFull && ImGui::GetContentRegionAvail().y - rowH < 2.0f * dpiScale) break;
         ImGui::PushID(i);
         if (h.fsm == 0) {
             std::string st = std::string("   ") + h.time + "  fsm 0 · 自由态";
@@ -1207,8 +1250,19 @@ void App::DrawCapturePanel() {
     }
     if (history.empty())
         ImGui::TextDisabled("(还没有捕获记录：进游戏做派生动作后回来查看)");
-    else if (shown < (int)history.size())
-        ImGui::TextDisabled("…（更早 %d 条未显示）", (int)history.size() - shown);
+    else if (histFull) {
+        ImGui::Separator();
+        if (ImGui::Button("收起历史")) histExpanded = false;
+        ImGui::SameLine();
+        ImGui::TextDisabled("共 %d 条", (int)history.size());
+    } else if (shown < (int)history.size()) {
+        char lbl[96];
+        snprintf(lbl, sizeof(lbl), "展开更早的 %d 条 ▼", (int)history.size() - shown);
+        if (ImGui::Button(lbl)) histExpanded = true;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("点开后用一个可滚动列表显示全部捕获记录");
+    }
+    if (histFull) ImGui::EndChild();
     ImGui::PopStyleVar();
 }
 

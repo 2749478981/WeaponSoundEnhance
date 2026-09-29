@@ -1830,6 +1830,7 @@ inline bool HandleWseCommand(const std::string& rest, bool& used)
     if (rest.empty()) {
         ShowMessage("WeaponSound OK");
     } else if (rest == "reload" || rest == "re") {
+        audio::StopAll();   // 重载前先停掉正在播放的音效，避免旧配置的声音继续响
         ReloadConfig();
         char msg[0x180] = {};
         _snprintf_s(msg, _TRUNCATE, "wse config reloaded (vol=%d)", (int)gVolumePct);
@@ -2268,6 +2269,25 @@ void TickJudgeEntry(Attack& e, bool match, std::uint64_t nowMs,
 //  Worker threads
 // ===========================================================================
 
+// GUI 按钮请求：数据目录里出现标记文件 → 立即重载配置 / 停止全部音效（处理完删掉标记）
+void HandleGuiRequests()
+{
+    const std::wstring reloadFlag = gDataDir + L"_wse_reload.flag";
+    const std::wstring stopFlag   = gDataDir + L"_wse_stop.flag";
+    if (::GetFileAttributesW(reloadFlag.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        ::DeleteFileW(reloadFlag.c_str());
+        audio::StopAll();
+        ReloadConfig();
+        Log("GUI request: reload done");
+        ShowMessage("wse reloaded (from GUI)", true);
+    }
+    if (::GetFileAttributesW(stopFlag.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        ::DeleteFileW(stopFlag.c_str());
+        audio::StopAll();
+        Log("GUI request: stop all sounds");
+    }
+}
+
 DWORD WINAPI WorkerProc(LPVOID)
 {
     while (::GetModuleHandleW(L"MonsterHunterWorld.exe") == nullptr &&
@@ -2295,6 +2315,7 @@ DWORD WINAPI WorkerProc(LPVOID)
         const int gauge = player::gGauge;
 
         PollChatCommand();
+        HandleGuiRequests();   // GUI 按钮写的标记文件 → 立即重载 / 停止音效
 
         const std::uint64_t nowMs = ::GetTickCount64();
         if (firstState || (nowMs - lastHeartbeat >= 4000)) {
