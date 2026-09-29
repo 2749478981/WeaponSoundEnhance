@@ -6,7 +6,7 @@
 #include <atomic>
 
 // 当前 GUI 版本（显示在界面上、也用于和仓库最新版比较）
-inline constexpr const char* kWseGuiVersion = "2.27";
+inline constexpr const char* kWseGuiVersion = "2.28";
 
 // 条件表达式里的一项：<变量> <比较符> <数值>
 struct CondTerm {
@@ -72,6 +72,7 @@ struct App {
         std::vector<CondRow> conds;
     } editor;
 
+    bool mRaiseEditor = false;   // 请求把编辑窗置顶（main.cpp 泵里执行）
     bool fsmWinOpen = false;   // 启动时不弹 FSM 查询窗（点工具栏「FSM 查询」再开）
     std::string mGameIni;      // 游戏实际读取的那份 ini（<游戏目录>\nativePC\plugins\WeaponSoundEnhance\...）
     bool idWinOpen = false;    // 共享动作 ID 库窗口（点工具栏「上传ID」打开）
@@ -109,6 +110,7 @@ struct App {
     void DrawFsmWindow();   // FSM/LMT 查询（独立原生窗口里绘制）
     void OpenEditorNew(int weapon, int fsm, int lmt, const std::string& name);
     void OpenEditorNew(int weapon);
+    void OpenEditorEdit(int index);
 
 private:
     unsigned long long mLastPoll = 0;
@@ -120,7 +122,6 @@ private:
     void DrawCapturePanel();
     void DrawEntries();
     void DrawStatus();
-    void OpenEditorEdit(int index);
     bool ApplyEditor();   // false = 输入有问题（例如 LMT 填了无法识别的项），不落地
     void DrawIdShareWindow();   // 共享动作 ID 库（上传/获取）
     void Save();

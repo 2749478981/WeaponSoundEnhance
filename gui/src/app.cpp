@@ -25,6 +25,7 @@
 #include <memory>
 #include <functional>
 #include <set>
+#include <algorithm>
 #include <map>
 
 #pragma comment(lib, "winmm.lib")
@@ -1264,16 +1265,52 @@ void App::DrawEntries() {
     if (avail.y < 80) avail.y = 80;
     ImGuiTableFlags tf = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                          ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY |
-                         ImGuiTableFlags_ScrollX | ImGuiTableFlags_SizingStretchProp;
+                         ImGuiTableFlags_ScrollX | ImGuiTableFlags_SizingStretchProp |
+                         ImGuiTableFlags_Sortable | ImGuiTableFlags_SortTristate;
     if (ImGui::BeginTable("entries", 6, tf, avail)) {
         ImGui::TableSetupScrollFreeze(0, 1);
-        ImGui::TableSetupColumn("名称", ImGuiTableColumnFlags_WidthStretch, 0.0f, 0);
+        // 列宽/排序都会被 ImGui 的 settings 记住（见 main.cpp 的 io.IniFilename），
+        // 下次打开保持你上次拖出来的宽度与排序方式。
+        ImGui::TableSetupColumn("名称", ImGuiTableColumnFlags_WidthStretch | ImGuiTableColumnFlags_PreferSortAscending |
+                                           ImGuiTableColumnFlags_DefaultSort, 2.0f, 0);
         ImGui::TableSetupColumn("武器", ImGuiTableColumnFlags_WidthFixed, 64 * dpiScale, 1);
         ImGui::TableSetupColumn("LMT", ImGuiTableColumnFlags_WidthFixed, 108 * dpiScale, 2);
         ImGui::TableSetupColumn("FSMId", ImGuiTableColumnFlags_WidthFixed, 70 * dpiScale, 3);
-        ImGui::TableSetupColumn("音效", ImGuiTableColumnFlags_WidthStretch, 0.0f, 4);
-        ImGui::TableSetupColumn("操作", ImGuiTableColumnFlags_WidthFixed, 180 * dpiScale, 5);
+        ImGui::TableSetupColumn("音效", ImGuiTableColumnFlags_WidthStretch, 1.0f, 4);
+        ImGui::TableSetupColumn("操作", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort, 180 * dpiScale, 5);
         ImGui::TableHeadersRow();
+
+        // 排序：按表头点选（名称/武器/LMT/FSMId）。没点排序时保持“加入顺序”。
+        if (ImGuiTableSortSpecs* ss = ImGui::TableGetSortSpecs()) {
+            if (ss->SpecsCount > 0) {
+                const ImGuiTableColumnSortSpecs& spec = ss->Specs[0];
+                const bool asc = (spec.SortDirection == ImGuiSortDirection_Ascending);
+                std::stable_sort(idx.begin(), idx.end(), [&](int a, int b) {
+                    const SoundEntry& x = cfg.entries[a];
+                    const SoundEntry& y = cfg.entries[b];
+                    int cmp = 0;
+                    switch (spec.ColumnIndex) {
+                    case 0: {   // 名称（空名用知识库名字兜底）
+                        std::string nx = x.name.empty() ? LookupFsmName(x.weaponType, x.fsmId, x.LmtAny()) : x.name;
+                        std::string ny = y.name.empty() ? LookupFsmName(y.weaponType, y.fsmId, y.LmtAny()) : y.name;
+                        cmp = nx.compare(ny);
+                        break;
+                    }
+                    case 1: cmp = x.weaponType - y.weaponType; break;
+                    case 2: {   // LMT：多个时取第一个
+                        const int lx = x.lmt.empty() ? -1 : x.lmt[0];
+                        const int ly = y.lmt.empty() ? -1 : y.lmt[0];
+                        cmp = lx - ly;
+                        break;
+                    }
+                    case 3: cmp = x.fsmId - y.fsmId; break;
+                    default: cmp = 0; break;
+                    }
+                    if (cmp == 0) cmp = a - b;          // 同键保持加入顺序
+                    return asc ? (cmp < 0) : (cmp > 0);
+                });
+            }
+        }
 
         for (int row = 0; row < (int)idx.size(); ++row) {
             const SoundEntry& e = cfg.entries[idx[row]];
@@ -1435,6 +1472,7 @@ void App::DrawStatus() {
 void App::OpenEditorNew(int weapon, int fsm, int lmt, const std::string& name) {
     editor = Editor{};
     editor.open = true;
+    mRaiseEditor = true;   // 让编辑窗置顶（重新点「新增条目」时也回到最前）
     editor.isNew = true;
     editor.index = -1;
     editor.weaponType = weapon;
@@ -1452,6 +1490,7 @@ void App::OpenEditorNew(int weapon) { OpenEditorNew(weapon, -1, -1, ""); }
 void App::OpenEditorEdit(int index) {
     editor = Editor{};
     editor.open = true;
+    mRaiseEditor = true;   // 让编辑窗置顶（重新点「新增条目」时也回到最前）
     editor.isNew = false;
     editor.index = index;
     const SoundEntry& e = cfg.entries[index];
@@ -1988,8 +2027,9 @@ void App::DrawEditorDetached() {
                 ImGui::PushID((int)i);
                 SoundSpec& sp = pool[i];
 
-                // 行1：路径（窄窗口自动截断，悬停看完整路径）+ F/固定/移除/换/试听
-                const float pathW = ImGui::GetContentRegionAvail().x - 160 * dpiScale;
+                // 行1：路径（窄窗口自动截断，悬停看完整路径）+ F/固定/移除/换
+                //     按钮占宽固定预留，路径按剩余宽度截断 —— 保证按钮永远点得到
+                const float pathW = ImGui::GetContentRegionAvail().x - 210 * dpiScale;
                 const std::string pathTxt = ClipText(sp.path, pathW > 60 ? pathW : 60);
                 ImGui::TextColored(C_AMBER, "%s", pathTxt.c_str());
                 if (sp.fixed) { ImGui::SameLine(0, 4); ImGui::TextColored(C_RED, "F"); }
@@ -2013,45 +2053,45 @@ void App::DrawEditorDetached() {
                 }
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("替换这条音效的文件（路径），固定/延时/音量不变");
-                ImGui::SameLine(0, 8);
-                if (ImGui::Button("试听")) PlaySoundPreview(sp.path, sp.vol, sp.delay);
 
-                // 行2：延时 / 音量（缩进，避免与行1按钮挤在一条线上被裁掉）
+                // 行2：延时 / 音量（缩进；试听也放这一行，行1 只留路径与按钮，避免拥挤点不到）
                 ImGui::Indent();
                 ImGui::AlignTextToFramePadding();
                 ImGui::TextDisabled("延时");
                 ImGui::SameLine();
-                MacSlider("##delay", sp.delay, 0, 5000, 150 * dpiScale, " ms", dpiScale);
+                MacSlider("##delay", sp.delay, 0, 5000, 130 * dpiScale, " ms", dpiScale);
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("拖动调延时（0..5000ms）；也可以在右边直接输入数字");
                 ImGui::SameLine(0, 6);
-                ImGui::SetNextItemWidth(78 * dpiScale);
-                if (ImGui::InputInt("##delaynum", &sp.delay, 10, 100)) {
+                ImGui::SetNextItemWidth(74 * dpiScale);
+                if (ImGui::InputInt("##delaynum", &sp.delay, 0, 0)) {
                     if (sp.delay < 0) sp.delay = 0;
                     if (sp.delay > 5000) sp.delay = 5000;
                 }
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("手动输入延时（ms），上限 5000");
-                ImGui::SameLine(0, 16);
+                ImGui::SameLine(0, 14);
                 ImGui::AlignTextToFramePadding();
                 ImGui::TextDisabled("音量");
                 ImGui::SameLine();
-                MacSlider("##vol", sp.vol, 0, 100, 90 * dpiScale, "", dpiScale);
+                MacSlider("##vol", sp.vol, 0, 100, 80 * dpiScale, "", dpiScale);
                 ImGui::SameLine(0, 6);
-                ImGui::SetNextItemWidth(64 * dpiScale);
-                if (ImGui::InputInt("##volnum", &sp.vol, 5, 10)) {
+                ImGui::SetNextItemWidth(60 * dpiScale);
+                if (ImGui::InputInt("##volnum", &sp.vol, 0, 0)) {
                     if (sp.vol < 0) sp.vol = 0;
                     if (sp.vol > 100) sp.vol = 100;
                 }
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("0..100，相对插件总音量（工具栏「音量」）再乘百分比");
+                ImGui::SameLine(0, 14);
+                if (ImGui::Button("试听")) PlaySoundPreview(sp.path, sp.vol, sp.delay);
 
                 // 行3：重复触发控制（自身冷却 / 播放期间不重复）
                 ImGui::AlignTextToFramePadding();
                 ImGui::TextDisabled("冷却");
                 ImGui::SameLine();
-                ImGui::SetNextItemWidth(78 * dpiScale);
-                if (ImGui::InputInt("##cd", &sp.cdMs, 100, 500)) {
+                ImGui::SetNextItemWidth(74 * dpiScale);
+                if (ImGui::InputInt("##cd", &sp.cdMs, 0, 0)) {
                     if (sp.cdMs < 0) sp.cdMs = 0;
                     if (sp.cdMs > 60000) sp.cdMs = 60000;
                 }

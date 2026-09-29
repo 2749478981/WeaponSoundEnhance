@@ -6,6 +6,7 @@
 #include <windows.h>
 #include <cstdio>
 #include <cstring>
+#include <cstdarg>
 
 // 应用图标资源 ID（见 resource.rc）
 #ifndef IDI_APP
@@ -137,6 +138,20 @@ static void KillBlackOnResizeFsm() {
     RenderFsmFrame(*g_app, clear);
     g_noVsyncPresent = false;
     g_paintingNow = false;
+}
+
+// 界面状态持久化：窗口大小/表格列宽/折叠状态都交给 ImGui 的 settings 文件记住，
+// 下次启动保持上次拖出来的列宽与排序方式（放在 exe 同目录）。
+static char g_iniFileMain[512] = {};
+static char g_iniFileEdit[512] = {};
+static char g_iniFileFsm[512] = {};
+static void SetupUiSettingsFiles(const char* dirUtf8) {
+    std::string d = dirUtf8 ? dirUtf8 : "";
+    if (d.empty()) d = ".";
+    if (d.back() != '\\' && d.back() != '/') d += "\\";
+    snprintf(g_iniFileMain, sizeof(g_iniFileMain), "%sWeaponSoundEnhance_GUI.ini", d.c_str());
+    snprintf(g_iniFileEdit, sizeof(g_iniFileEdit), "%sWeaponSoundEnhance_GUI_edit.ini", d.c_str());
+    snprintf(g_iniFileFsm, sizeof(g_iniFileFsm), "%sWeaponSoundEnhance_GUI_fsm.ini", d.c_str());
 }
 
 // 统一浅色主题（主窗与编辑窗套用同一份）
@@ -513,7 +528,8 @@ bool CreateEditorWindow(HINSTANCE hInstance, float dpiScale) {
     ImGui::SetCurrentContext(g_edCtx);
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    io.IniFilename = nullptr;
+    io.IniFilename = g_iniFileEdit;
+    io.IniSavingRate = 2.0f;
     LoadChineseFont(16.0f * dpiScale);
     ApplyLightStyle();
 
@@ -531,6 +547,7 @@ bool CreateEditorWindow(HINSTANCE hInstance, float dpiScale) {
 void CleanupEditor() {
     if (!g_edInit) return;
     ImGui::SetCurrentContext(g_edCtx);
+    if (g_edCtx) ImGui::SaveIniSettingsToDisk(g_iniFileEdit);
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext(g_edCtx);
@@ -618,7 +635,8 @@ bool CreateFsmWindow(HINSTANCE hInstance, float dpiScale) {
     ImGui::SetCurrentContext(g_fsCtx);
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    io.IniFilename = nullptr;
+    io.IniFilename = g_iniFileFsm;
+    io.IniSavingRate = 2.0f;
     LoadChineseFont(16.0f * dpiScale);
     ApplyLightStyle();
 
@@ -636,6 +654,7 @@ bool CreateFsmWindow(HINSTANCE hInstance, float dpiScale) {
 void CleanupFsm() {
     if (!g_fsInit) return;
     ImGui::SetCurrentContext(g_fsCtx);
+    if (g_fsCtx) ImGui::SaveIniSettingsToDisk(g_iniFileFsm);
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext(g_fsCtx);
@@ -661,7 +680,19 @@ static void*  g_crashAddr = nullptr;
 #endif
 
 // 渲染独立编辑窗口一帧的实际内容。抽成独立函数，便于在 MSVC 下用 SEH 包住。
+static void WseTrace(const char* fmt, ...) {
+    char en[8] = {};
+    if (GetEnvironmentVariableA("WSE_TRACE", en, sizeof(en)) == 0 || en[0] != '1') return;
+    static FILE* f = nullptr;
+    if (!f) { char tp[MAX_PATH] = {}; GetTempPathA(MAX_PATH, tp); strcat_s(tp, "WSE_trace.txt"); fopen_s(&f, tp, "a"); }
+    if (!f) return;
+    va_list ap; va_start(ap, fmt); vfprintf(f, fmt, ap); va_end(ap);
+    fputc('\n', f); fflush(f);
+}
+
 static void RenderEditorFrameBody(App& app, const float* clear) {
+    WseTrace("ED frame: open=%d entries=%zu pools=%zu", (int)app.editor.open,
+             app.cfg.entries.size(), app.editor.pool[0].size());
     {
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
@@ -856,12 +887,23 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     ShowWindow(hwnd, SW_SHOWDEFAULT);
     UpdateWindow(hwnd);
 
+    // 界面状态（列宽/排序/折叠）写到 exe 同目录，下次打开保持
+    {
+        char exePath[MAX_PATH] = {};
+        ::GetModuleFileNameA(nullptr, exePath, MAX_PATH);
+        std::string exeDir = exePath;
+        const size_t sl = exeDir.find_last_of("\\/");
+        exeDir = (sl == std::string::npos) ? std::string(".") : exeDir.substr(0, sl);
+        SetupUiSettingsFiles(exeDir.c_str());
+    }
+
     IMGUI_CHECKVERSION();
     g_mainCtx = ImGui::CreateContext();
     ImGui::SetCurrentContext(g_mainCtx);
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    io.IniFilename = nullptr;
+    io.IniFilename = g_iniFileMain;   // 记住列宽/排序/折叠状态
+    io.IniSavingRate = 2.0f;          // 2 秒落盘一次，改完列宽很快就能记住
 
     LoadChineseFont(16.0f * dpiScale);
     ApplyLightStyle();
@@ -878,7 +920,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     if (GetEnvironmentVariableA("WSE_OPEN_FSM", envBuf, sizeof(envBuf)) > 0 && envBuf[0] == '1')
         app.fsmWinOpen = true;
     if (GetEnvironmentVariableA("WSE_OPEN_EDITOR", envBuf, sizeof(envBuf)) > 0 && envBuf[0] == '1')
-        app.OpenEditorNew(3);   // 打开太刀的编辑窗口（冒烟用）
+        { if (!app.cfg.entries.empty()) app.OpenEditorEdit(0); else app.OpenEditorNew(3); }   // 有配置就编辑第一条，便于冒烟
     if (GetEnvironmentVariableA("WSE_OPEN_UPDATE", envBuf, sizeof(envBuf)) > 0 && envBuf[0] == '1')
         app.mUpdWinOpen = true;   // 打开「版本/在线更新」窗口（冒烟用）
 
@@ -906,6 +948,24 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         if (app.editor.open && !g_edInit) {
             CreateEditorWindow(hInstance, dpiScale);
             app.editHwnd = g_edHwnd;   // 同步编辑窗口句柄（供文件对话框后置顶/所有者使用）
+        }
+        // 再次点「新增条目」时把编辑窗拉到最前（焦点在主 GUI 时也能立刻看到）
+        if (g_edInit && app.editor.open && app.mRaiseEditor) {
+            app.mRaiseEditor = false;
+            ::ShowWindow(g_edHwnd, SW_SHOW);
+            // 先置顶再取消置顶：即使本进程没有前台权限，也能稳定把窗口提到最前
+            ::SetWindowPos(g_edHwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                           SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+            ::SetWindowPos(g_edHwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+            ::BringWindowToTop(g_edHwnd);
+            if (!::SetForegroundWindow(g_edHwnd)) {
+                FLASHWINFO fi{};
+                fi.cbSize = sizeof(fi);
+                fi.hwnd = g_edHwnd;
+                fi.dwFlags = FLASHW_ALL;
+                fi.uCount = 3;
+                ::FlashWindowEx(&fi);
+            }
         }
         if (app.editor.open && g_edInit && !g_edVisible) {
             ShowWindow(g_edHwnd, SW_SHOW);
@@ -949,6 +1009,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     if (g_lightBrush) { ::DeleteObject(g_lightBrush); g_lightBrush = nullptr; }
     app.editHwnd = nullptr;
 
+    if (g_mainCtx) { ImGui::SetCurrentContext(g_mainCtx); ImGui::SaveIniSettingsToDisk(g_iniFileMain); }
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext(g_mainCtx);
