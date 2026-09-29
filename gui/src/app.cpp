@@ -2632,45 +2632,47 @@ void App::MergeConfigFile(const std::string& p, bool importCombo) {
     Config old;
     if (!LoadConfig(p, old)) { status = "读取失败: " + p; return; }
 
-    // 组合导出会带一个旁边 sounds\；导入时把这些音效复制进本地数据目录，
-    // 这样条目里的相对路径 sounds/x 在本机也能找到
-    int sndCopied = 0, sndSkipped = 0;
-    {
+    // 导入时的音效处理：按【组合名】分文件夹放进 sounds\<组合名>\
+    // （导出包旁边会带一个 sounds\，里面是别人那份音效；这里把它按组合归位，
+    //   并把条目里的路径改写成 sounds/<组合名>/<文件名>）
+    int sndCopied = 0, sndMissing = 0;
+    const std::string pkgSounds = [&] {
         const std::string::size_type s = p.find_last_of("\\/");
-        const std::string dir = (s == std::string::npos) ? std::string() : p.substr(0, s + 1);
-        const std::wstring pkg = Utf8ToWide(dir + "sounds\\");
-        if (GetFileAttributesW(pkg.c_str()) != INVALID_FILE_ATTRIBUTES) {
-            const std::string local = BaseDir() + "sounds\\";
-            MakeDirs(Utf8ToWide(local));
-            const std::wstring localW = Utf8ToWide(local);
-            // 递归镜像整个 sounds\（含子文件夹），同名已有则跳过
-            std::function<void(const std::wstring&)> walk;
-            walk = [&](const std::wstring& sub) {
-                WIN32_FIND_DATAW fd;
-                HANDLE ff = FindFirstFileW((pkg + sub + L"*").c_str(), &fd);
-                if (ff == INVALID_HANDLE_VALUE) return;
-                do {
-                    std::wstring name = fd.cFileName;
-                    if (name == L"." || name == L"..") continue;
-                    if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-                        MakeDirs(localW + sub + name + L"\\");
-                        walk(sub + name + L"\\");
-                        continue;
-                    }
-                    std::size_t dot = name.find_last_of(L'.');
-                    std::wstring low = (dot == std::wstring::npos) ? L"" : name.substr(dot);
-                    for (auto& c : low) if (c >= L'A' && c <= L'Z') c += 32;
-                    if (low != L".wav" && low != L".mp3" && low != L".ogg" && low != L".flac") continue;
-                    const std::wstring dst = localW + sub + name;
-                    if (GetFileAttributesW(dst.c_str()) != INVALID_FILE_ATTRIBUTES) { ++sndSkipped; continue; }
-                    if (CopyFileW((pkg + sub + name).c_str(), dst.c_str(), FALSE)) ++sndCopied;
-                    else ++sndSkipped;
-                } while (FindNextFileW(ff, &fd));
-                FindClose(ff);
-            };
-            walk(L"");
+        return ((s == std::string::npos) ? std::string() : p.substr(0, s + 1)) + "sounds\\";
+    }();
+    const bool hasPkgSounds = GetFileAttributesW(Utf8ToWide(pkgSounds).c_str()) != INVALID_FILE_ATTRIBUTES;
+
+    // 组合名 → 合法文件夹名（去掉 Windows 不允许的字符）
+    auto comboFolder = [](const std::string& combo) {
+        std::string nm = combo.empty() ? std::string("默认组合") : combo;
+        for (auto& c : nm) {
+            if (c == '\\' || c == '/' || c == ':' || c == '*' || c == '?' ||
+                c == '"' || c == '<' || c == '>' || c == '|') c = '_';
         }
-    }
+        return nm;
+    };
+
+    // 在包内 sounds\ 下按文件名递归查找（找不到再退回本地数据目录里的同名相对路径）
+    std::function<bool(const std::wstring&, const std::wstring&, std::wstring&)> findInPkg;
+    findInPkg = [&](const std::wstring& dir, const std::wstring& want, std::wstring& out) -> bool {
+        WIN32_FIND_DATAW fd;
+        HANDLE ff = FindFirstFileW((dir + L"*").c_str(), &fd);
+        if (ff == INVALID_HANDLE_VALUE) return false;
+        bool found = false;
+        do {
+            std::wstring nm = fd.cFileName;
+            if (nm == L"." || nm == L"..") continue;
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                if (findInPkg(dir + nm + L"\\", want, out)) { found = true; break; }
+            } else if (_wcsicmp(nm.c_str(), want.c_str()) == 0) {
+                out = dir + nm;
+                found = true;
+                break;
+            }
+        } while (FindNextFileW(ff, &fd));
+        FindClose(ff);
+        return found;
+    };
 
     // importCombo 时：把"默认组合"的条目改派到自动新建的「导入」组合
     // （按武器各自建一个；命名冲突自动加序号）。任意武器(-1)条目保持默认。
@@ -2730,15 +2732,56 @@ void App::MergeConfigFile(const std::string& p, bool importCombo) {
         bool dup = false;
         for (const auto& h : have) if (h == k) { dup = true; break; }
         if (dup) { ++skipped; continue; }
+
+        // 导入：把这条条目用到的音效按【组合名】归到 sounds\<组合名>\ 下，
+        // 并把路径改写成 sounds/<组合名>/<文件名>（绝对路径不动）。
+        if (importCombo && e.weaponType >= 0) {
+            const std::string folder = comboFolder(e.combo);
+            const std::wstring dstDirW = Utf8ToWide(BaseDir() + "sounds\\" + folder + "\\");
+            auto moveSpec = [&](std::vector<SoundSpec>& specs) {
+                for (auto& sp : specs) {
+                    if (sp.path.empty()) continue;
+                    if (sp.path.size() > 1 && sp.path[1] == ':') continue;             // 绝对路径：不动
+                    if (sp.path.rfind("sounds/", 0) != 0 && sp.path.rfind("sounds\\", 0) != 0) continue;
+                    // 文件名（去掉原有的 sounds/ 与其子目录）
+                    std::string base = sp.path;
+                    const std::string::size_type sl = base.find_last_of("/\\");
+                    if (sl != std::string::npos) base = base.substr(sl + 1);
+                    if (base.empty()) continue;
+                    const std::wstring baseW = Utf8ToWide(base);
+                    // 源文件：先在包内 sounds\ 里按文件名找，再退回本机数据目录里的原路径
+                    std::wstring src;
+                    if (hasPkgSounds && !findInPkg(Utf8ToWide(pkgSounds), baseW, src)) src.clear();
+                    if (src.empty()) {
+                        std::string local = BaseDir();
+                        for (char c : sp.path) local += (c == '/') ? '\\' : c;
+                        if (FsExists(local)) src = Utf8ToWide(local);
+                    }
+                    if (src.empty()) { ++sndMissing; continue; }   // 找不到源文件：路径保持原样
+                    MakeDirs(dstDirW);
+                    const std::wstring dst = dstDirW + baseW;
+                    if (GetFileAttributesW(dst.c_str()) == INVALID_FILE_ATTRIBUTES) {
+                        if (CopyFileW(src.c_str(), dst.c_str(), FALSE)) ++sndCopied;
+                        else { ++sndMissing; continue; }
+                    }
+                    sp.path = "sounds/" + folder + "/" + base;
+                }
+            };
+            moveSpec(e.def.specs);
+            for (int gi = 0; gi < 4; ++gi) moveSpec(e.gauge[gi].specs);
+            for (auto& cc : e.conds) moveSpec(cc.pool.specs);
+        }
+
         cfg.entries.push_back(e);
-        have.push_back(k);
+        have.push_back(keyOf(e));
         ++added;
     }
     if (added > 0) mDirty = true;
     std::string extra;
-    if (sndCopied > 0 || sndSkipped > 0)
-        extra = "；音效: 复制 " + std::to_string(sndCopied) + " 个、已有跳过 " +
-                std::to_string(sndSkipped) + " 个 -> " + BaseDir() + "sounds\\";
+    if (sndCopied > 0)
+        extra = "；音效已按组合归到 sounds\\<组合名>\\（复制 " + std::to_string(sndCopied) + " 个）";
+    if (sndMissing > 0)
+        extra += "；有 " + std::to_string(sndMissing) + " 个音效在包里没找到，路径保持原样";
     status = "导入配置: 新增 " + std::to_string(added) + " 条，跳过重复 " +
              std::to_string(skipped) + " 条" + extra;
     // 导入出新组合时，自动把对应武器的当前组合切过去（并跳到该武器视图），
