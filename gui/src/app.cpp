@@ -963,7 +963,7 @@ void App::DrawToolbar() {
     ImGui::SameLine(0, 12 * dpiScale);
     ImGui::BeginGroup();
     ImGui::TextColored(C_ACCENT, "Sonar");
-    ImGui::TextDisabled("怪物猎人：世界 动作音效  (15.23.00)");
+    ImGui::TextDisabled("怪物猎人：世界 武器音效增强  (15.23.00)");
     ImGui::EndGroup();
 
     // 品牌区到此结束。用一个占位 Dummy 把"品牌区高度"定死成图标高度，
