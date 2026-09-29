@@ -57,6 +57,64 @@ std::string Trim(const std::string& s) {
     return s.substr(b, e - b);
 }
 
+// ---------------------------------------------------------------------------
+//  中文按拼音排序
+//
+//  名称列原来直接 std::string::compare（逐字节比 UTF-8），汉字等于"按 Unicode
+//  码点排"，和拼音毫无关系 —— 用户看到的顺序就是乱的。
+//
+//  做法：把每个 UTF-8 字符转成"排序键"
+//    - ASCII：原样（字母统一小写，数字/符号按原码位）
+//    - 汉字：用 LCMapStringW(SORT_STRINGSORT) 拿到的**拼音序权重**
+//    - 其它（假名/emoji 等）：退化成原码位
+//  然后按键比较。这样中文按拼音、英文按字母、数字也在合理位置。
+//
+//  用 Windows 自带的排序表（系统 locale），不引入任何第三方数据表；
+//  LCMapStringW 的结果对同一系统稳定，排序不会在不同帧之间跳。
+// ---------------------------------------------------------------------------
+std::string PinyinSortKey(const std::string& utf8);
+
+// 把一个 UTF-8 字符串转成可比较的排序键
+std::string PinyinSortKey(const std::string& utf8) {
+    if (utf8.empty()) return std::string();
+    // 这里用局部实现（真正的 Utf8ToWide 定义在下面几百行之后）
+    const int wn = ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), nullptr, 0);
+    if (wn <= 0) return utf8;
+    std::wstring w((size_t)wn, L'\0');
+    ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), &w[0], wn);
+
+    // 只要串里有汉字，就整体走 Windows 的排序表；纯 ASCII 直接返回小写原串，
+    // 省掉一次 API 调用（条目表可能有几百行，每帧都要排）。
+    bool hasWide = false;
+    for (wchar_t c : w) if (c > 0x7F) { hasWide = true; break; }
+    if (!hasWide) {
+        std::string k;
+        k.reserve(w.size());
+        for (wchar_t c : w) k += (char)((c >= L'A' && c <= L'Z') ? (c - L'A' + L'a') : c);
+        return k;
+    }
+
+    // SORT_STRINGSORT：按语言规则（汉字 -> 拼音序）生成权重串。
+    // 失败时退回原串（至少不会崩，只是排序退化成原来的方式）。
+    int need = ::LCMapStringW(LOCALE_USER_DEFAULT, LCMAP_SORTKEY, w.c_str(), (int)w.size(),
+                              nullptr, 0);
+    if (need <= 0) return utf8;
+    std::wstring buf((size_t)need / sizeof(wchar_t) + 1, L'\0');
+    const int got = ::LCMapStringW(LOCALE_USER_DEFAULT, LCMAP_SORTKEY, w.c_str(), (int)w.size(),
+                                   &buf[0], (int)(buf.size() * sizeof(wchar_t)));
+    if (got <= 0) return utf8;
+    // 权重串里可能有 0 字节，按字节塞进 std::string（比较仍按字节序，权重本身就是设计好的顺序）
+    std::string key;
+    key.reserve((size_t)got);
+    const char* p = reinterpret_cast<const char*>(buf.data());
+    for (int i = 0; i < got; ++i) {
+        const char b = p[i];
+        if (b == '\0' && i + 1 >= got) break;   // 结尾的 0 不要
+        key += b;
+    }
+    return key;
+}
+
 // 路径比较：忽略大小写与 / \\ 差异（用于判断"正在编辑的是不是游戏那份 ini"）
 bool SamePath(const std::string& a, const std::string& b) {
     if (a.size() != b.size()) return false;
@@ -197,7 +255,7 @@ static const JudgePreset kPresets[] = {
       { { "dmg>0", false, "命中" }, { nullptr, false, nullptr } },
       "落空",
       "只要这一下打出了伤害就播【命中】的音效；完全没打中则播【落空】的音效。"
-      "不限定武器和动作，任何武器的任何招式都能用。" },
+      "武器/动作保持你当前选的（想限定某一招就照常选），只是条件自动填好。" },
 
     { "太刀 · 登龙 命中/落空", 3, "49326", 0, 2500, 150,
       { { "dmg>0", false, "命中" }, { nullptr, false, nullptr } },
@@ -1393,10 +1451,12 @@ void App::DrawEntries() {
                     const SoundEntry& y = cfg.entries[b];
                     int cmp = 0;
                     switch (spec.ColumnIndex) {
-                    case 0: {   // 名称（空名用知识库名字兜底）
+                    case 0: {   // 名称（空名用知识库名字兜底）—— 中文按拼音排
                         std::string nx = x.name.empty() ? LookupFsmName(x.weaponType, x.fsmId, x.LmtAny()) : x.name;
                         std::string ny = y.name.empty() ? LookupFsmName(y.weaponType, y.fsmId, y.LmtAny()) : y.name;
-                        cmp = nx.compare(ny);
+                        // 逐字节 compare 对汉字等于按 Unicode 码点排，不是拼音；
+                        // 用拼音排序键，中文按拼音、英文按字母。
+                        cmp = PinyinSortKey(nx).compare(PinyinSortKey(ny));
                         break;
                     }
                     case 1: cmp = x.weaponType - y.weaponType; break;
@@ -1632,31 +1692,52 @@ void App::OpenEditorEdit(int index) {
         editor.conds.push_back(std::move(r));
     }
     // 认一下这条目是不是某个内置预设生成的。
-    // 【必须同时比对 武器 + LMT + 三个时间参数 + 条件表达式】——
-    // 早先只比武器和表达式，"自定义"里默认种下的 dmg>0 恰好和
-    // 「太刀·登龙」完全一样，于是自定义条目一存一开就被认成登龙，
-    // 下拉框跳回预设、用户改的东西看起来"没保存"。
+    // 【只比条件表达式（含 Sound/SoundEnd 时机）】——
+    // 预设现在**不覆盖**武器/LMT/时间参数（用户自己选的动作必须保住），所以那些
+    // 不能再参与识别，否则用户改一下 LMT 就会被误认成「自定义」。
+    // 也不能只看武器+表达式（老 bug）：「自定义」默认种下的 dmg>0 和登龙预设
+    // 一模一样，自定义条目会被误认成登龙、下拉框跳回去。
+    // 表达式才是预设真正唯一的东西 —— 条数 + 每条表达式 + atEnd 全一致才算。
+    //
+    // 【同名条件的歧义】「造成伤害」和「登龙」的条件都是 dmg>0，光看表达式分不开。
+    // 判据按优先级：
+    //   ① 武器对得上（指定武器 > 不限武器）
+    //   ② 都满足时看 LMT 对不对得上（登龙是 49326；条目填了别的招式就不算登龙）
+    // 这样"太刀 + 49326 + dmg>0" 认成登龙，"太刀 + 49265 + dmg>0" 认成造成伤害，
+    // 符合直觉。识别只影响下拉框显示哪个标签，**不会改动条目任何内容**
+    //（预设不再覆盖武器/动作 —— 这正是修掉"选了预设就跑到通用"的关键）。
     editor.judgePreset = editor.conds.empty() ? 0 : (kPresetCount + 1);
     if (!editor.conds.empty()) {
-        // 条目实际的 LMT（空 = 不限）
-        std::string lmtNow;
-        if (!editor.lmtAny) {
-            for (size_t i = 0; i < editor.lmt.size(); ++i) {
-                if (i) lmtNow += ",";
-                lmtNow += std::to_string(editor.lmt[i]);
+        // 条目的 LMT 列表（不限时为空）
+        std::vector<int> lmtList = editor.lmtAny ? std::vector<int>() : editor.lmt;
+        auto lmtOverlaps = [&](const char* want) {
+            // 预设的 LMT 串 -> 整数集合，看和条目有没有交集。
+            // 用交集而不是"完全相等"：预设可能列了 6 个 LMT（真蓄），
+            // 用户条目只填其中一个也算对得上。
+            std::vector<int> ws;
+            const char* q = want;
+            while (q && *q) {
+                while (*q == ' ' || *q == ',') ++q;
+                if (!*q) break;
+                char* endp = nullptr;
+                const long v = std::strtol(q, &endp, 10);
+                if (endp == q) { ++q; continue; }
+                ws.push_back((int)v);
+                q = endp;
             }
-        }
+            for (int a : ws) for (int b : lmtList) if (a == b) return true;
+            return false;
+        };
+        // 预设填了 LMT：和条目有交集 = 很像（+4）；完全不沾边 = 不像（-6）。
+        // 预设不限 LMT（造成伤害）：不加分也不减分，让它靠"不限武器"这个特性去竞争。
+        auto lmtScore = [&](const char* want) -> int {
+            if (!want || !*want) return 0;
+            return lmtOverlaps(want) ? 4 : -6;
+        };
+        int best = -1, bestScore = -1;
         for (int pi = 0; pi < kPresetCount; ++pi) {
             const JudgePreset& ps = kPresets[pi];
-            if (ps.weapon != e.weaponType) continue;
-            // 时间参数与 LMT 也要一致，否则就是用户自己调过的 = 自定义
-            if (editor.checkDelayMs   != ps.delayMs)   continue;
-            if (editor.checkTimeoutMs != ps.timeoutMs) continue;
-            if (editor.checkOffsetMs  != ps.offsetMs)  continue;
-            std::string a3, b3;
-            for (const char* q = ps.lmt; q && *q; ++q) if (*q != ' ') a3 += *q;
-            for (char c2 : lmtNow) if (c2 != ' ') b3 += c2;
-            if (a3 != b3) continue;
+            if (ps.weapon >= 0 && ps.weapon != e.weaponType) continue;
             int n = 0; while (ps.conds[n].expr) ++n;
             if ((int)editor.conds.size() != n) continue;
             bool same = true;
@@ -1671,9 +1752,17 @@ void App::OpenEditorEdit(int index) {
                 for (char c2 : got)  if (c2 != ' ') b2 += c2;
                 if (a2 != b2 || editor.conds[i].atEnd != ps.conds[i].atEnd) same = false;
             }
-            if (same) { editor.judgePreset = pi + 1; editor.conds[0].label = ps.conds[0].label;
-                        for (int i = 0; i < n; ++i) editor.conds[i].label = ps.conds[i].label;
-                        break; }
+            if (!same) continue;
+            int score = 0;
+            if (ps.weapon >= 0) score += 2;   // 指定武器更具体
+            score += lmtScore(ps.lmt);        // LMT 对得上最能区分招式
+            if (score > bestScore) { bestScore = score; best = pi; }
+        }
+        if (best >= 0) {
+            const JudgePreset& ps = kPresets[best];
+            editor.judgePreset = best + 1;
+            int n = 0; while (ps.conds[n].expr) ++n;
+            for (int i = 0; i < n; ++i) editor.conds[i].label = ps.conds[i].label;
         }
     }
 }
@@ -2053,14 +2142,19 @@ void App::DrawEditorDetached() {
         editor.conds.clear();
         if (editor.judgePreset >= 1 && editor.judgePreset <= kPresetCount) {
             const JudgePreset& ps = kPresets[editor.judgePreset - 1];
-            editor.weaponType     = ps.weapon;
+            // 【只填判定参数，绝不动武器/动作】
+            // 早先这里会照预设把 weaponType 和 LMT 一起改掉：「造成伤害」的预设
+            // 武器是 -1（任意），一选就把用户条目的太刀改成通用；再手动改回太刀时
+            // 组合归属已被清空，条目落到"默认组合"里，在命名组合视图下就"消失"了。
+            // 现在武器/FSMId/LMT/组合 全部保持用户当前的选择，只调时间参数和条件。
+            //
+            // 只有"不限武器"的预设（武器 = -1）才需要特殊处理：它本来就不带动作，
+            // 所以也什么都不动。带动作的预设不再覆盖 LMT —— 用户想用预设的实测 LMT
+            // 可以自己填，或者从下面提示里看到。
             editor.checkDelayMs   = ps.delayMs;
             editor.checkTimeoutMs = ps.timeoutMs;
             editor.checkOffsetMs  = ps.offsetMs;
             editor.endOnAction    = true;
-            snprintf(editor.lmtBuf, sizeof(editor.lmtBuf), "%s", ps.lmt);
-            editor.lmtAny = IsLmtWildcardToken(ps.lmt) || Trim(ps.lmt).empty();
-            if (editor.lmtAny) editor.lmtBuf[0] = 0;
             for (int i = 0; ps.conds[i].expr; ++i) {
                 CondRow r;
                 r.atEnd  = ps.conds[i].atEnd;
