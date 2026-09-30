@@ -1415,14 +1415,14 @@ function buildFsmWeaponSelect() {
   (ST.weapons || []).forEach(w => sel.appendChild(h('option', { value: String(w.id) }, `${w.id} ${w.name}`)));
 }
 
-// 加载图：至少显示 minMs 毫秒再淡出，避免"一闪而过"或数据没到就消失。
-function hideSplash(minMs) {
+// 数据就绪：撤掉 web 里的加载屏，并通知宿主关闭底层的原生态过渡窗
+function uiReady() {
   const splash = $('#splash');
-  if (!splash) return;
-  setTimeout(() => {
-    splash.classList.add('hide');
-    setTimeout(() => splash.remove(), 350);
-  }, Math.max(0, minMs || 0));
+  if (splash) { splash.classList.add('hide'); setTimeout(() => splash.remove(), 350); }
+  // 浏览器预览模式没有宿主，跳过
+  if (Backend.mode === 'webview2') {
+    Backend.call('ui.ready', {}).catch(() => {});
+  }
 }
 
 Backend.onEvent(ev => {
@@ -1455,10 +1455,10 @@ Backend.onEvent(ev => {
   wireGlobal();
   bindLogoEgg();            // 左上角图标彩蛋
   renderChatCmds();          // 指令表是静态的，建一次就行
-  const tBoot = Date.now(); // 加载图从打开就显示，数据就绪后至少再停一小会，别一闪而过
+  const tBoot = Date.now();
   try {
     await refresh();
-    hideSplash(420 - (Date.now() - tBoot));
+    uiReady();
     if (forcedTheme) applyTheme(forcedTheme);
     buildFsmWeaponSelect();
     // 预览用：#editor 直接打开第一条的编辑器（方便截图/试样式）
@@ -1467,7 +1467,7 @@ Backend.onEvent(ev => {
     if (Backend.mode === 'browser')
       toast('浏览器预览模式：数据是假的，只用来调界面', 'ok');
   } catch (e) {
-    hideSplash(0);
+    uiReady();   // 出错也要撤加载屏，让错误显示出来
     $('#statusText').textContent = '初始化失败：' + e.message;
     toast('初始化失败：' + e.message, 'err');
   }

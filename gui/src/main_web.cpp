@@ -219,6 +219,69 @@ void PostJson(const std::string& json) {
     g_web->PostWebMessageAsString(Utf8ToWide(json).c_str());
 }
 
+// ===========================================================================
+//  原生态启动过渡窗。
+//  用户要求"GUI 准备好之前先用别的东西过渡、别白屏"——这必须做在底层
+//  （C++/Win32），不能依赖 web（web 内容到达前 WebView 那块就是空的）。
+//  做法：程序一启动就弹一个无边框小窗（大图标 + 正在启动…），
+//  前端数据就绪后发 "ui.ready" 给宿主 → 这里关掉它。
+// ===========================================================================
+HWND g_splash = nullptr;
+
+LRESULT CALLBACK SplashWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC dc = ::BeginPaint(hwnd, &ps);
+            RECT rc;
+            ::GetClientRect(hwnd, &rc);
+            // 底色调成和极简浅色背景一致(#F6F7F9)，和后面的界面无缝衔接
+            HBRUSH bg = ::CreateSolidBrush(RGB(246, 247, 249));
+            ::FillRect(dc, &rc, bg);
+            ::DeleteObject(bg);
+            // 大图标（sonar.ico 自带 256px）
+            HICON icon = (HICON)::LoadImageW((HINSTANCE)::GetModuleHandleW(nullptr),
+                                             MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON, 0, 0, 0);
+            const int isz = 116;
+            const int ix = (rc.right - isz) / 2, iy = 26;
+            ::DrawIconEx(dc, ix, iy, icon, isz, isz, 0, nullptr, DI_NORMAL);
+            // 文字
+            HFONT f = (HFONT)::GetStockObject(DEFAULT_GUI_FONT);
+            HFONT of = (HFONT)::SelectObject(dc, f);
+            ::SetBkMode(dc, TRANSPARENT);
+            ::SetTextColor(dc, RGB(110, 110, 115));
+            RECT tr = { 8, iy + isz + 16, rc.right - 8, rc.bottom - 6 };
+            ::DrawTextW(dc, L"Sonar 正在启动…", -1, &tr, DT_CENTER | DT_TOP);
+            ::SelectObject(dc, of);
+            ::EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_ERASEBKGND:
+            return 1;
+    }
+    return ::DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+void ShowSplash() {
+    if (g_splash) return;
+    RECT cr = {};
+    if (g_hwnd) ::GetWindowRect(g_hwnd, &cr);
+    const int W = 320, H = 238;
+    const int cx = (cr.left + cr.right - W) / 2;
+    const int cy = (cr.top + cr.bottom - H) / 2;
+    g_splash = ::CreateWindowExW(WS_EX_NOACTIVATE, L"SonarSplashClass", L"",
+                                 WS_POPUP, cx, cy, W, H,
+                                 g_hwnd, nullptr, (HINSTANCE)::GetModuleHandleW(nullptr), nullptr);
+    if (g_splash) ::ShowWindow(g_splash, SW_SHOWNOACTIVATE);
+}
+
+void CloseSplash() {
+    if (g_splash) {
+        ::DestroyWindow(g_splash);
+        g_splash = nullptr;
+    }
+}
+
 // 把 Core 的 {"ok":...} 前面插一个 id，变成 {"id":N,"ok":...}
 void Reply(long long id, const std::string& result) {
     std::string body = result;
@@ -228,6 +291,12 @@ void Reply(long long id, const std::string& result) {
 
 void OnMessage(const std::string& text) {
     Envelope env = ParseEnvelope(text);
+    if (env.method == "ui.ready") {
+        // 纯通知：前端数据已就绪 → 关掉底层加载过渡窗，回个 ok 让前端正常收尾
+        CloseSplash();
+        Reply(env.id, "{\"ok\":true,\"data\":{}}");
+        return;
+    }
     if (env.method.empty()) { Reply(env.id, "{\"ok\":false,\"error\":\"missing method\"}"); return; }
     std::string result;
     try {
@@ -411,6 +480,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 // 延迟自检：等前端把数据拉完、DOM 渲染好之后再量
                 ::KillTimer(hwnd, 2);
                 ProbePage();
+            } else if (wp == 3) {
+                // 兜底：万一前端一直没发 ui.ready（JS 出错），也别让加载窗永远挂着
+                ::KillTimer(hwnd, 3);
+                CloseSplash();
             }
             return 0;
         case WM_SETFOCUS:
@@ -418,6 +491,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_DESTROY:
             if (g_pollTimer) { ::KillTimer(hwnd, 1); g_pollTimer = 0; }
+            CloseSplash();
             ::PostQuitMessage(0);
             return 0;
         default:
@@ -479,6 +553,19 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     wc.lpszClassName = L"SonarConfigGUI";
     ::RegisterClassExW(&wc);
 
+    // 底层启动过渡窗的窗口类
+    {
+        WNDCLASSEXW sc = {};
+        sc.cbSize = sizeof(sc);
+        sc.style = CS_HREDRAW | CS_VREDRAW;
+        sc.lpfnWndProc = SplashWndProc;
+        sc.hInstance = inst;
+        sc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
+        sc.hbrBackground = (HBRUSH)::GetStockObject(WHITE_BRUSH);
+        sc.lpszClassName = L"SonarSplashClass";
+        ::RegisterClassExW(&sc);
+    }
+
     RECT wr = { 0, 0, 1400, 900 };
     ::AdjustWindowRect(&wr, WS_OVERLAPPEDWINDOW, FALSE);
     HWND hwnd = ::CreateWindowExW(0, wc.lpszClassName, L"Sonar 配置工具",
@@ -499,6 +586,8 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     g_core.SetOwnerWindow(hwnd);
     ::ShowWindow(hwnd, SW_SHOW);
     ::UpdateWindow(hwnd);
+    // ★ 一启动就弹底层加载过渡窗：在 WebView 渲染好之前先有画面，别白屏
+    ShowSplash();
 
     // ---- 启动前自检：WebView2Loader.dll / web 目录缺一不可，缺了就明确提示 ----
     {
@@ -649,6 +738,8 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
                                 nullptr);
                             LogLine("navigating to https://sonar.local/web/index.html ...");
                             g_web->Navigate(L"https://sonar.local/web/index.html");
+                            // 兜底定时器：8 秒内前端没发 ui.ready 就强制关加载窗
+                            ::SetTimer(g_hwnd, 3, 8000, nullptr);
                             g_ready = true;
                             StartPolling();   // 实时捕获 / 更新进度靠它主动推给前端
                             return S_OK;
