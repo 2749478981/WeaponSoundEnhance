@@ -1,0 +1,183 @@
+/* ===========================================================================
+   themes.css —— 4 套主题
+   每套只做两件事：① 覆盖 base.css 里的 CSS 变量；② 补几条变量表达不了的
+   主题专属规则（比如描边贴纸风的"按下陷进去"）。DOM 一份，不重复。
+   =========================================================================== */
+
+/* ===========================================================================
+   2 · 深色专业   （VS Code / GitHub 那种中性深灰 + 单一蓝色强调）
+   特点：信息密度最高、几乎无装饰、不发光不模糊
+   =========================================================================== */
+[data-theme="pro-dark"]{
+  --bg:#0d1117; --bg-layer:none;
+  --panel:#161b22; --panel-2:#1c2128;
+  --line:#21262d; --line-2:#30363d;
+  --text:#e6edf3; --muted:#8b949e; --dim:#6e7681;
+  --accent:#2f81f7; --on-accent:#ffffff;
+  --c-blue:#2f81f7; --c-green:#3fb950; --c-amber:#d29922; --c-red:#f85149; --c-purple:#a371f7;
+
+  /* 图标是黑线稿，深色底上必须垫浅色底片才看得见 */
+  --chip-bg:#e6edf3; --chip-border:#30363d;
+
+  --bw:1px; --radius:10px; --radius-ctl:6px;
+  --shadow-card:none; --shadow-ctl:none;
+  --shadow-ctl-hover:inset 0 0 0 1px var(--line-2);
+  --lift:0; --press:none;
+
+  --fs:12.5px; --fw:500; --fw-strong:600; --fw-btn:600;
+
+  --table-head-bg:#161b22; --row-bg:transparent; --row-hover:#1c2128;
+  --row-sel-bg:#1f6feb33; --row-line:#21262d;
+  --input-bg:#0d1117; --input-focus-bg:#0d1117;
+  --btn-bg:#21262d;
+  --badge-bg:#a371f733; --badge-fg:#c9a9ff;
+}
+[data-theme="pro-dark"] input[type=range]{background:linear-gradient(90deg,var(--accent) 50%, var(--line-2) 50%)}
+[data-theme="pro-dark"] input[type=range]::-webkit-slider-thumb{background:#fff; border-color:var(--accent)}
+[data-theme="pro-dark"] button.amber{color:#1c1508}
+[data-theme="pro-dark"] .brand-name{color:var(--text)}
+
+/* ===========================================================================
+   4 · 极简浅色（默认）  （macOS 白底细边，留白多）
+   特点：最清爽、白天看舒服、和原版配色延续
+   =========================================================================== */
+[data-theme="clean-light"]{
+  --bg:#f6f7f9; --bg-layer:none;
+  --panel:#ffffff; --panel-2:#fbfbfd;
+  --line:#e6e8ec; --line-2:#d8dbe2;
+  --text:#1d1d1f; --muted:#6e6e73; --dim:#a1a1a6;
+  --accent:#0a84ff; --on-accent:#ffffff;
+  --c-blue:#0a84ff; --c-green:#34c759; --c-amber:#ff9f0a; --c-red:#ff3b30; --c-purple:#af52de;
+  --chip-bg:linear-gradient(150deg,#f7f8fa,#e9ecf2); --chip-border:#e6e8ec;
+
+  --bw:1px; --radius:12px; --radius-ctl:8px;
+  --shadow-card:0 1px 2px rgba(0,0,0,.05), 0 6px 20px rgba(0,0,0,.05);
+  --shadow-ctl:none; --shadow-ctl-hover:0 2px 8px rgba(0,0,0,.10);
+  --lift:-1px; --press:none;
+
+  --fs:13px; --fw:400; --fw-strong:600; --fw-btn:600;
+  --table-head-bg:#ffffff; --row-bg:transparent; --row-hover:#fafbfc;
+  --row-sel-bg:#e8f2ff; --row-line:#f0f1f4;
+  --input-bg:#f6f7f9; --input-focus-bg:#ffffff;
+  --btn-bg:#ffffff;
+  --badge-bg:#f3e8ff; --badge-fg:#af52de;
+}
+[data-theme="clean-light"] button.amber{color:#4a2f00}
+
+/* ===========================================================================
+   5 · 可爱风   （马卡龙粉/薄荷/薰衣草，全大圆角胶囊，爪印底纹）
+   特点：最讨喜、有温度、悬停轻轻弹起
+   =========================================================================== */
+[data-theme="cute-pastel"]{
+  --bg:#fff6fa;
+  --bg-layer:linear-gradient(150deg,#fff6fa 0%, #fdfaff 45%, #f2f9ff 100%);
+  --panel:#ffffff; --panel-2:#fdfbfd;
+  --line:#ffe8f0; --line-2:#ffd6e4;
+  --text:#5a4a55; --muted:#a894a1; --dim:#c9b8c2;
+  --accent:#ff6b95; --on-accent:#ffffff;
+  --c-blue:#7fc8f0; --c-green:#5fd6b0; --c-amber:#ffc46b; --c-red:#ff8fa3; --c-purple:#b39ddb;
+  --chip-bg:#ffe4ee; --chip-border:#ffd6e4;
+
+  --bw:1.5px; --radius:20px; --radius-ctl:999px;
+  --shadow-card:0 10px 28px rgba(255,143,177,.16);
+  --shadow-ctl:0 3px 10px rgba(255,143,177,.14);
+  --shadow-ctl-hover:0 6px 18px rgba(255,143,177,.28);
+  --lift:-2px; --press:scale(.97);
+
+  --font:"Yuanti SC","幼圆","Microsoft YaHei UI","Segoe UI",system-ui,sans-serif;
+  --fs:13px; --fw:600; --fw-strong:800; --fw-btn:700;
+
+  --table-head-bg:#fff6fa; --row-bg:transparent; --row-hover:#fff5f9;
+  --row-sel-bg:#ffe4ee; --row-line:#ffeef4;
+  --input-bg:#fff6fa; --input-focus-bg:#ffffff;
+  --btn-bg:#ffffff;
+  --badge-bg:#fff2d9; --badge-fg:#b8791b;
+
+  --deco-display:block;   /* 显示爪印底纹 */
+}
+/* 圆角胶囊主题里 checkbox 不能跟着变圆，单独给 */
+[data-theme="cute-pastel"] input[type=checkbox]{border-radius:6px}
+/* 武器底片不要做成正圆：图标是竖向的武器立绘，圆形会裁掉刀身/枪管。
+   给个偏方的圆角，既可爱又保得住图标。 */
+[data-theme="cute-pastel"] .wchip{border-radius:13px; padding:3px}
+[data-theme="cute-pastel"] .tw img{border-radius:7px}
+[data-theme="cute-pastel"] .logo-badge{border-radius:16px}
+[data-theme="cute-pastel"] input[type=range]::-webkit-slider-thumb{border-color:var(--accent)}
+[data-theme="cute-pastel"] button.amber{color:#7a4a00}
+/* 品牌名用粉色，加一点俏皮 */
+[data-theme="cute-pastel"] .brand-name{color:var(--accent)}
+[data-theme="cute-pastel"] .brand-name::after{content:" ✦"; font-size:13px; color:var(--c-amber)}
+[data-theme="cute-pastel"] .phead::after{
+  content:""; flex:1; height:2px; border-radius:2px; margin-left:8px;
+  background:repeating-linear-gradient(90deg,var(--line-2) 0 6px, transparent 6px 11px);
+}
+[data-theme="cute-pastel"] .phead{display:flex; align-items:center; gap:6px}
+/* 武器底片按调色板轮换（马卡龙色），和图标一起看更活泼 */
+[data-theme="cute-pastel"] .rail-scroll .wrow:nth-child(6n+2) .wchip{background:#ffe4ee}
+[data-theme="cute-pastel"] .rail-scroll .wrow:nth-child(6n+3) .wchip{background:#dcf7ee}
+[data-theme="cute-pastel"] .rail-scroll .wrow:nth-child(6n+4) .wchip{background:#eee8fb}
+[data-theme="cute-pastel"] .rail-scroll .wrow:nth-child(6n+5) .wchip{background:#fff2d9}
+[data-theme="cute-pastel"] .rail-scroll .wrow:nth-child(6n+6) .wchip{background:#e3f2ff}
+[data-theme="cute-pastel"] .rail-scroll .wrow:nth-child(6n+1) .wchip{background:#ffe9e0}
+[data-theme="cute-pastel"] tbody tr:hover{transform:translateX(2px)}
+[data-theme="cute-pastel"] .wrow:hover{transform:translateX(3px)}
+[data-theme="cute-pastel"] .hint-bubble,
+[data-theme="cute-pastel"] .upd-notes{background:#eee8fb; border-color:#ded3f5; color:#7a63a8}
+
+/* ===========================================================================
+   6 · 描边贴纸   （刻意用和 weapons_icons 完全相同的笔触：
+                    粗黑描边 + 硬阴影(不模糊) + 实色填充 + 大圆角）
+   特点：和图标天生一对、辨识度最高
+   =========================================================================== */
+[data-theme="sticker-outline"]{
+  --ink:#111111;
+  --bg:#fdfcf8;
+  --bg-layer:radial-gradient(#111111 1.1px, transparent 1.1px);
+  --bg-size:22px 22px;
+  --panel:#ffffff; --panel-2:#fdfcf8;
+  --line:#111111; --line-2:#111111;
+  --text:#111111; --muted:#6b6b6b; --dim:#9a9a9a;
+  --accent:#6cbf3f; --on-accent:#ffffff;
+  --c-blue:#4aa8e0; --c-green:#6cbf3f; --c-amber:#f5b942; --c-red:#e8573f; --c-purple:#a06bd0;
+  --chip-bg:#ffffff; --chip-border:#111111;
+
+  --bw:3px; --radius:16px; --radius-ctl:11px;
+  --shadow-card:5px 5px 0 #111111;
+  --shadow-ctl:3px 3px 0 #111111;
+  --shadow-ctl-hover:5px 5px 0 #111111;
+  --lift:-2px; --press:none;
+
+  --fs:13.5px; --fw:600; --fw-strong:800; --fw-btn:800;
+
+  --table-head-bg:#e9e7e0; --row-bg:transparent; --row-hover:#f6f5ef;
+  --row-sel-bg:#e8f7dd; --row-line:#ecebe5;
+  --input-bg:#ffffff; --input-focus-bg:#fff3d6;
+  --btn-bg:#ffffff;
+  --badge-bg:#f5b942; --badge-fg:#111111;
+}
+[data-theme="sticker-outline"] body{background-size:22px 22px}
+[data-theme="sticker-outline"] button{box-shadow:3px 3px 0 var(--ink)}
+[data-theme="sticker-outline"] button:hover{transform:translate(-2px,-2px); box-shadow:5px 5px 0 var(--ink)}
+/* 按下时"陷进纸里" */
+[data-theme="sticker-outline"] button:active{transform:translate(3px,3px); box-shadow:0 0 0 transparent}
+[data-theme="sticker-outline"] button.amber{color:#3d2600}
+[data-theme="sticker-outline"] button.primary{color:#0d2407}
+[data-theme="sticker-outline"] input[type=checkbox]{border-width:2.5px; box-shadow:2px 2px 0 var(--ink)}
+[data-theme="sticker-outline"] input[type=checkbox]:checked::after{text-shadow:1px 1px 0 rgba(0,0,0,.35)}
+[data-theme="sticker-outline"] input[type=range]{border:2.5px solid var(--ink); height:9px}
+[data-theme="sticker-outline"] input[type=range]::-webkit-slider-thumb{
+  width:20px; height:20px; border:2.5px solid var(--ink); box-shadow:1.5px 1.5px 0 var(--ink)}
+[data-theme="sticker-outline"] input[type=text],
+[data-theme="sticker-outline"] input[type=number],
+[data-theme="sticker-outline"] select{border-width:2.5px; box-shadow:2px 2px 0 var(--ink) inset}
+[data-theme="sticker-outline"] .brand-name{text-shadow:2px 2px 0 #e8f7dd}
+[data-theme="sticker-outline"] .wchip{border-width:2.5px}
+[data-theme="sticker-outline"] .wrow.on{box-shadow:3px 3px 0 var(--ink)}
+[data-theme="sticker-outline"] .tw img{border-width:2px}
+[data-theme="sticker-outline"] .acts button{padding:3px 10px; border-width:2.5px}
+[data-theme="sticker-outline"] tbody tr.sel td:first-child{box-shadow:inset 6px 0 0 var(--accent)}
+[data-theme="sticker-outline"] .drawer{box-shadow:-7px 0 0 var(--ink), -14px 0 0 rgba(17,17,17,.14)}
+[data-theme="sticker-outline"] .card2{box-shadow:3px 3px 0 var(--ink)}
+[data-theme="sticker-outline"] .upd-notes,
+[data-theme="sticker-outline"] .live-now{box-shadow:2px 2px 0 var(--ink)}
+[data-theme="sticker-outline"] .modal{background:rgba(17,17,17,.42)}

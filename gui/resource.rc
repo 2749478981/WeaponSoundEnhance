@@ -1,2 +1,40 @@
+// Sonar 配置工具（WebView2）资源
+//
+// 配置工具现在只是一个 WebView2 宿主窗口，界面在 web\ 里；
+// 任务栏和文件属性页仍读这里的图标与版本信息。
+// 图标沿用 icons/sonar.ico 的多尺寸版本。
+//
+// 版本号要和 src/app.h 里的 kWseGuiVersion 保持一致（界面标题显示的是那个）。
+#include <winver.h>
+
 #define IDI_APP 100
 IDI_APP ICON DISCARDABLE "WeaponSoundEnhanceGUI.ico"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION    2,34,0,0
+ PRODUCTVERSION 2,34,0,0
+ FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
+ FILEFLAGS      0
+ FILEOS         VOS_NT_WINDOWS32
+ FILETYPE       VFT_APP
+ FILESUBTYPE    VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404b0"
+        BEGIN
+            VALUE "CompanyName",      "Sonar"
+            VALUE "FileDescription",  "Sonar - config tool"
+            VALUE "FileVersion",      "2.34.0.0"
+            VALUE "InternalName",     "WeaponSoundEnhanceGUI"
+            VALUE "OriginalFilename", "WeaponSoundEnhanceGUI.exe"
+            VALUE "ProductName",      "Sonar"
+            VALUE "ProductVersion",   "2.34.0.0"
+            VALUE "LegalCopyright",   "MIT License"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x804, 1200
+    END
+END

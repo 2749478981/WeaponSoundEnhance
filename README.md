@@ -33,6 +33,9 @@ Monster Hunter World\
       ├─ WeaponSoundEnhance.dll          ← 插件本体
       └─ WeaponSoundEnhance\             ← 数据目录
          ├─ WeaponSoundEnhanceGUI.exe    ← 配置工具
+         ├─ WebView2Loader.dll           ← 配置工具依赖，必须和 exe 放一起
+         ├─ web\                         ← 配置工具的界面文件，请勿删除
+         ├─ weapons_icons\               ← 武器图标，请勿删除
          ├─ WeaponSoundEnhance.ini       ← 你的配置
          ├─ sonar_icon.png               ← 界面图标
          ├─ fsm_db.csv                   ← 动作 ID 库
@@ -40,6 +43,11 @@ Monster Hunter World\
 ```
 
 > 首次运行时若没有 `WeaponSoundEnhance.ini`，插件会从 `WeaponSoundEnhance.ini.template` 生成一份。
+>
+> 配置工具的界面由系统自带的 Edge WebView2 运行时渲染：Win11 与绝大多数 Win10 已内置，
+> 极少数精简系统若缺失，启动时会有提示，装一次
+> [WebView2 运行时](https://developer.microsoft.com/microsoft-edge/webview2/) 即可。
+> `web\`、`weapons_icons\` 与 `WebView2Loader.dll` 三者缺一，界面就会白屏或图标不显示。
 
 3. 把你的 `wav / mp3 / ogg / flac` 丢进 `sounds\`（可直接建子文件夹分类，例如 `sounds\太刀\登龙.wav`）。
 

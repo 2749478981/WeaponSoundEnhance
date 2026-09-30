@@ -3,6 +3,7 @@
 /build/
 build/
 gui/out/
+gui/out-web/
 gui/build/
 *.obj
 *.o
@@ -43,3 +44,10 @@ tmp_probe*/
 
 # 误解压的发布产物目录
 WeaponSoundEnhance_v*/
+
+# 开发草稿 / 预览 / 临时测试
+mockups/
+gui_preview.html
+tmp_webgui/
+docs/gui-main.imgu.png
+gui/web/_shots/

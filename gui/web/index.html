@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="clean-light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sonar 配置工具</title>
+<link rel="stylesheet" href="css/base.css">
+<link rel="stylesheet" href="css/themes.css">
+</head>
+<body>
+<!-- 主题装饰层（可爱风显示爪印，其它主题为空） -->
+<div class="deco" aria-hidden="true">
+  <span>🐾</span><span>🐾</span><span>🐾</span><span>🐾</span><span>🐾</span>
+</div>
+
+<div class="app">
+  <!-- ============ 品牌头部 ============ -->
+  <header class="brand box">
+    <div class="logo-badge"><img id="logoImg" alt=""></div>
+    <div class="brand-text">
+      <div class="brand-name" id="brandName">Sonar</div>
+      <div class="brand-sub" id="brandSub">怪物猎人：世界 武器音效增强</div>
+    </div>
+    <div class="brand-right">
+      <div class="theme-picker" id="themePicker" title="切换界面风格"></div>
+      <span class="ver" id="verText">v—</span>
+    </div>
+  </header>
+
+  <!-- ============ 工具栏 ============ -->
+  <div class="toolbar box">
+    <button data-act="cfg.open">打开 ini</button>
+    <button class="primary" data-act="cfg.save" title="写回 ini（Ctrl+S）">保存</button>
+    <button data-act="cfg.saveAs">另存为</button>
+    <span class="sep"></span>
+    <button data-act="game.reload" title="让游戏内插件立刻重载配置（等价 /wse reload）">重载游戏配置</button>
+    <span class="sep"></span>
+    <button data-act="win.fsm">FSM 查询</button>
+    <button data-act="win.ids">上传ID</button>
+    <button data-act="win.hot" title="游戏内快捷键绑定与聊天框指令说明">热键指令</button>
+    <button data-act="cfg.mergeOld">合并旧版ini</button>
+    <span class="sep"></span>
+    <button data-act="combo.export">导出组合</button>
+    <button data-act="combo.import">导入组合</button>
+    <button data-act="sound.openDir">打开 sounds\</button>
+    <span class="sep"></span>
+    <button data-act="game.stop" title="停掉游戏内正在播放的音效（等价 /wse stop）">停止音效</button>
+    <button class="amber" data-act="game.launch">怪物猎人，启动！</button>
+    <span class="grow"></span>
+    <button data-act="win.update" id="updateBtn">检查更新</button>
+  </div>
+
+  <!-- ============ 全局选项 ============ -->
+  <div class="opts box">
+    <label><input type="checkbox" id="gEnabled"> 总开关</label>
+    <label><input type="checkbox" id="gMore" title="仅对没有勾固定(F)的旧条目生效"> 更多音效</label>
+    <label class="vol">音量 <input type="range" id="gVol" min="0" max="100"><b id="gVolNum">50</b></label>
+    <label><input type="checkbox" id="gDebug" title="插件侧 Debug=1：把每次播放/心跳写入 WeaponSoundEnhance.log"> 调试日志</label>
+    <label><input type="checkbox" id="gHotkeys" title="插件侧 Hotkeys=1：关闭后游戏内 Ctrl 组合热键全部失效"> 启用热键</label>
+  </div>
+
+  <!-- ============ 主体三栏 ============ -->
+  <main>
+    <!-- 左：武器分类 + 配置组合 -->
+    <aside class="rail box">
+      <div class="phead">武器分类</div>
+      <div class="rail-scroll" id="weaponList"></div>
+      <div class="combo-panel" id="comboPanel">
+        <div class="phead small">组合（当前激活）</div>
+        <select id="comboSelect"></select>
+        <div class="combo-btns">
+          <button data-act="combo.rename">改名</button>
+          <button data-act="combo.del">删除</button>
+          <button data-act="combo.up" title="上移">↑</button>
+          <button data-act="combo.down" title="下移">↓</button>
+        </div>
+        <div class="combo-new">
+          <input type="text" id="comboNewName" placeholder="新组合名（复制当前组合的条目）">
+          <button data-act="combo.create">新增组合</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 中：搜索 + 条目表 -->
+    <section class="center box">
+      <div class="cbar">
+        <input type="text" id="searchBox" placeholder="搜索 FSM / LMT / 音效名 / 名称…">
+        <label class="inline" title="只列出当前激活组合的条目；关掉则列出全部，非激活的会打标记">
+          <input type="checkbox" id="onlyActive"> 只看激活组合</label>
+        <button class="primary" data-act="entry.add">＋ 新增条目</button>
+      </div>
+      <div class="tablewrap">
+        <table id="entryTable">
+          <thead>
+            <tr>
+              <th class="sortable" data-sort="name">名称</th>
+              <th class="sortable" data-sort="weapon">武器</th>
+              <th class="sortable" data-sort="lmt">LMT</th>
+              <th class="sortable" data-sort="fsm">FSMId</th>
+              <th>音效</th>
+              <th class="right">操作</th>
+            </tr>
+          </thead>
+          <tbody id="entryBody"></tbody>
+        </table>
+        <div class="empty" id="entryEmpty" hidden></div>
+      </div>
+      <div class="cfoot" id="entryFoot"></div>
+    </section>
+
+    <!-- 右：实时捕获 -->
+    <aside class="capture box">
+      <div class="chead">
+        <span class="t">实时捕获</span>
+        <button data-act="live.clear">清空</button>
+        <button data-act="live.retry">重连</button>
+      </div>
+      <div class="cbody">
+        <div class="conn"><span class="dot" id="liveDot"></span><span id="liveText">未连接</span></div>
+        <div class="note" id="liveNote"></div>
+        <div class="live-now" id="liveNow" hidden></div>
+        <div class="hist" id="liveHist"></div>
+      </div>
+    </aside>
+  </main>
+
+  <!-- ============ 状态栏 ============ -->
+  <footer class="status box">
+    <span class="dot ok" id="statusDot"></span>
+    <span id="statusText">就绪</span>
+  </footer>
+</div>
+
+<!-- ================= 编辑抽屉 ================= -->
+<div class="drawer" id="editor">
+  <div class="dhead box">
+    <span class="t" id="edTitle">编辑条目</span>
+    <button data-act="ed.close">关闭</button>
+  </div>
+  <div class="dbody">
+    <div class="field"><span>名称</span><input type="text" id="edName"></div>
+    <div class="field"><span>武器</span><select id="edWeapon"></select></div>
+    <div class="field"><span>组合</span><select id="edCombo"></select></div>
+    <div class="field"><span>FSMId</span>
+      <input type="number" id="edFsm" class="num" title="-1 = 不限">
+      <label class="inline"><input type="checkbox" id="edLmtAny"> LMT 不限</label>
+    </div>
+    <div class="field"><span>LMT</span><input type="text" id="edLmt" placeholder="如 49265（逗号分隔多个；空 = 不限）"></div>
+    <div class="field hint" id="edLmtHint"></div>
+
+    <div class="sect">
+      <label class="inline big"><input type="checkbox" id="edAdv"> 高级设置（动作组 · FSMTarget · Stop · 判定 · 刃时音效）</label>
+    </div>
+
+    <div id="edAdvBox" hidden>
+      <div class="field"><span>动作组</span><input type="text" id="edGroup" placeholder="如：气刃4（同一招多帧填同组，只响一次）"></div>
+      <div class="field"><span>FSMTarget</span><input type="number" id="edFsmTarget" class="num" title="-1 = 不限定；FSM 是 (target,id) 二元组，跨层重号时用来消歧"></div>
+      <div class="field"><span></span><label class="inline"><input type="checkbox" id="edStop"> Stop：命中此动作时停止正在播放的音效</label></div>
+
+      <div class="sect">判定模式</div>
+      <div class="field"><span></span><select id="edJudge"></select></div>
+      <div class="field hint" id="edJudgeNote"></div>
+      <div class="field"><span></span><label class="inline"><input type="checkbox" id="edAdvanced"> 展开判定时间与条件</label></div>
+      <div id="edJudgeBox" hidden>
+        <div class="field"><span>判定起点</span><input type="number" id="edDelay" class="num"> <em>ms</em>
+          <span class="tip">动作开始后多久开始计伤害（排除招式前段）</span></div>
+        <div class="field"><span>判定终点</span><input type="number" id="edTimeout" class="num"> <em>ms</em>
+          <span class="tip">窗口上限，超过就不再判</span></div>
+        <div class="field"><span>余量</span><input type="number" id="edOffset" class="num"> <em>ms</em>
+          <span class="tip">在实测最晚出伤时刻之上留的余量</span></div>
+        <div class="field"><span></span><label class="inline"><input type="checkbox" id="edEndOnAction"> 将动作结束(或打断)作为判定时机</label></div>
+        <div class="field"><span></span><label class="inline"><input type="checkbox" id="edFinalMode"> 所有条件都在窗口结束时统一判定（CheckMode=final）</label></div>
+        <div id="edConds"></div>
+        <button data-act="ed.addCond">＋ 添加条件</button>
+      </div>
+    </div>
+
+    <div class="sect" id="edDefHead">默认音效</div>
+    <div id="edPools"></div>
+  </div>
+  <div class="dfoot box">
+    <span class="grow"></span>
+    <button class="primary" data-act="ed.ok">确定</button>
+    <button data-act="ed.cancel">取消</button>
+  </div>
+</div>
+
+<!-- ================= FSM 查询 ================= -->
+<div class="modal" id="mFsm">
+  <div class="mbox box">
+    <div class="mhead"><span class="t">FSM / LMT 查询</span><button data-act="m.close">关闭</button></div>
+    <div class="mbody">
+      <div class="mbar">
+        <input type="text" id="fsmQ" placeholder="搜名称 / fsm / lmt">
+        <select id="fsmW"></select>
+      </div>
+      <div class="tablewrap small">
+        <table><thead><tr><th>名称</th><th>武器</th><th>LMT</th><th>FSMId</th><th>来源</th></tr></thead>
+        <tbody id="fsmBody"></tbody></table>
+      </div>
+      <div class="cfoot" id="fsmFoot"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 热键与聊天指令 ================= -->
+<div class="modal" id="mHot">
+  <div class="mbox box">
+    <div class="mhead"><span class="t">热键与聊天指令</span><button data-act="m.close">关闭</button></div>
+    <div class="mbody">
+      <p class="note">热键在游戏内生效，需先打开主界面的「启用热键」。改动要回到主界面点「保存」才会写进 ini。<br>
+        改键：点下面的按键格子，再按一个新键即可；按 Esc 取消。</p>
+
+      <div class="field"><span>组合键</span>
+        <select id="hkMod">
+          <option value="17">Ctrl</option>
+          <option value="16">Shift</option>
+          <option value="18">Alt</option>
+          <option value="0">不用组合键（单键直接触发）</option>
+        </select>
+      </div>
+
+      <div class="tablewrap small">
+        <table><thead><tr><th>功能</th><th>当前按键</th><th style="width:78px"></th></tr></thead>
+        <tbody id="hkBody"></tbody></table>
+      </div>
+
+      <div class="field"><span>F8 设为</span>
+        <input type="number" id="hkVolVal" min="0" max="100" class="mini"> <em>% 音量</em>
+      </div>
+
+      <div class="sect">聊天框指令</div>
+      <div class="btnrow">
+        <label class="inline"><input type="checkbox" id="gChatCmd"> 允许聊天框指令</label>
+        <label class="inline"><input type="checkbox" id="gChatEcho"> 执行结果在聊天框回显</label>
+      </div>
+      <div class="tablewrap small">
+        <table><thead><tr><th style="width:200px">指令</th><th>作用</th></tr></thead>
+        <tbody id="cmdBody"></tbody></table>
+      </div>
+      <div class="note">在游戏内聊天框输入后回车；前缀 <code>/wse</code> 与 <code>/wsesound</code> 都可以。</div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 共享 ID 库 ================= -->
+<div class="modal" id="mIds">
+  <div class="mbox box">
+    <div class="mhead"><span class="t">共享动作 ID 库</span><button data-act="m.close">关闭</button></div>
+    <div class="mbody">
+      <p class="note">导出你的实测 FSM/LMT、导入别人的、或提交到共享库。基础库随版本更新（只追加行）。</p>
+      <div class="btnrow">
+        <button data-act="ids.export">导出实测ID</button>
+        <button data-act="ids.import">导入CSV合并</button>
+        <button data-act="ids.submit">提交到共享库</button>
+        <button data-act="ids.fetch">获取最新库</button>
+      </div>
+      <div class="paths" id="idsPaths"></div>
+      <div class="sect">我的实测记录</div>
+      <div class="tablewrap small"><table><thead><tr><th>名称</th><th>武器</th><th>LMT</th><th>FSMId</th><th></th></tr></thead>
+        <tbody id="idsBody"></tbody></table></div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 在线更新 ================= -->
+<div class="modal" id="mUpd">
+  <div class="mbox box narrow">
+    <div class="mhead"><span class="t">版本与更新</span><button data-act="m.close">关闭</button></div>
+    <div class="mbody">
+      <div class="upd-row"><span>当前版本</span><b id="updCur">v—</b></div>
+      <div class="upd-row"><span>仓库最新</span><b id="updNew">—</b></div>
+      <div class="upd-notes" id="updNotes"></div>
+      <div class="bar" id="updBar" hidden><i id="updBarFill"></i></div>
+      <div class="note" id="updMsg"></div>
+      <div class="btnrow">
+        <button class="primary" data-act="upd.check">检查更新</button>
+        <button data-act="upd.install" id="updInstall" hidden>下载并安装</button>
+        <button data-act="upd.restart" id="updRestart" hidden>重启 GUI 完成更新</button>
+        <button data-act="upd.open">打开发布页</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 通用确认 / 输入弹窗 ================= -->
+<div class="modal" id="mConfirm">
+  <div class="mbox box narrow">
+    <div class="mhead"><span class="t" id="cfTitle">确认</span></div>
+    <div class="mbody">
+      <p id="cfMsg" class="cf-msg"></p>
+      <input type="text" id="cfInput" hidden>
+      <div class="btnrow right">
+        <button class="primary" id="cfOk">确定</button>
+        <button id="cfCancel">取消</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script src="js/mock.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

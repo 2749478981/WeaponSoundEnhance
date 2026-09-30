@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SonarGUI.vcxproj —— 新版配置工具（WebView2 + HTML/CSS/JS）
+  和旧的 WeaponSoundEnhanceGUI.vcxproj（Dear ImGui）并存，输出目录分开，
+  互不干扰；旧工程先留着做后备，等新版功能验证齐全再决定是否退役。
+
+  产物名字故意还是 WeaponSoundEnhanceGUI.exe —— 部署脚本和用户习惯都不用改。
+-->
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>16.0</VCProjectVersion>
+    <ProjectGuid>{7C4E2B91-3A5D-4F18-9E62-B8D1A6F03C55}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <RootNamespace>SonarGUI</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <ProjectName>SonarGUI</ProjectName>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v142</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v142</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+
+  <PropertyGroup>
+    <OutDir>$(ProjectDir)out-web\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)out-web\obj\$(Platform)\$(Configuration)\</IntDir>
+    <TargetName>WeaponSoundEnhanceGUI</TargetName>
+    <LinkIncremental Condition="'$(Configuration)'=='Release'">false</LinkIncremental>
+    <LinkIncremental Condition="'$(Configuration)'=='Debug'">true</LinkIncremental>
+  </PropertyGroup>
+
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalIncludeDirectories>src;..\third_party;..\third_party\webview2\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <AdditionalDependencies>user32.lib;shell32.lib;ole32.lib;comdlg32.lib;winmm.lib;winhttp.lib;urlmon.lib;advapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <PostBuildEvent>
+      <!-- WebView2Loader.dll 必须在 exe 旁边才能动态加载到 -->
+      <Command>copy /Y "$(ProjectDir)..\third_party\webview2\x64\WebView2Loader.dll" "$(OutDir)" &gt;nul</Command>
+      <Message>复制 WebView2Loader.dll 到输出目录</Message>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+
+  <ItemGroup>
+    <ClCompile Include="src\main_web.cpp" />
+    <ClCompile Include="src\core.cpp" />
+    <ClCompile Include="src\config.cpp" />
+    <ClCompile Include="src\game.cpp" />
+    <ClCompile Include="src\fsmdb.cpp" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ClInclude Include="src\core.h" />
+    <ClInclude Include="src\config.h" />
+    <ClInclude Include="src\fsmdb.h" />
+    <ClInclude Include="src\fsutil.h" />
+    <ClInclude Include="src\game.h" />
+    <ClInclude Include="src\update.h" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ResourceCompile Include="resource.rc" />
+  </ItemGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>
