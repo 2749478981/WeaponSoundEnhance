@@ -598,6 +598,19 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
                                     COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_ALLOW);
                             }
 
+                            // ★ 导航完成前 WebView 区域默认是白底，一打开会先白屏一秒，
+                            //   然后加载图才出现。把 WebView 背景色设成加载图的底色
+                            //   (#F6F7F9，极简浅色)，白屏阶段就变成和加载图一样的浅色，
+                            //   视觉上是"打开就是加载图"，无白屏断层。
+                            //   （在 ICoreWebView2Controller2 上：put_DefaultBackgroundColor）
+                            {
+                                ComPtr<ICoreWebView2Controller2> c2;
+                                if (SUCCEEDED(g_ctrl.As(&c2)) && c2) {
+                                    COREWEBVIEW2_COLOR c = { 255, 246, 247, 249 };  // A,R,G,B = #F6F7F9
+                                    c2->put_DefaultBackgroundColor(c);
+                                }
+                            }
+
                             // JS → C++
                             g_web->add_WebMessageReceived(
                                 Callback<ICoreWebView2WebMessageReceivedEventHandler>(

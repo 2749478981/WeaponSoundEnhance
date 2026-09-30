@@ -40,7 +40,9 @@
   transition:opacity .25s ease;
 }
 .splash img{width:88px; height:88px; object-fit:contain; border-radius:var(--radius-ctl);
-            box-shadow:var(--shadow-card); background:var(--panel)}
+            box-shadow:var(--shadow-card); background:var(--panel);
+            animation:splashPulse 1.3s ease-in-out infinite}
+@keyframes splashPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.07)}}
 .splash-text{font-size:13px; color:var(--muted); letter-spacing:2px}
 .splash.hide{opacity:0; pointer-events:none}
 html,body{height:100%}

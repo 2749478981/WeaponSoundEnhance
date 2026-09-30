@@ -1415,6 +1415,16 @@ function buildFsmWeaponSelect() {
   (ST.weapons || []).forEach(w => sel.appendChild(h('option', { value: String(w.id) }, `${w.id} ${w.name}`)));
 }
 
+// 加载图：至少显示 minMs 毫秒再淡出，避免"一闪而过"或数据没到就消失。
+function hideSplash(minMs) {
+  const splash = $('#splash');
+  if (!splash) return;
+  setTimeout(() => {
+    splash.classList.add('hide');
+    setTimeout(() => splash.remove(), 350);
+  }, Math.max(0, minMs || 0));
+}
+
 Backend.onEvent(ev => {
   if (ev.event === 'live') {
     ST.live = Object.assign(ST.live, ev.data || {});
@@ -1445,11 +1455,10 @@ Backend.onEvent(ev => {
   wireGlobal();
   bindLogoEgg();            // 左上角图标彩蛋
   renderChatCmds();          // 指令表是静态的，建一次就行
+  const tBoot = Date.now(); // 加载图从打开就显示，数据就绪后至少再停一小会，别一闪而过
   try {
     await refresh();
-    // 数据就绪，撤掉启动加载屏
-    const splash = $('#splash');
-    if (splash) { splash.classList.add('hide'); setTimeout(() => splash.remove(), 300); }
+    hideSplash(420 - (Date.now() - tBoot));
     if (forcedTheme) applyTheme(forcedTheme);
     buildFsmWeaponSelect();
     // 预览用：#editor 直接打开第一条的编辑器（方便截图/试样式）
@@ -1458,8 +1467,7 @@ Backend.onEvent(ev => {
     if (Backend.mode === 'browser')
       toast('浏览器预览模式：数据是假的，只用来调界面', 'ok');
   } catch (e) {
-    const splash = $('#splash');
-    if (splash) { splash.classList.add('hide'); setTimeout(() => splash.remove(), 300); }
+    hideSplash(0);
     $('#statusText').textContent = '初始化失败：' + e.message;
     toast('初始化失败：' + e.message, 'err');
   }
