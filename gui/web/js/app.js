@@ -1112,8 +1112,8 @@ async function refresh() {
   $('#gDebug').checked = !!g.debug;
   $('#gHotkeys').checked = !!g.hotkeysEnabled;
 
-  await loadEntries();
-  await loadCombos();
+  // 条目列表和组合列表互不依赖，并行拉取省一次往返
+  await Promise.all([loadEntries(), loadCombos()]);
   renderWeapons();
   renderComboPanel();
   applyFilter();
@@ -1245,6 +1245,9 @@ Backend.onEvent(ev => {
   renderChatCmds();          // 指令表是静态的，建一次就行
   try {
     await refresh();
+    // 数据就绪，撤掉启动加载屏
+    const splash = $('#splash');
+    if (splash) { splash.classList.add('hide'); setTimeout(() => splash.remove(), 300); }
     if (forcedTheme) applyTheme(forcedTheme);
     buildFsmWeaponSelect();
     // 预览用：#editor 直接打开第一条的编辑器（方便截图/试样式）
@@ -1253,6 +1256,8 @@ Backend.onEvent(ev => {
     if (Backend.mode === 'browser')
       toast('浏览器预览模式：数据是假的，只用来调界面', 'ok');
   } catch (e) {
+    const splash = $('#splash');
+    if (splash) { splash.classList.add('hide'); setTimeout(() => splash.remove(), 300); }
     $('#statusText').textContent = '初始化失败：' + e.message;
     toast('初始化失败：' + e.message, 'err');
   }

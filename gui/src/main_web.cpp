@@ -19,6 +19,7 @@
 
 #include <windows.h>
 #include <shellapi.h>
+#include <shlwapi.h>
 #include <objbase.h>
 #include <string>
 #include <cstdio>
@@ -27,6 +28,8 @@
 
 #include "../third_party/webview2/include/WebView2.h"
 #include "core.h"
+
+#pragma comment(lib, "shlwapi.lib")
 
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "ole32.lib")
@@ -424,6 +427,26 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
+    // ★ 单实例：重复双击时把已有窗口激活并退出，不弹提示框、不重复开窗。
+    //   窗口类名是我们自定义的唯一名，FindWindow 很安全。
+    {
+        HWND w = ::FindWindowW(L"SonarConfigGUI", nullptr);
+        if (w) {
+            ::ShowWindow(w, SW_RESTORE);
+            ::SetForegroundWindow(w);
+            return 0;
+        }
+        // 竞态兜底：窗口可能正在创建（类已注册、窗口未建），互斥已存在就等它建完
+        HANDLE mtx = ::CreateMutexW(nullptr, TRUE, L"SonarConfigGUI_SingleInstance");
+        if (mtx && ::GetLastError() == ERROR_ALREADY_EXISTS) {
+            ::Sleep(600);
+            w = ::FindWindowW(L"SonarConfigGUI", nullptr);
+            if (w) { ::ShowWindow(w, SW_RESTORE); ::SetForegroundWindow(w); }
+            return 0;
+        }
+        // 互斥句柄故意不释放：进程生命周期内一直持有，挡住后续重复启动
+    }
+
     // ★ DPI 感知必须最先声明。
     //   WebView2 是按"物理像素"跟宿主对账的：如果宿主是 DPI 不感知的老式进程，
     //   Windows 会做坐标虚拟化，GetClientRect 拿到的和 WebView 实际渲染尺寸对不上，
@@ -462,11 +485,36 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
                                   WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
                                   wr.right - wr.left, wr.bottom - wr.top,
                                   nullptr, nullptr, inst, nullptr);
-    if (!hwnd) return 1;
+    if (!hwnd) {
+        // 以前这里直接 return 1，正是"双击毫无反应"的一种来源
+        const unsigned long le = (unsigned long)::GetLastError();
+        LogLine("CreateWindowExW failed, lastError=%lu", le);
+        ::MessageBoxW(nullptr,
+            (std::wstring(L"创建窗口失败（错误码 ") + std::to_wstring(le) + L"）。\n\n"
+             L"如果持续出现，请把目录下的 sonar_gui.log 发给作者。").c_str(),
+            L"Sonar 配置工具", MB_ICONERROR);
+        return 1;
+    }
     g_hwnd = hwnd;
     g_core.SetOwnerWindow(hwnd);
     ::ShowWindow(hwnd, SW_SHOW);
     ::UpdateWindow(hwnd);
+
+    // ---- 启动前自检：WebView2Loader.dll / web 目录缺一不可，缺了就明确提示 ----
+    {
+        if (!::PathFileExistsW((ExeDirW() + L"web\\index.html").c_str())) {
+            ::MessageBoxW(hwnd,
+                L"缺少 web 文件夹。\n\n"
+                L"界面文件必须和 WeaponSoundEnhanceGUI.exe 放在一起。\n"
+                L"请把整个发布包解压到同一目录后运行，不要单独拷贝 exe。",
+                L"Sonar 配置工具", MB_ICONERROR);
+            return 1;
+        }
+        if (!::PathFileExistsW((ExeDirW() + L"weapons_icons").c_str())) {
+            // 只缺图标不致命，提一声就行，不用拦着不让用
+            LogLine("warning: weapons_icons folder missing, icons will show placeholders");
+        }
+    }
 
     // ---- 拿 WebView2 入口 ----
     PFN_CreateEnv createEnv = LoadWebView2Entry();
@@ -503,11 +551,32 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
                     Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
                         [webRoot](HRESULT r2, ICoreWebView2Controller* ctrl) -> HRESULT {
                             LogLine("ctrl handler: hr=0x%08X ctrl=%p", (unsigned)r2, (void*)ctrl);
-                            if (FAILED(r2) || !ctrl) return r2;
+                            if (FAILED(r2) || !ctrl) {
+                                // 最常见的两个原因：
+                                //  - 上一个实例的 WebView2 残留进程还占着数据目录（会返回 ERROR_BUSY 0x800700AA）
+                                //  - 安全软件拦截了 msedgewebview2.exe 子进程
+                                wchar_t hb[16] = {};
+                                ::swprintf_s(hb, L"%08X", (unsigned)r2);
+                                const std::wstring msg =
+                                    std::wstring(L"WebView2 初始化未完成（错误码 0x") + hb + L"）。\n\n"
+                                    L"常见原因与处理：\n"
+                                    L"1) 上一个窗口进程可能还在后台 → 打开任务管理器结束 "
+                                    L"WeaponSoundEnhanceGUI.exe 和 msedgewebview2.exe 再试；\n"
+                                    L"2) 杀毒软件拦截了 WebView2 组件 → 把本目录加入白名单再试；\n"
+                                    L"3) 如果反复失败，把目录下的 sonar_gui.log 发给作者。";
+                                ::MessageBoxW(g_hwnd, msg.c_str(),
+                                    L"Sonar 配置工具", MB_ICONERROR);
+                                return r2;
+                            }
                             g_ctrl = ctrl;
                             ctrl->get_CoreWebView2(&g_web);
                             LogLine("corewebview2=%p", (void*)g_web.Get());
-                            if (!g_web) return E_FAIL;
+                            if (!g_web) {
+                                ::MessageBoxW(g_hwnd,
+                                    L"无法取得 WebView2 内核。\n\n请把目录下的 sonar_gui.log 发给作者。",
+                                    L"Sonar 配置工具", MB_ICONERROR);
+                                return E_FAIL;
+                            }
 
                             // 禁掉右键菜单/开发者工具入口以外的杂项，保持干净
                             ComPtr<ICoreWebView2Settings> st;

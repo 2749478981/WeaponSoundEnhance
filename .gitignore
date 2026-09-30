@@ -45,6 +45,9 @@ tmp_probe*/
 # 误解压的发布产物目录
 WeaponSoundEnhance_v*/
 
+# 发布/打包辅助脚本（本地使用，不进仓库，仓库保持干净）
+/*.ps1
+
 # 开发草稿 / 预览 / 临时测试
 mockups/
 gui_preview.html
