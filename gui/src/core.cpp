@@ -1214,6 +1214,7 @@ struct Core::Impl {
         int weapon = -1;
         int weaponId = -1;
         std::string time;
+        unsigned long long ms = 0;     // GetTickCount64 时间戳，用于"短时间同动作合并"
     };
     std::vector<HistEntry> history;
 
@@ -1415,12 +1416,24 @@ struct Core::Impl {
     void RecordHistory() {
         if (!(liveOk && live.attached) || !live.inScene) return;
         if (live.fsm == -1) return;
+        const unsigned long long nowMs = ::GetTickCount64();
         if (!history.empty()) {
-            const HistEntry& last = history.back();
-            if (last.fsm == live.fsm && last.lmt == live.lmt && last.weapon == live.weapon)
-                return;   // 和上一条相同：去重（采样很密，否则历史全是重复行）
+            const HistEntry& top = history.front();   // ★ 最新一条在头部（insert begin）
+            // 合并：相同动作（fsm+lmt+weapon）且距上一条 < 500ms 只算一条。
+            //
+            // 【为什么不能只比"上一条完全相同"】一次动作在抓取里持续几十帧，
+            // fsm 常常会短暂跳 0 / 跳过渡帧再回来；如果逐帧过滤，同一次动作
+            // 能被拆成好几条"同一个 id"。所以用时间窗合并：500ms 内同 id 视为一次。
+            //
+            // 【历史顺序改过前后也出过的坑】历史一直是插到头部（最新在前）的，
+            // 去重必须比较 head（最新的那条）。原来比较 history.back()（最旧），
+            // 永远不相等 → 每一帧都新增一条，整个面板全是重复行。
+            if (top.fsm == live.fsm && top.lmt == live.lmt && top.weapon == live.weapon &&
+                nowMs - top.ms < 500)
+                return;
         }
         HistEntry h;
+        h.ms = nowMs;
         h.fsm = live.fsm;
         h.lmt = live.lmt;
         h.weapon = live.weapon;
