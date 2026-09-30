@@ -284,6 +284,7 @@ button{white-space:nowrap}
 .hist{margin-top:14px; border-top:var(--bw) solid var(--line); padding-top:10px}
 /* 派生 / WEM 捕获视图切换 */
 .viewswitch{display:flex; gap:4px; margin:10px 0 2px}
+.viewswitch.list{margin:8px 0 4px}
 .viewswitch .vs{flex:1; font-size:11.5px; padding:5px 0; border:var(--bw) solid var(--line);
                 background:var(--panel); color:var(--muted); border-radius:var(--radius-ctl);
                 cursor:pointer; transition:all .15s}

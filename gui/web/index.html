@@ -87,18 +87,28 @@
         <input type="text" id="searchBox" placeholder="搜索 FSM / LMT / 音效名 / 名称…">
         <label class="inline" title="只列出当前激活组合的条目；关掉则列出全部，非激活的会打标记">
           <input type="checkbox" id="onlyActive"> 只看激活组合</label>
-        <label class="inline" title="只列出 wem 条目（按游戏播放的 WWise 音效触发）">
-          <input type="checkbox" id="onlyWem"> 只看 WEM 条目</label>
         <button class="primary" data-act="entry.add">＋ 新增条目</button>
+      </div>
+      <div class="viewswitch list">
+        <button id="viewListFsm" class="vs on">派生条目（FSM/LMT）</button>
+        <button id="viewListWem" class="vs">WEM 条目（id/序号）</button>
       </div>
       <div class="tablewrap">
         <table id="entryTable">
-          <thead>
-            <tr>
+          <thead id="entryThead">
+            <tr id="theadFsm">
               <th class="sortable" data-sort="name">名称</th>
               <th class="sortable" data-sort="weapon">武器</th>
               <th class="sortable" data-sort="lmt">LMT</th>
               <th class="sortable" data-sort="fsm">FSMId</th>
+              <th>音效</th>
+              <th class="right">操作</th>
+            </tr>
+            <tr id="theadWem" hidden>
+              <th class="sortable" data-sort="name">名称</th>
+              <th class="sortable" data-sort="weapon">武器</th>
+              <th>WEM id</th>
+              <th>序号（nbnk 内第几个）</th>
               <th>音效</th>
               <th class="right">操作</th>
             </tr>

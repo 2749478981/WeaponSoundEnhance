@@ -191,7 +191,6 @@ const ST = {
   active: {},
   weaponFilter: -1,
   onlyActive: false,
-  filterWem: false,          // 条目列表：只看 WEM 条目
   search: '',
   sort: { key: 'name', asc: true },
   entries: [],
@@ -403,7 +402,7 @@ function applyFilter() {
   if (ST.weaponFilter === -2) list = list.filter(x => x.e.weaponType < 0);
   else if (ST.weaponFilter >= 0) list = list.filter(x => x.e.weaponType === ST.weaponFilter);
   if (ST.onlyActive) list = list.filter(x => entryActive(x.e));
-  if (ST.filterWem) list = list.filter(x => x.e.media != null && x.e.media > 0);
+  // 视图级过滤（renderTable 里按 ST.wemView 决定显示派生还是 wem）
 
   // 搜索（音效路径含判定音效池，见 entrySounds）
   if (q) list = list.filter(x => {
@@ -432,19 +431,28 @@ function applyFilter() {
 function renderTable() {
   const tb = $('#entryBody');
   tb.innerHTML = '';
+  const wem = ST.wemView;
+  // 双表头切换：WEM 视图 → WEM id / 序号 列
+  const tf = $('#theadFsm'), tw = $('#theadWem');
+  if (tf) tf.hidden = wem;
+  if (tw) tw.hidden = !wem;
+  // 视图级过滤：完全分开（派生视图只显示 fsm 条目，WEM 视图只显示 wem 条目）
+  const view = ST.visible.filter(({ e }) => wem ? (e.media != null && e.media > 0)
+                                                : !(e.media != null && e.media > 0));
   const empty = $('#entryEmpty');
 
-  if (!ST.visible.length) {
+  if (!view.length) {
     empty.hidden = false;
     empty.textContent = ST.entries.length
-      ? '没有匹配的条目（换个筛选或清空搜索）'
+      ? (wem ? '没有 WEM 条目 — 从右侧「WEM 音效」捕获历史点"＋ 添加"创建'
+             : '没有派生条目（换个筛选或清空搜索）')
       : '还没有任何条目 — 点右上角「＋ 新增条目」开始';
   } else empty.hidden = true;
 
-  ST.visible.forEach(({ e, i }) => {
+  view.forEach(({ e, i }) => {
     const sm = soundSummary(e);
     const inCombo = entryActive(e);
-    const isWem = e.media != null && e.media > 0;
+    const isWem = wem;
     const tr = h('tr', {
       class: (i === ST.selIndex ? 'sel ' : '') + (inCombo ? '' : 'inactive'),
       title: inCombo ? '' : '这条属于别的组合，当前不生效（切换组合后才会生效）',
@@ -453,9 +461,13 @@ function renderTable() {
         isWem ? h('span', { class: 'badge wem', text: 'wem', style: 'margin-left:7px' }) : null,
         inCombo ? null : h('span', { class: 'badge warn', text: '未激活', style: 'margin-left:7px' })),
       h('td', {}, wInline(e.weaponType)),
-      h('td', { class: 'lmt' }, isWem ? ('媒体 ' + e.media)
-                                      : e.lmtAny || !(e.lmt || []).length ? '不限' : e.lmt.join(',')),
-      h('td', { class: 'fsm', style: isWem ? 'color:var(--c-blue)' : '' }, isWem ? 'WEM' : String(e.fsmId)),
+      // WEM 视图：WEM id + 序号（nbnk 内第几个）；派生视图：LMT + FSMId
+      isWem
+        ? h('td', { class: 'lmt' }, h('span', { class: 'mono', text: String(e.media) }))
+        : h('td', { class: 'lmt' }, e.lmtAny || !(e.lmt || []).length ? '不限' : e.lmt.join(',')),
+      isWem
+        ? h('td', { class: 'fsm', style: 'color:var(--c-blue)' }, wemSeq(e) || '-')
+        : h('td', { class: 'fsm' }, String(e.fsmId)),
       h('td', { title: entrySounds(e).map(s => s.path).join('\n') || '没有音效' },
         h('span', { class: 'snd' }, sm.text,
         e.conds && e.conds.length ? h('span', { class: 'badge', text: '判定' }) : null,
@@ -483,13 +495,19 @@ function renderTable() {
     if (th.dataset.sort === ST.sort.key) th.classList.add(ST.sort.asc ? 'asc' : 'desc');
   });
 
-  const inactive = ST.visible.filter(x => !entryActive(x.e)).length;
+  const inactive = view.filter(x => !entryActive(x.e)).length;
   $('#entryFoot').textContent =
-    `显示 ${ST.visible.length} / 共 ${ST.entries.length} 条` +
+    `显示 ${view.length} / 共 ${ST.entries.length} 条` +
     (ST.weaponFilter >= 0 ? `　·　当前组合：${ST.active[ST.weaponFilter] || '默认'}` : '') +
     (inactive && !ST.onlyActive ? `　·　其中 ${inactive} 条属于别的组合（未激活）` : '') +
-    `　·　排序：${{ name: '名称', weapon: '武器', lmt: 'LMT', fsm: 'FSMId' }[ST.sort.key]}` +
-    (ST.sort.asc ? ' 升序' : ' 降序');
+    (ST.wemView ? `　·　WEM 条目（按媒体 id 触发）` : `　·　排序：${{ name: '名称', weapon: '武器', lmt: 'LMT', fsm: 'FSMId' }[ST.sort.key]}`) +
+    (ST.wemView ? '' : (ST.sort.asc ? ' 升序' : ' 降序'));
+}
+
+// 条目 WEM 序号：从条目名（mediaids 形式 "bank/30.ogg"）取 nbnk 内第几个
+function wemSeq(e) {
+  const m = (e.name || '').match(/\/(\d+)(?:\.[a-z0-9]+)?$/i);
+  return m ? ('第 ' + m[1] + ' 个') : '';
 }
 
 /* 删除二次确认 —— 明确列出要删什么，不可撤销 */
@@ -538,15 +556,19 @@ function setWemView(v) {
   const fb = $('#viewFsmBox'), wb = $('#viewWemBox');
   if (fb) fb.hidden = v;
   if (wb) wb.hidden = !v;
+  // 中栏条目列表的同样式切换按钮
+  const lf = $('#viewListFsm'), lw = $('#viewListWem');
+  if (lf && lw) { lf.className = 'vs' + (v ? '' : ' on'); lw.className = 'vs' + (v ? ' on' : ''); }
   renderLive();
+  renderTable();
   Backend.call('ui.set', { wemView: v }).catch(() => {});
 }
 
 function wireWemView() {
   const f = $('#viewFsm'), w = $('#viewWem');
-  if (!f || !w) return;
-  f.onclick = () => setWemView(false);
-  w.onclick = () => setWemView(true);
+  if (f && w) { f.onclick = () => setWemView(false); w.onclick = () => setWemView(true); }
+  const lf = $('#viewListFsm'), lw = $('#viewListWem');
+  if (lf && lw) { lf.onclick = () => setWemView(false); lw.onclick = () => setWemView(true); }
 }
 
 function renderLive() {
@@ -1433,6 +1455,8 @@ async function refresh() {
       const fb = $('#viewFsmBox'), wb = $('#viewWemBox');
       if (fb) fb.hidden = s.ui.wemView;
       if (wb) wb.hidden = !s.ui.wemView;
+      const lf = $('#viewListFsm'), lw = $('#viewListWem');
+      if (lf && lw) { lf.className = 'vs' + (s.ui.wemView ? '' : ' on'); lw.className = 'vs' + (s.ui.wemView ? ' on' : ''); }
     }
   }
   if (!ST.ready) { applyTheme(s.theme || s.defaultTheme || 'clean-light'); renderThemePicker(); }
@@ -1518,9 +1542,6 @@ function wireToolbar() {
   $('#onlyActive').addEventListener('change', e => {
     ST.onlyActive = e.target.checked; applyFilter();
     Backend.call('ui.set', { onlyActive: ST.onlyActive }).catch(() => {});
-  });
-  $('#onlyWem').addEventListener('change', e => {
-    ST.filterWem = e.target.checked; applyFilter();
   });
   $('#fsmQ').addEventListener('input', runFsmSearch);
   $('#fsmW').addEventListener('change', runFsmSearch);
