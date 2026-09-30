@@ -282,7 +282,10 @@ button{white-space:nowrap}
   background:var(--panel-2); border:var(--bw) solid var(--line); font:12px ui-monospace,monospace}
 .live-now b{color:var(--accent)}
 .live-row{display:flex; align-items:baseline; gap:8px; cursor:pointer; flex-wrap:wrap}
-.live-row b{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+/* 不要把动作名压扁省略：窄栏里会把「动作 2」截成「动」这种半截字。
+   让它按需换行，宁可占两行也显示完整。 */
+.live-row b{white-space:nowrap} 
+.live-row>span{color:var(--muted); white-space:nowrap}
 .live-row .tag{font-style:normal; font-size:10px; font-weight:700; padding:0 6px;
                border-radius:var(--radius-pill); background:var(--badge-bg); color:var(--badge-fg)}
 .live-row .tag.add{background:rgba(255,159,10,.18); color:var(--c-amber)}

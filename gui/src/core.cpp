@@ -1417,14 +1417,21 @@ struct Core::Impl {
         if (!(liveOk && live.attached) || !live.inScene) return;
         if (live.fsm == -1) return;
         const unsigned long long nowMs = ::GetTickCount64();
-        // 合并：800ms 内扫描最近记录，同 id（fsm+lmt+weapon）就合并为一条。
+        // 去重分两层，必须都有：
         //
-        // 【为什么要扫描、而不是只看最新一条】
-        //   一次动作里 fsm 可能 92→90→92 地来回跳；只看最新一条的话，
-        //   最后一次 92 会因为"最新是 90"而再记一条，同一个 id 就出现两条。
-        //   只要时间窗内已存在同 id 的记录，这次就当它是同一次动作的一部分，不再新增。
-        // 【顺序】历史最新在头部（insert begin），从头往后扫，超出 800ms 就停。
-        const unsigned long long win = 800;
+        // ① 「和最新一条完全相同」→ 永不重复记录（不看时间）。
+        //    轮询间隔可能接近 1 秒（PollMs 配置），光靠时间窗覆盖不住，
+        //    站着不动时会打出一长串一模一样的 fsm/lmt。
+        // ② 时间窗内（1.5s）扫描最近记录，同 id 也跳过。
+        //    一次动作里 fsm 可能 92→90→92 地来回跳，只看最新一条会让 92 出现两次。
+        //
+        // 【顺序】历史最新在头部（insert begin）：① 比 front，② 从头往后扫。
+        if (!history.empty()) {
+            const HistEntry& top = history.front();
+            if (top.fsm == live.fsm && top.lmt == live.lmt && top.weapon == live.weapon)
+                return;
+        }
+        const unsigned long long win = 1500;
         for (std::size_t i = 0; i < history.size(); ++i) {
             const HistEntry& ph = history[i];
             if (nowMs - ph.ms >= win) break;

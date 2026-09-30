@@ -458,9 +458,11 @@ function renderLive() {
   if (L.attached && lastAct) {
     now.hidden = false;
     now.innerHTML = '';
-    const row = h('div', { class: 'live-row' },
-      h('b', { text: lastAct.name || ('动作 ' + lastAct.fsm) }),
-      h('span', { text: `w${lastAct.weapon} · fsm ${lastAct.fsm} · lmt ${lastAct.lmt}` }),
+    const row = h('div', { class: 'live-row', title: '点击编辑或添加这条动作' },
+      // 没有收录名字时直接用 fsm 值，别再写「动作 N」——窄栏里会被截成「动」，
+      // 看起来像乱码。
+      h('b', { text: lastAct.name || ('fsm ' + lastAct.fsm) }),
+      h('span', { text: `w${lastAct.weapon} · lmt ${lastAct.lmt}` }),
       lastAct.added
         ? h('em', { class: 'tag', text: '编辑' })
         : h('em', { class: 'tag add', text: '＋ 添加' }));
