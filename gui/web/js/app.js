@@ -191,6 +191,7 @@ const ST = {
   active: {},
   weaponFilter: -1,
   onlyActive: false,
+  filterWem: false,          // 条目列表：只看 WEM 条目
   search: '',
   sort: { key: 'name', asc: true },
   entries: [],
@@ -402,6 +403,7 @@ function applyFilter() {
   if (ST.weaponFilter === -2) list = list.filter(x => x.e.weaponType < 0);
   else if (ST.weaponFilter >= 0) list = list.filter(x => x.e.weaponType === ST.weaponFilter);
   if (ST.onlyActive) list = list.filter(x => entryActive(x.e));
+  if (ST.filterWem) list = list.filter(x => x.e.media != null && x.e.media > 0);
 
   // 搜索（音效路径含判定音效池，见 entrySounds）
   if (q) list = list.filter(x => {
@@ -442,15 +444,18 @@ function renderTable() {
   ST.visible.forEach(({ e, i }) => {
     const sm = soundSummary(e);
     const inCombo = entryActive(e);
+    const isWem = e.media != null && e.media > 0;
     const tr = h('tr', {
       class: (i === ST.selIndex ? 'sel ' : '') + (inCombo ? '' : 'inactive'),
       title: inCombo ? '' : '这条属于别的组合，当前不生效（切换组合后才会生效）',
     },
       h('td', {}, h('span', { class: 'nm', title: displayName(e), text: displayName(e) }),
+        isWem ? h('span', { class: 'badge wem', text: 'wem', style: 'margin-left:7px' }) : null,
         inCombo ? null : h('span', { class: 'badge warn', text: '未激活', style: 'margin-left:7px' })),
       h('td', {}, wInline(e.weaponType)),
-      h('td', { class: 'lmt' }, e.lmtAny || !(e.lmt || []).length ? '不限' : e.lmt.join(',')),
-      h('td', { class: 'fsm' }, String(e.fsmId)),
+      h('td', { class: 'lmt' }, isWem ? ('媒体 ' + e.media)
+                                      : e.lmtAny || !(e.lmt || []).length ? '不限' : e.lmt.join(',')),
+      h('td', { class: 'fsm', style: isWem ? 'color:var(--c-blue)' : '' }, isWem ? 'WEM' : String(e.fsmId)),
       h('td', { title: entrySounds(e).map(s => s.path).join('\n') || '没有音效' },
         h('span', { class: 'snd' }, sm.text,
         e.conds && e.conds.length ? h('span', { class: 'badge', text: '判定' }) : null,
@@ -510,15 +515,14 @@ async function askDelete(indices) {
    右栏：实时捕获
    =========================================================================== */
 function wemLabel(r) {
-  // 主标识 = nbnk(bank) 名 + 该 bank 里的序号（mediaids 名形如 "wp_bow_cmn/30.ogg"）
+  // 标识只用 nbnk 文件名（bank 名）+ 该 bank 里的序号，绝不显示本地路径。
   const nm = r.name || '';
-  let m = nm.match(/^([^/]+)\/(\d+)(?:\.[a-z0-9]+)?$/i);
-  if (m) return m[1] + '/' + m[2];
-  m = nm.match(/^([^/]+)\/([^/]+)$/);
-  if (m) return m[1] + '/' + m[2];
-  const bank = r.bank || r.wemBank || '';
-  if (bank) return bank + '#m' + r.wemMedia;
-  return 'media#' + r.wemMedia;
+  let m = nm.match(/^([^/\\]+)\/(\d+)(?:\.[a-z0-9]+)?$/i);
+  if (m) return m[1] + ' · 第' + m[2] + '个';      // wp_bow_cmn · 第30个
+  // 无序号：只取文件名（去掉一切 \ 和 / 后面的部分）
+  const base = (nm.replace(/[\\/].*$/, '') || r.bank || '').trim();
+  if (base) return base;
+  return 'media ' + r.wemMedia;
 }
 function histFiltered(H) {
   // 按当前选中武器隔离：选了具体武器只显示该武器的捕获
@@ -1514,6 +1518,9 @@ function wireToolbar() {
   $('#onlyActive').addEventListener('change', e => {
     ST.onlyActive = e.target.checked; applyFilter();
     Backend.call('ui.set', { onlyActive: ST.onlyActive }).catch(() => {});
+  });
+  $('#onlyWem').addEventListener('change', e => {
+    ST.filterWem = e.target.checked; applyFilter();
   });
   $('#fsmQ').addEventListener('input', runFsmSearch);
   $('#fsmW').addEventListener('change', runFsmSearch);

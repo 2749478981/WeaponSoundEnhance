@@ -301,6 +301,7 @@ button{white-space:nowrap}
 .hrec .tag.add{background:rgba(255,159,10,.18); color:var(--c-amber)}
 .hrec.added .n{color:var(--muted)}
 .hrec.more{cursor:pointer; color:var(--accent); justify-content:center}
+.badge.wem{background:rgba(0,120,255,.15); color:var(--c-blue)}
 /* wem 捕获记录（WWise 音效播放）：蓝色系区分于派生记录 */
 .hrec.wem{border-left:3px solid var(--c-blue); padding-left:6px}
 .hrec.wem .ids{color:var(--c-blue)}

@@ -1572,9 +1572,8 @@ struct Core::Impl {
             if (dup) continue;
             std::string name;
             const std::unordered_map<int, std::string>::const_iterator it = wemNames.find(media);
-            if (it != wemNames.end()) name = it->second;
-            else if (!path.empty()) name = path;
-            else if (!bank.empty()) name = bank + "/media " + std::to_string(media);
+            if (it != wemNames.end()) name = it->second;         // 形如 wp_bow_cmn/30.ogg
+            else if (!bank.empty()) name = bank;                 // 纯 nbnk 文件名，绝不用本地路径
             else name = "media " + std::to_string(media);
             HistEntry h;
             h.kind = 1;
