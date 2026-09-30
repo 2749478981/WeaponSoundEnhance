@@ -1415,11 +1415,8 @@ function buildFsmWeaponSelect() {
   (ST.weapons || []).forEach(w => sel.appendChild(h('option', { value: String(w.id) }, `${w.id} ${w.name}`)));
 }
 
-// 数据就绪：撤掉 web 里的加载屏，并通知宿主关闭底层的原生态过渡窗
+// 数据就绪：通知宿主页面已接管（底层的启动加载画面由宿主管理，这里只发信号）
 function uiReady() {
-  const splash = $('#splash');
-  if (splash) { splash.classList.add('hide'); setTimeout(() => splash.remove(), 350); }
-  // 浏览器预览模式没有宿主，跳过
   if (Backend.mode === 'webview2') {
     Backend.call('ui.ready', {}).catch(() => {});
   }

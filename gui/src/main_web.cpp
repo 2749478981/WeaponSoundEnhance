@@ -220,66 +220,33 @@ void PostJson(const std::string& json) {
 }
 
 // ===========================================================================
-//  原生态启动过渡窗。
-//  用户要求"GUI 准备好之前先用别的东西过渡、别白屏"——这必须做在底层
-//  （C++/Win32），不能依赖 web（web 内容到达前 WebView 那块就是空的）。
-//  做法：程序一启动就弹一个无边框小窗（大图标 + 正在启动…），
-//  前端数据就绪后发 "ui.ready" 给宿主 → 这里关掉它。
+//  主窗口内部的"启动加载画面"（纯底层绘制，不弹独立方框）。
+//  在 WebView 就绪前，主窗口客户区直接画大图标 + "正在启动…"；
+//  WebView 一旦接管（g_ready=true）就不再画，由网页覆盖。
+//  WebView 背景色已设成同底色(#F6F7F9)，所以 图标→浅色→网页 过渡无缝。
 // ===========================================================================
-HWND g_splash = nullptr;
-
-LRESULT CALLBACK SplashWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    switch (msg) {
-        case WM_PAINT: {
-            PAINTSTRUCT ps;
-            HDC dc = ::BeginPaint(hwnd, &ps);
-            RECT rc;
-            ::GetClientRect(hwnd, &rc);
-            // 底色调成和极简浅色背景一致(#F6F7F9)，和后面的界面无缝衔接
-            HBRUSH bg = ::CreateSolidBrush(RGB(246, 247, 249));
-            ::FillRect(dc, &rc, bg);
-            ::DeleteObject(bg);
-            // 大图标（sonar.ico 自带 256px）
-            HICON icon = (HICON)::LoadImageW((HINSTANCE)::GetModuleHandleW(nullptr),
-                                             MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON, 0, 0, 0);
-            const int isz = 116;
-            const int ix = (rc.right - isz) / 2, iy = 26;
-            ::DrawIconEx(dc, ix, iy, icon, isz, isz, 0, nullptr, DI_NORMAL);
-            // 文字
-            HFONT f = (HFONT)::GetStockObject(DEFAULT_GUI_FONT);
-            HFONT of = (HFONT)::SelectObject(dc, f);
-            ::SetBkMode(dc, TRANSPARENT);
-            ::SetTextColor(dc, RGB(110, 110, 115));
-            RECT tr = { 8, iy + isz + 16, rc.right - 8, rc.bottom - 6 };
-            ::DrawTextW(dc, L"Sonar 正在启动…", -1, &tr, DT_CENTER | DT_TOP);
-            ::SelectObject(dc, of);
-            ::EndPaint(hwnd, &ps);
-            return 0;
-        }
-        case WM_ERASEBKGND:
-            return 1;
-    }
-    return ::DefWindowProcW(hwnd, msg, wp, lp);
-}
-
-void ShowSplash() {
-    if (g_splash) return;
-    RECT cr = {};
-    if (g_hwnd) ::GetWindowRect(g_hwnd, &cr);
-    const int W = 320, H = 238;
-    const int cx = (cr.left + cr.right - W) / 2;
-    const int cy = (cr.top + cr.bottom - H) / 2;
-    g_splash = ::CreateWindowExW(WS_EX_NOACTIVATE, L"SonarSplashClass", L"",
-                                 WS_POPUP, cx, cy, W, H,
-                                 g_hwnd, nullptr, (HINSTANCE)::GetModuleHandleW(nullptr), nullptr);
-    if (g_splash) ::ShowWindow(g_splash, SW_SHOWNOACTIVATE);
-}
-
-void CloseSplash() {
-    if (g_splash) {
-        ::DestroyWindow(g_splash);
-        g_splash = nullptr;
-    }
+void PaintLoading(HWND hwnd) {
+    PAINTSTRUCT ps;
+    HDC dc = ::BeginPaint(hwnd, &ps);
+    RECT rc;
+    ::GetClientRect(hwnd, &rc);
+    HBRUSH bg = ::CreateSolidBrush(RGB(246, 247, 249));
+    ::FillRect(dc, &rc, bg);
+    ::DeleteObject(bg);
+    HICON icon = (HICON)::LoadImageW((HINSTANCE)::GetModuleHandleW(nullptr),
+                                     MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON, 0, 0, 0);
+    const int isz = 132;
+    const int ix = (rc.right - isz) / 2;
+    const int iy = rc.top + (rc.bottom - rc.top - isz - 52) / 2;
+    ::DrawIconEx(dc, ix, iy, icon, isz, isz, 0, nullptr, DI_NORMAL);
+    HFONT f = (HFONT)::GetStockObject(DEFAULT_GUI_FONT);
+    HFONT of = (HFONT)::SelectObject(dc, f);
+    ::SetBkMode(dc, TRANSPARENT);
+    ::SetTextColor(dc, RGB(110, 110, 115));
+    RECT tr = { 8, iy + isz + 18, rc.right - 8, rc.bottom - 6 };
+    ::DrawTextW(dc, L"Sonar 正在启动…", -1, &tr, DT_CENTER | DT_TOP);
+    ::SelectObject(dc, of);
+    ::EndPaint(hwnd, &ps);
 }
 
 // 把 Core 的 {"ok":...} 前面插一个 id，变成 {"id":N,"ok":...}
@@ -292,8 +259,7 @@ void Reply(long long id, const std::string& result) {
 void OnMessage(const std::string& text) {
     Envelope env = ParseEnvelope(text);
     if (env.method == "ui.ready") {
-        // 纯通知：前端数据已就绪 → 关掉底层加载过渡窗，回个 ok 让前端正常收尾
-        CloseSplash();
+        // 纯通知：前端数据已就绪（WebView 已接管画面），回个 ok 让前端正常收尾
         Reply(env.id, "{\"ok\":true,\"data\":{}}");
         return;
     }
@@ -481,17 +447,22 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 ::KillTimer(hwnd, 2);
                 ProbePage();
             } else if (wp == 3) {
-                // 兜底：万一前端一直没发 ui.ready（JS 出错），也别让加载窗永远挂着
+                // 兜底：前端一直没发 ui.ready 也说明页面已接管（或出错），无需处理
                 ::KillTimer(hwnd, 3);
-                CloseSplash();
             }
             return 0;
+        case WM_PAINT:
+            // WebView 就绪前，主窗口画出"启动加载画面"（不弹独立方框）
+            if (!g_ready) {
+                PaintLoading(hwnd);
+                return 0;
+            }
+            break;
         case WM_SETFOCUS:
             if (g_ctrl) g_ctrl->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
             return 0;
         case WM_DESTROY:
             if (g_pollTimer) { ::KillTimer(hwnd, 1); g_pollTimer = 0; }
-            CloseSplash();
             ::PostQuitMessage(0);
             return 0;
         default:
@@ -553,19 +524,6 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     wc.lpszClassName = L"SonarConfigGUI";
     ::RegisterClassExW(&wc);
 
-    // 底层启动过渡窗的窗口类
-    {
-        WNDCLASSEXW sc = {};
-        sc.cbSize = sizeof(sc);
-        sc.style = CS_HREDRAW | CS_VREDRAW;
-        sc.lpfnWndProc = SplashWndProc;
-        sc.hInstance = inst;
-        sc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
-        sc.hbrBackground = (HBRUSH)::GetStockObject(WHITE_BRUSH);
-        sc.lpszClassName = L"SonarSplashClass";
-        ::RegisterClassExW(&sc);
-    }
-
     RECT wr = { 0, 0, 1400, 900 };
     ::AdjustWindowRect(&wr, WS_OVERLAPPEDWINDOW, FALSE);
     HWND hwnd = ::CreateWindowExW(0, wc.lpszClassName, L"Sonar 配置工具",
@@ -586,8 +544,7 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     g_core.SetOwnerWindow(hwnd);
     ::ShowWindow(hwnd, SW_SHOW);
     ::UpdateWindow(hwnd);
-    // ★ 一启动就弹底层加载过渡窗：在 WebView 渲染好之前先有画面，别白屏
-    ShowSplash();
+    // ★ 主窗口此时画出"启动加载画面"（WM_PAINT 里，不等 WebView），无白屏无方框
 
     // ---- 启动前自检：WebView2Loader.dll / web 目录缺一不可，缺了就明确提示 ----
     {
