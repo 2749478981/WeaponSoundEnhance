@@ -230,13 +230,20 @@ void PostJson(const std::string& json) {
 //  WebView 一旦接管（g_ready=true）就不再画，由网页覆盖。
 //  WebView 背景色已设成同底色(#F6F7F9)，所以 图标→浅色→网页 过渡无缝。
 // ===========================================================================
+//  ★ 双缓冲：先把整帧画到内存位图，再一次贴出 —— 否则 25fps 下每帧
+//    先 FillRect 清屏再画图，会看到"一闪一闪"。
 void PaintLoading(HWND hwnd) {
     PAINTSTRUCT ps;
     HDC dc = ::BeginPaint(hwnd, &ps);
     RECT rc;
     ::GetClientRect(hwnd, &rc);
+
+    HDC mem = ::CreateCompatibleDC(dc);
+    HBITMAP bm = ::CreateCompatibleBitmap(dc, rc.right - rc.left, rc.bottom - rc.top);
+    HBITMAP obm = (HBITMAP)::SelectObject(mem, bm);
+
     HBRUSH bg = ::CreateSolidBrush(RGB(246, 247, 249));
-    ::FillRect(dc, &rc, bg);
+    ::FillRect(mem, &rc, bg);
     ::DeleteObject(bg);
 
     // 图标呼吸：40ms/帧的高帧率 + 正弦曲线 → 又慢又平滑（约 4 秒一个来回）。
@@ -246,22 +253,21 @@ void PaintLoading(HWND hwnd) {
     const int iy = rc.top + (rc.bottom - rc.top - isz - 62) / 2;
 
     // ★ 用 GDI+ 从 exe 目录加载 256px 的 sonar_icon.png，再做高质量双三次缩放。
-    //   之前用 DrawIconEx 放大的其实是系统默认(32px)小图标，所以糊。
     bool drew = false;
     {
         Gdiplus::Bitmap bmp((ExeDirW() + L"sonar_icon.png").c_str());
         if (g_gdiToken && bmp.GetLastStatus() == Gdiplus::Ok) {
-            Gdiplus::Graphics g(dc);
+            Gdiplus::Graphics g(mem);
             g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
             g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
             g.DrawImage(&bmp, ix, iy, isz, isz);
             drew = true;
         }
     }
-    if (!drew) {   // 回退：指定 256 尺寸加载图标（别再拿默认小尺寸放大）
+    if (!drew) {
         HICON icon = (HICON)::LoadImageW((HINSTANCE)::GetModuleHandleW(nullptr),
                                          MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON, 256, 256, 0);
-        ::DrawIconEx(dc, ix, iy, icon, isz, isz, 0, nullptr, DI_NORMAL);
+        ::DrawIconEx(mem, ix, iy, icon, isz, isz, 0, nullptr, DI_NORMAL);
     }
 
     // 文字：三个点轮转，每约 0.5s 换一个；大号雅黑，避免小字体在高 DPI 下发糊
@@ -271,13 +277,19 @@ void PaintLoading(HWND hwnd) {
 
     HFONT f = ::CreateFontW(-24, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
                             0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei UI");
-    HFONT of = (HFONT)::SelectObject(dc, f);
-    ::SetBkMode(dc, TRANSPARENT);
-    ::SetTextColor(dc, RGB(110, 110, 115));
+    HFONT of = (HFONT)::SelectObject(mem, f);
+    ::SetBkMode(mem, TRANSPARENT);
+    ::SetTextColor(mem, RGB(110, 110, 115));
     RECT tr = { 8, iy + isz + 24, rc.right - 8, rc.bottom - 6 };
-    ::DrawTextW(dc, txt, -1, &tr, DT_CENTER | DT_TOP);
-    ::SelectObject(dc, of);
+    ::DrawTextW(mem, txt, -1, &tr, DT_CENTER | DT_TOP);
+    ::SelectObject(mem, of);
     ::DeleteObject(f);
+
+    // 一次贴出，杜绝闪烁
+    ::BitBlt(dc, 0, 0, rc.right - rc.left, rc.bottom - rc.top, mem, 0, 0, SRCCOPY);
+    ::SelectObject(mem, obm);
+    ::DeleteObject(bm);
+    ::DeleteDC(mem);
     ::EndPaint(hwnd, &ps);
 }
 
@@ -508,6 +520,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 return 0;
             }
             break;
+        case WM_ERASEBKGND:
+            // ★ 必须吞掉擦背景：窗口背景是白色，每帧先擦成白底再画就会一闪一闪
+            return 1;
         case WM_SETFOCUS:
             if (g_ctrl) g_ctrl->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
             return 0;
