@@ -291,8 +291,19 @@ function renderComboPanel() {
     await Backend.call('combo.setActive', { weapon: w, name: sel.value });
     ST.active[w] = sel.value;
     await refresh();
+    // 切到别的组合后默认只看当前组合的条目（满屏"未激活"很吵），可随时取消勾选
+    setOnlyActive(true);
     toast('已切换到组合：' + (sel.value || '默认'));
   };
+}
+
+// 只看激活组合的开关（切换组合后默认打开；也用于持久化）
+function setOnlyActive(v) {
+  ST.onlyActive = v;
+  const cb = $('#onlyActive');
+  if (cb) cb.checked = v;
+  applyFilter();
+  Backend.call('ui.set', { onlyActive: v }).catch(() => {});
 }
 
 /* ===========================================================================
@@ -865,15 +876,17 @@ async function runFsmSearch() {
     (r.rows || []).forEach(row => {
       const b = h('button', {
         class: 'mini ok',
+        style: 'font-size:11px;padding:2px 8px;white-space:nowrap',
         title: '把这个动作加进当前激活组合',
         onclick: () => addFsmToCombo(row),
-      }, '＋ 加入当前组合');
+      }, '＋ 加入');
+      const st = r.added ? '已添加' : '';
       tb.appendChild(h('tr', {},
         h('td', {}, row.name || ''),
         h('td', {}, wInline(row.weapon)),
         h('td', { class: 'lmt' }, String(row.lmt)),
         h('td', { class: 'fsm' }, String(row.fsm)),
-        h('td', {}, b)));
+        h('td', {}, b, st ? h('span', { class: 'badge', text: '已添加', style: 'margin-left:6px' }) : null)));
     });
     $('#fsmFoot').textContent = `共 ${r.total || 0} 条`;
   } catch (e) { toast('查询失败：' + e.message, 'err'); }
@@ -1092,6 +1105,7 @@ const ACTIONS = {
     await Backend.call('combo.create', { weapon: ST.weaponFilter, name });
     inp.value = '';
     await loadCombos(); renderComboPanel(); await refresh();
+    setOnlyActive(true);   // 新组合是空的，默认只看它（不显示别的组合的"未激活"条目）
     toast('已新增空白组合：' + name + '（记得保存）', 'ok');
   },
   'combo.rename': async () => {
@@ -1213,6 +1227,11 @@ async function refresh() {
     if (s.ui.sort && s.ui.sort.key) ST.sort = s.ui.sort;
     if (typeof s.ui.weaponFilter === 'number') ST.weaponFilter = s.ui.weaponFilter;
     if (typeof s.ui.histExpanded === 'boolean') ST.histExpanded = s.ui.histExpanded;
+    if (typeof s.ui.onlyActive === 'boolean') {
+      ST.onlyActive = s.ui.onlyActive;
+      const cb = $('#onlyActive');
+      if (cb) cb.checked = s.ui.onlyActive;
+    }
   }
   if (!ST.ready) { applyTheme(s.theme || s.defaultTheme || 'clean-light'); renderThemePicker(); }
 

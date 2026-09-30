@@ -111,9 +111,10 @@ void DumpChanges(const char* label, std::uintptr_t base,
         std::memcpy(&o, &oldb[i], 4);
         std::memcpy(&nw, &newb[i], 4);
         if (o != nw) {
+            // 打印相对窗口偏移（E@ = entity+0x6000 起，A@ = act+0xE800 起）
             char b[160];
-            wsprintfA(b, "\n    %s+%08X  %08X -> %08X", label,
-                      (unsigned long)(base + i), (unsigned long)o, (unsigned long)nw);
+            wsprintfA(b, "\n    %s+%04X  %08X -> %08X", label,
+                      (unsigned)(i), (unsigned long)o, (unsigned long)nw);
             out += b;
             ++n;
         }
@@ -135,19 +136,29 @@ void ProbeLoop() {
         const int fsm = ReadI32(entity + 0x6278);
         const std::uintptr_t act = ReadPtr(entity + 0x468);
         const int lmt = act ? ReadI32(act + 0xE9C4, -1) : -1;
+        // 武器武器：和主插件一致，要经三层指针 (+0xC0 → +0x8 → +0x78) 再 +0x2E8
+        int weapon = -1;
+        {
+            const std::uintptr_t wl1 = ReadPtr(entity + 0xC0);
+            const std::uintptr_t wl2 = wl1 ? ReadPtr(wl1 + 0x8) : 0;
+            const std::uintptr_t wl3 = wl2 ? ReadPtr(wl2 + 0x78) : 0;
+            if (wl3) weapon = ReadI32(wl3 + 0x2E8, -1);
+        }
 
-        // 特征帧：fsm==0 且 lmt>0 且 lmt 变了 —— 装瓶/平射这类动作的样子
-        if (fsm == 0 && lmt > 0 && lmt != lastLmt) {
+        // 特征帧：fsm==0 且 lmt 与上一帧不同 —— 装瓶/平射这类动作的样子。
+        // 装瓶时 lmt 可能从一个稳定值跳到装瓶专属值；记录"状态跳变"的完整上下文。
+        if (fsm == 0 && lmt >= 0 && lmt != lastLmt) {
             std::string msg = "trigger: fsm=0 lmt=" + std::to_string(lmt) +
-                              " (was " + std::to_string(lastLmt) + ") weapon=" + std::to_string(ReadI32(entity + 0x2E8));
+                              " (was " + std::to_string(lastLmt) + ") weapon=" + std::to_string(weapon) +
+                              " fsmTarget=" + std::to_string(ReadI32(entity + 0x6274, -1));
             // 作业对象（0x468 指针）+ 玩家实体的两个窗口：
             //   act+0xE800.. (0x400)  含 lmt(0xE9C4) 及其邻居 —— 动作状态常在这
             //   entity+0x6000..(0x1000) 含 fsm(0x6278) 及其邻居
             std::vector<unsigned char> ne(0x1000), na(0x400);
             const bool okE = SafeWindow(entity + 0x6000, ne.data(), ne.size());
             const bool okA = act && SafeWindow(act + 0xE800, na.data(), na.size());
-            DumpChanges("entity+0x6000", entity + 0x6000, oldE, ne, msg);
-            if (okA) DumpChanges("act+0xE800  ", act + 0xE800, oldA, na, msg);
+            DumpChanges("E@", entity + 0x6000, oldE, ne, msg);
+            if (okA) DumpChanges("A@", act + 0xE800, oldA, na, msg);
             oldE.swap(ne); if (okA) oldA.swap(na);
             msg += okE ? "" : " (entity window read failed)";
             LogMsg(msg);

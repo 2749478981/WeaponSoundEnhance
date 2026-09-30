@@ -819,6 +819,7 @@ struct UiPrefs {
     JVal window = JVal::obj();
     int weaponFilter = -1;
     bool histExpanded = false;
+    bool onlyActive = false;   // 列表默认只看当前激活组合的条目
 
     UiPrefs() {
         colWidths.set("name", JVal(180));
@@ -1397,6 +1398,7 @@ struct Core::Impl {
         prefs.weaponFilter = v.optInt("weaponFilter", -1);
         if (prefs.weaponFilter < -2 || prefs.weaponFilter > 13) prefs.weaponFilter = -1;
         prefs.histExpanded = v.optBool("histExpanded", false);
+        prefs.onlyActive = v.optBool("onlyActive", false);
     }
 
     void SaveUiPrefs() {
@@ -1407,6 +1409,7 @@ struct Core::Impl {
         v.set("window", prefs.window);
         v.set("weaponFilter", JVal(prefs.weaponFilter));
         v.set("histExpanded", JVal(prefs.histExpanded));
+        v.set("onlyActive", JVal(prefs.onlyActive));
         FsWrite(uiPath, JsonDump(v));
         uiDirty = false;
     }
@@ -1419,6 +1422,7 @@ struct Core::Impl {
         v.set("window", prefs.window);
         v.set("weaponFilter", JVal(prefs.weaponFilter));
         v.set("histExpanded", JVal(prefs.histExpanded));
+        v.set("onlyActive", JVal(prefs.onlyActive));
         return v;
     }
 
@@ -3387,6 +3391,7 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
                 im->prefs.weaponFilter = (w < -2 || w > 13) ? -1 : w;
             }
             if (p.has("histExpanded")) im->prefs.histExpanded = p.optBool("histExpanded", false);
+            if (p.has("onlyActive")) im->prefs.onlyActive = p.optBool("onlyActive", false);
             if (p.has("theme")) {
                 const std::string th = p.optStr("theme");
                 if (!IsValidThemeId(th)) return ErrJson("未知主题: " + th);
