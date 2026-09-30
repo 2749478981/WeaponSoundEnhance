@@ -81,7 +81,42 @@ function mdToHtml(src) {
   return out.join('');
 }
 
-/* 通用确认框：删除这种破坏性操作一律走它 */
+// ===========================================================================
+//   彩蛋：点击左上角图标若干次，弹出"完成成就"文案
+// ===========================================================================
+const EGG_ACHIEVEMENTS = [
+  '声呐学徒：你发现了这个会响的图标',
+  '打字机技师：再点几下，也许会有别的事发生',
+  '猎人的直觉：第 7 次点击，声呐听见了你',
+  '无意义的胜利：为没有意义的点击干杯',
+  '声呐大师：听，那是猫猫在回应你',
+];
+let eggClicks = 0;
+let eggReady = true;
+const EGG_FIRST_AT = 7;      // 第 7 次点击触发第一个
+const EGG_EVERY = 10;        // 之后每 10 次再弹下一个
+let eggNextAt = EGG_FIRST_AT;
+let eggIndex = 0;
+
+function bindLogoEgg() {
+  const logo = $('#logoImg');
+  if (!logo) return;
+  logo.addEventListener('click', () => {
+    eggClicks++;
+    if (!eggReady || eggClicks < eggNextAt) return;
+    eggReady = false;
+    const title = EGG_ACHIEVEMENTS[eggIndex % EGG_ACHIEVEMENTS.length];
+    eggIndex++;
+    eggNextAt = eggClicks + EGG_EVERY;
+    toast('🏆 完成成就：' + title, 'ok');
+    // 冷却 4 秒，防止连点刷屏
+    setTimeout(() => { eggReady = true; }, 4000);
+  });
+}
+
+/* ===========================================================================
+   通用确认框：删除这种破坏性操作一律走它
+   =========================================================================== */
 function confirmBox({ title, message, okText, danger, input, placeholder }) {
   return new Promise(resolve => {
     const m = $('#mConfirm');
@@ -1387,6 +1422,7 @@ Backend.onEvent(ev => {
 
   wireToolbar();
   wireGlobal();
+  bindLogoEgg();            // 左上角图标彩蛋
   renderChatCmds();          // 指令表是静态的，建一次就行
   try {
     await refresh();

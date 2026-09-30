@@ -79,6 +79,10 @@ em{font-style:normal; color:var(--muted); font-size:.92em}
   display:flex; align-items:center; justify-content:center;
 }
 .logo-badge img{width:100%;height:100%;object-fit:contain;display:block}
+/* 左上角图标可点的彩蛋入口：手型 + 轻缩放反馈 */
+.logo-badge{cursor:pointer; transition:transform .15s}
+.logo-badge:hover{transform:scale(1.06) rotate(-2deg)}
+.logo-badge:active{transform:scale(.94)}
 .brand-text{min-width:0}
 .brand-name{font-size:19px; font-weight:var(--fw-strong); letter-spacing:.2px; line-height:1.15}
 .brand-sub{font-size:11.5px; color:var(--muted); margin-top:2px}
