@@ -3372,6 +3372,18 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
             return OkJson(im->UiPrefsJson());
         }
 
+        // 用系统默认浏览器打开外链（彩蛋里的 B 站链接走这里，不让 WebView 导航离开）
+        if (method == "ui.openUrl") {
+            const std::string url = Trim(p.optStr("url"));
+            if (url.empty()) return ErrJson("缺少 url");
+            const int r = (int)(std::intptr_t)::ShellExecuteW(
+                nullptr, L"open", Utf8ToWide(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            if (r <= 32) return ErrJson("打开链接失败（错误码 " + std::to_string(r) + "）");
+            JVal d = JVal::obj();
+            d.set("opened", JVal(true));
+            return OkJson(d);
+        }
+
         if (method == "ui.set") {
             // 只认已知的键：前端乱塞字段不该污染偏好文件
             if (p.has("colWidths")) {

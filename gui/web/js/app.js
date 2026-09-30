@@ -82,14 +82,15 @@ function mdToHtml(src) {
 }
 
 // ===========================================================================
-//   彩蛋：点击左上角图标若干次，弹出"完成成就"文案
+//   彩蛋：点击左上角图标若干次，弹出"完成成就"文案（两行：成就名 + 描述）
 // ===========================================================================
 const EGG_ACHIEVEMENTS = [
-  '声呐学徒：你发现了这个会响的图标',
-  '打字机技师：再点几下，也许会有别的事发生',
-  '猎人的直觉：第 7 次点击，声呐听见了你',
-  '无意义的胜利：为没有意义的点击干杯',
-  '声呐大师：听，那是猫猫在回应你',
+  { t: '声呐学徒',       d: '你发现了这个会响的图标' },
+  { t: '打字机技师',     d: '再点几下，也许会有别的事发生' },
+  { t: '猎人的直觉',     d: '第 7 次点击，声呐听见了你' },
+  { t: '无意义的胜利',   d: '为没有意义的点击干杯' },
+  { t: '声呐大师',       d: '听，那是猫猫在回应你' },
+  { t: '关注真夜中のloop喵~', d: '点击前往作者 B 站主页', url: 'https://space.bilibili.com/478832252' },
 ];
 let eggClicks = 0;
 let eggReady = true;
@@ -98,6 +99,26 @@ const EGG_EVERY = 10;        // 之后每 10 次再弹下一个
 let eggNextAt = EGG_FIRST_AT;
 let eggIndex = 0;
 
+// 成就专属 toast：两行（第一行成就名、第二行描述；带链接的描述可点击跳转）
+function eggToast(a) {
+  const t = h('div', { class: 'toast egg' },
+    h('div', { class: 'egg-line1' }, '🏆 完成成就：' + a.t),
+    h('div', { class: 'egg-line2' },
+      a.url
+        ? h('button', {
+            class: 'egg-link',
+            onclick: () => {
+              Backend.call('ui.openUrl', { url: a.url })
+                .catch(e => toast('打不开链接：' + e.message, 'err'));
+            },
+          }, a.d)
+        : document.createTextNode(a.d)));
+  $('#toasts').appendChild(t);
+  // 成就值得多看几秒：5 秒后消失
+  setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity .3s'; }, 5000);
+  setTimeout(() => t.remove(), 5400);
+}
+
 function bindLogoEgg() {
   const logo = $('#logoImg');
   if (!logo) return;
@@ -105,10 +126,10 @@ function bindLogoEgg() {
     eggClicks++;
     if (!eggReady || eggClicks < eggNextAt) return;
     eggReady = false;
-    const title = EGG_ACHIEVEMENTS[eggIndex % EGG_ACHIEVEMENTS.length];
+    const a = EGG_ACHIEVEMENTS[eggIndex % EGG_ACHIEVEMENTS.length];
     eggIndex++;
     eggNextAt = eggClicks + EGG_EVERY;
-    toast('🏆 完成成就：' + title, 'ok');
+    eggToast(a);
     // 冷却 4 秒，防止连点刷屏
     setTimeout(() => { eggReady = true; }, 4000);
   });
