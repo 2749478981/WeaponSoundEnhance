@@ -96,6 +96,10 @@ struct Config {
     GlobalSettings global;
     Hotkeys hotkeys;
     std::map<int, std::string> active;   // 每武器当前组合名（""=默认）
+    // 每武器的组合名列表（不含 ""，顺序 = 显示顺序）。
+    // ★ 空组合也要在这里注册，否则新组合（还没条目）会被"按条目推导组合"
+    //   的函数丢掉，表现为"新增组合没反应"。持久化在 ini 的 [Combos] 段。
+    std::map<int, std::vector<std::string>> comboList;
     std::vector<SoundEntry> entries;     // 所有组合的条目（每条带 combo 标记）
     std::string path;
     bool loaded = false;

@@ -862,14 +862,57 @@ async function runFsmSearch() {
   try {
     const r = await Backend.call('fsm.search', { q, weapon: w });
     const tb = $('#fsmBody'); tb.innerHTML = '';
-    (r.rows || []).forEach(row => tb.appendChild(h('tr', {},
-      h('td', {}, row.name || ''),
-      h('td', {}, wInline(row.weapon)),
-      h('td', { class: 'lmt' }, String(row.lmt)),
-      h('td', { class: 'fsm' }, String(row.fsm)),
-      h('td', { class: 'fsm' }, row.source || ''))));
+    (r.rows || []).forEach(row => {
+      const b = h('button', {
+        class: 'mini ok',
+        title: '把这个动作加进当前激活组合',
+        onclick: () => addFsmToCombo(row),
+      }, '＋ 加入当前组合');
+      tb.appendChild(h('tr', {},
+        h('td', {}, row.name || ''),
+        h('td', {}, wInline(row.weapon)),
+        h('td', { class: 'lmt' }, String(row.lmt)),
+        h('td', { class: 'fsm' }, String(row.fsm)),
+        h('td', {}, b)));
+    });
     $('#fsmFoot').textContent = `共 ${r.total || 0} 条`;
   } catch (e) { toast('查询失败：' + e.message, 'err'); }
+}
+
+// FSM 查询里一键加入当前组合：该动作在当前组合已配过 → 打开编辑；否则新建条目
+async function addFsmToCombo(row) {
+  if (row.weapon == null || row.weapon < 0 || row.weapon > 13) {
+    toast('这条动作没有固定的武器，无法加入组合', 'err'); return;
+  }
+  if (row.fsm == null || row.fsm < 0) { toast('这条动作没有 fsm，无法加入', 'err'); return; }
+  const combo = ST.active[row.weapon] || '';
+  const lmt = (row.lmt != null && row.lmt > 0) ? row.lmt : -1;
+
+  // 当前组合里已有同 fsm 的条目 → 打开编辑
+  const hit = ST.entries.findIndex(e =>
+    e.weaponType === row.weapon && (e.combo || '') === combo && e.fsmId === row.fsm &&
+    (e.lmtAny || (Array.isArray(e.lmt) && (lmt < 0 || e.lmt.includes(lmt)))));
+  if (hit >= 0) {
+    const idx = ST.entries[hit].index != null ? ST.entries[hit].index : hit;
+    openEditor(idx);
+    toast('当前组合已有这个动作，已打开编辑', 'ok');
+    return;
+  }
+
+  const entry = {
+    name: row.name || ('fsm ' + row.fsm), weaponType: row.weapon, combo,
+    fsmId: row.fsm, fsmTarget: -1, group: '', stop: false,
+    lmt: lmt > 0 ? [lmt] : [], lmtAny: lmt <= 0,
+    def: [], gauge: [[], [], [], []],
+    checkDelayMs: 0, checkTimeoutMs: 0, checkOffsetMs: 150, endOnAction: true,
+    checkMode: 0, judgePreset: 0, conds: [],
+  };
+  try {
+    const res = await Backend.call('entries.save', { index: null, entry });
+    await refresh();
+    if (res && res.index != null) openEditor(res.index);
+    toast(`已加入「${combo || '默认'}」组合（配好音效后记得保存）`, 'ok');
+  } catch (e) { toast('加入失败：' + e.message, 'err'); }
 }
 
 async function refreshIds() {

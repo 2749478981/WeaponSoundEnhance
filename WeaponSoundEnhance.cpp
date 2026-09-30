@@ -1483,6 +1483,10 @@ void LoadConfig()
                 cur = Attack();
             } else if (section == "Active") {
                 inAttack = false; inCombo = false; curComboW = -1; curComboName.clear();
+            } else if (section == "Combos") {
+                // [Combos] W<type>=组合1;组合2 —— GUI 持久化的组合名列表
+                // （空组合也在这）。这里只重置上下文，真正解析在值处理处。
+                inAttack = false; inCombo = false; curComboW = -1; curComboName.clear();
             } else if (section.size() > 6 && section.compare(0, 6, "Weapon") == 0) {
                 // [Weapon<type>:<comboName>]
                 std::string rest = section.substr(6);
@@ -1552,6 +1556,25 @@ void LoadConfig()
                 else if (key == "MoreKey")     gMoreKey     = std::atoi(val.c_str());
                 else if (key == "SetVolValue") gSetVolValue = ClampInt(std::atoi(val.c_str()), 0, 100);
                 else if (key == "ComboKey")    gComboKey    = std::atoi(val.c_str());
+            } else if (section == "Combos") {
+                // W<type>=组合1;组合2 —— 注册组合名（空组合也生效），
+                // 这样游戏内 Ctrl+F11 循环和 /wse combo 能看到还没有条目的组合。
+                if (key.size() > 1 && (key[0] == 'W' || key[0] == 'w')) {
+                    int w = std::atoi(key.c_str() + 1);
+                    if (w < 0 || w > 13) continue;
+                    std::string cur;
+                    for (std::size_t i = 0; i <= val.size(); ++i) {
+                        if (i == val.size() || val[i] == ';' || val[i] == ',') {
+                            std::string nm = Trim(cur);
+                            cur.clear();
+                            if (nm.empty()) continue;
+                            const std::string k = "cb|" + std::to_string(w) + "|" + nm;
+                            if (!comboData.count(k)) comboData[k] = std::vector<Attack>();  // 空组合
+                        } else {
+                            cur += val[i];
+                        }
+                    }
+                }
             } else if (section == "Active") {
                 // W<type>=<comboName>
                 if (key.size() > 1 && (key[0] == 'W' || key[0] == 'w')) {

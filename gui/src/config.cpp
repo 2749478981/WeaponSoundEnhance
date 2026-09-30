@@ -217,6 +217,8 @@ bool LoadConfig(const std::string& path, Config& cfg) {
                 cur = SoundEntry();
             } else if (section == "Active") {
                 inAttack = false; inCombo = false; curComboW = -1; curComboName.clear();
+            } else if (section == "Combos") {
+                inAttack = false; inCombo = false; curComboW = -1; curComboName.clear();
             } else if (section.size() > 6 && section.compare(0, 6, "Weapon") == 0) {
                 std::string rest = section.substr(6);
                 std::size_t c = rest.find(':');
@@ -282,6 +284,20 @@ bool LoadConfig(const std::string& path, Config& cfg) {
                 if (key.size() > 1 && (key[0] == 'W' || key[0] == 'w')) {
                     int w = std::atoi(key.c_str() + 1);
                     if (w >= -1) activeMap[w] = val;
+                }
+            } else if (section == "Combos") {
+                // [Combos] W<type>=组合1;组合2 —— 每武器组合名列表（含空组合），
+                // 分开存好，条目推导不能代替它。
+                if (key.size() > 1 && (key[0] == 'W' || key[0] == 'w')) {
+                    int w = std::atoi(key.c_str() + 1);
+                    if (w < 0 || w > 13) continue;
+                    for (const auto& raw : SplitList(val)) {
+                        std::string nm = Trim(raw);
+                        if (nm.empty()) continue;
+                        bool has = false;
+                        for (const auto& x : cfg.comboList[w]) if (x == nm) { has = true; break; }
+                        if (!has) cfg.comboList[w].push_back(nm);
+                    }
                 }
             }
             continue;
@@ -518,6 +534,31 @@ bool SaveConfig(const std::string& path, const Config& cfg) {
                 act += std::string("W") + std::to_string(w) + "=" + a + "\r\n";
         }
         if (!act.empty()) o += "\r\n[Active]\r\n" + act + "\r\n";
+    }
+
+    // [Combos]：每武器组合名列表（含空组合，顺序=显示顺序）。
+    // 加载时 merge 进 cfg.comboList；条目里出现但列表没有的（老配置）也一并补录，
+    // 保证升级后旧组合名不丢、顺序为"列表在前 + 新增在后"。
+    {
+        std::string blk;
+        for (int w = 0; w <= 13; ++w) {
+            std::vector<std::string> names;
+            if (cfg.comboList.count(w)) names = cfg.comboList.at(w);
+            for (const auto& e : cfg.entries) {
+                if (e.weaponType != w || e.combo.empty()) continue;
+                bool has = false;
+                for (const auto& x : names) if (x == e.combo) { has = true; break; }
+                if (!has) names.push_back(e.combo);
+            }
+            if (names.empty()) continue;
+            std::string line = "W" + std::to_string(w) + "=";
+            for (size_t i = 0; i < names.size(); ++i) {
+                if (i) line += ";";
+                line += names[i];
+            }
+            blk += line + "\r\n";
+        }
+        if (!blk.empty()) o += "\r\n[Combos]\r\n" + blk + "\r\n";
     }
 
     // 按武器 + 组合分组写出（段名 AttackN 全局递增）

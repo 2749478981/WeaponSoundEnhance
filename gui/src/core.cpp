@@ -1326,6 +1326,16 @@ struct Core::Impl {
     std::vector<std::string> WeaponCombos(int w) const {
         std::vector<std::string> v;
         v.push_back("");
+        // 先把持久化列表加进去（空组合也在这，否则新增组合会被当成不存在）
+        const std::map<int, std::vector<std::string> >::const_iterator it = cfg.comboList.find(w);
+        if (it != cfg.comboList.end()) {
+            for (std::size_t k = 0; k < it->second.size(); ++k) {
+                bool has = false;
+                for (std::size_t j = 0; j < v.size(); ++j) if (v[j] == it->second[k]) { has = true; break; }
+                if (!has) v.push_back(it->second[k]);
+            }
+        }
+        // 再合并条目里出现、但列表里没有的组合（老配置兼容，首次保存时补录）
         for (std::size_t i = 0; i < cfg.entries.size(); ++i) {
             const SoundEntry& e = cfg.entries[i];
             if (e.weaponType != w || e.combo.empty()) continue;
@@ -2535,9 +2545,19 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
                 if (combos[i] == name) return ErrJson("组合「" + name + "」已存在");
             // 新组合从空白开始：不复制当前组合的条目。
             // （用户明确要求：新组合里的条目音效应为空，而不是把旧音效复制过来）
+            // ★ 必须把名字写进 comboList 持久化列表：它还没有条目，不登记的话
+            //   "按条目推导组合"会把它当不存在 → 下拉里看不到 = "新增没反应"。
+            {
+                std::vector<std::string>& lst = im->cfg.comboList[w];
+                bool inList = false;
+                for (std::size_t i = 0; i < lst.size(); ++i) if (lst[i] == name) { inList = true; break; }
+                if (!inList) lst.push_back(name);
+            }
             im->cfg.active[w] = name;
             im->dirty = true;
             im->SetStatus("已新建组合「" + name + "」（空白组合，记得保存）");
+            if (im->cfg.loaded && !im->cfg.path.empty())
+                (void)SaveConfig(im->cfg.path, im->cfg);
             JVal d = JVal::obj();
             d.set("copied", JVal(0));
             d.set("active", JVal(name));
@@ -2560,10 +2580,23 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
                 SoundEntry& e = im->cfg.entries[i];
                 if (e.weaponType == w && e.combo == from) { e.combo = to; ++n; }
             }
+            // 组合列表改名（老配置可能没登记 from，先补录再改名）
+            {
+                std::vector<std::string>& lst = im->cfg.comboList[w];
+                bool fromIn = false;
+                for (std::size_t i = 0; i < lst.size(); ++i) if (lst[i] == from) { lst[i] = to; fromIn = true; break; }
+                if (!fromIn) {
+                    bool toIn = false;
+                    for (std::size_t i = 0; i < lst.size(); ++i) if (lst[i] == to) { toIn = true; break; }
+                    if (!toIn) lst.push_back(to);
+                }
+            }
             if (im->ActiveCombo(w) == from) im->cfg.active[w] = to;
             im->dirty = true;
             im->SetStatus("组合「" + from + "」已重命名为「" + to + "」（" + std::to_string(n) +
                           " 条，记得保存）");
+            if (im->cfg.loaded && !im->cfg.path.empty())
+                (void)SaveConfig(im->cfg.path, im->cfg);
             JVal d = JVal::obj();
             d.set("moved", JVal(n));
             d.set("status", JVal(im->status));
@@ -2574,6 +2607,13 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
             const int w = p.optInt("weapon", -1);
             const std::string name = p.optStr("name");
             if (name.empty()) return ErrJson("默认组合不能整个删除（可以逐条删条目）");
+            // 从持久化列表移除（空组合也要从列表删掉，否则删了还显示在列表里）
+            {
+                std::vector<std::string>& lst = im->cfg.comboList[w];
+                for (std::size_t i = 0; i < lst.size(); ++i) {
+                    if (lst[i] == name) { lst.erase(lst.begin() + i); break; }
+                }
+            }
             int n = 0;
             for (std::size_t i = 0; i < im->cfg.entries.size();) {
                 if (im->cfg.entries[i].weaponType == w && im->cfg.entries[i].combo == name) {
@@ -2586,6 +2626,8 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
             if (im->ActiveCombo(w) == name) im->cfg.active[w] = "";
             im->dirty = true;
             im->SetStatus("已删除组合「" + name + "」及其 " + std::to_string(n) + " 条条目（记得保存）");
+            if (im->cfg.loaded && !im->cfg.path.empty())
+                (void)SaveConfig(im->cfg.path, im->cfg);
             JVal d = JVal::obj();
             d.set("removedEntries", JVal(n));
             d.set("status", JVal(im->status));
@@ -2599,19 +2641,21 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
             if (name.empty()) return ErrJson("默认组合固定在最前，不能移动");
             if (dir != -1 && dir != 1) return ErrJson("dir 只能是 -1 或 1");
 
-            std::vector<std::string> named;
-            for (std::size_t i = 0; i < im->cfg.entries.size(); ++i) {
-                const SoundEntry& e = im->cfg.entries[i];
-                if (e.weaponType != w || e.combo.empty()) continue;
-                bool has = false;
-                for (std::size_t k = 0; k < named.size(); ++k)
-                    if (named[k] == e.combo) { has = true; break; }
-                if (!has) named.push_back(e.combo);
+            // 持久化列表排序（GUI 下拉与 DLL 切换都以它为准）。
+            // 老配置可能没登记 name：先补录到末尾再定位，保证索引安全。
+            // 注意：name 是 const，不能改它；"目标邻居组合"先存到 other，
+            // 交换后 other 就是 name 的新邻居（搬条目参照它）。
+            std::string other;
+            {
+                std::vector<std::string>& lst = im->cfg.comboList[w];
+                int at = -1;
+                for (std::size_t k = 0; k < lst.size(); ++k) if (lst[k] == name) { at = (int)k; break; }
+                if (at < 0) { lst.push_back(name); at = (int)lst.size() - 1; }
+                const int j = at + dir;
+                if (j < 0 || j >= (int)lst.size()) return ErrJson("已经到头了");
+                other = lst[j];
+                std::swap(lst[at], lst[j]);
             }
-            int at = -1;
-            for (std::size_t k = 0; k < named.size(); ++k) if (named[k] == name) at = (int)k;
-            const int j = at + dir;
-            if (at < 0 || j < 0 || j >= (int)named.size()) return ErrJson("已经到头了");
 
             std::vector<SoundEntry> mine;
             for (std::size_t i = 0; i < im->cfg.entries.size();) {
@@ -2624,7 +2668,6 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
             }
             // 组内条目顺序 = entries 里的出现顺序，所以"移动组合"就是把这批条目整段搬到
             // 目标组合之前/之后 —— 不用另存一份组合顺序表（旧版也是这个做法）。
-            const std::string other = named[j];
             std::size_t ins = im->cfg.entries.size();
             if (dir < 0) {
                 for (std::size_t k = 0; k < im->cfg.entries.size(); ++k)
@@ -2642,6 +2685,8 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
             im->cfg.entries.insert(im->cfg.entries.begin() + ins, mine.begin(), mine.end());
             im->dirty = true;
             im->SetStatus("已调整组合顺序（影响下拉与游戏内 Ctrl+F11 的循环顺序，记得保存）");
+            if (im->cfg.loaded && !im->cfg.path.empty())
+                (void)SaveConfig(im->cfg.path, im->cfg);
             JVal d = JVal::obj();
             d.set("status", JVal(im->status));
             return OkJson(d);
