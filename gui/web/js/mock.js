@@ -137,6 +137,11 @@
         conds: [{ expr: 'dmg>0', atEnd: false, label: '命中', pool: [S('sounds/大剑/命中.wav', 0, 100)] }] }),
       mkEntry({ name: '超解', weaponType: 9, combo: '', fsmId: 210, lmt: [49421], lmtAny: false,
         def: [S('sounds/盾斧/超解.wav', 0, 100, { fixed: true })] }),
+      // 只有判定音效、没有默认音效的条目：主列表应显示判定音效而不是"无音效"
+      mkEntry({ name: '仅判定音效示例', weaponType: -1, combo: '', fsmId: 90, lmtAny: true,
+        def: [],
+        conds: [{ expr: 'dmg>0', atEnd: false, label: '命中',
+                  pool: [S('sounds/示例/命中判定.wav', 0, 100, { fixed: true })] }] }),
     ],
     history: [],
     attached: false,

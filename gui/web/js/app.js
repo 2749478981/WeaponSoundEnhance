@@ -301,10 +301,19 @@ function displayName(e) {
   if (e.name) return e.name;
   return e.fsmId >= 0 ? ('FSM ' + e.fsmId) : '条目';
 }
+// 条目里的全部音效：默认音效池 + 每个判定条件的音效池。
+// ★ 判定音效也是"配了音效"，主列表/搜索都必须算上，
+//   否则只配判定音效的条目会被当成"无音效"。
+function entrySounds(e) {
+  const out = [];
+  (e.def || []).forEach(s => out.push(s));
+  (e.conds || []).forEach(c => (c.pool || []).forEach(s => out.push(s)));
+  return out;
+}
 function soundSummary(e) {
-  const list = e.def || [];
-  const first = list[0];
-  return { text: first ? first.path : '(无音效)', fixed: !!(first && first.fixed), count: list.length };
+  const all = entrySounds(e);
+  const first = all[0] || null;
+  return { text: first ? first.path : '(无音效)', fixed: !!(first && first.fixed), count: all.length };
 }
 function firstLmt(e) { return e.lmtAny || !e.lmt || !e.lmt.length ? -1 : e.lmt[0]; }
 
@@ -320,11 +329,11 @@ function applyFilter() {
   else if (ST.weaponFilter >= 0) list = list.filter(x => x.e.weaponType === ST.weaponFilter);
   if (ST.onlyActive) list = list.filter(x => entryActive(x.e));
 
-  // 搜索
+  // 搜索（音效路径含判定音效池，见 entrySounds）
   if (q) list = list.filter(x => {
     const e = x.e;
     const hay = [displayName(e), String(e.fsmId), (e.lmt || []).join(','),
-                 (e.def || []).map(s => s.path).join(' ')].join(' ').toLowerCase();
+                 entrySounds(e).map(s => s.path).join(' ')].join(' ').toLowerCase();
     return hay.includes(q);
   });
 
@@ -368,7 +377,7 @@ function renderTable() {
       h('td', {}, wInline(e.weaponType)),
       h('td', { class: 'lmt' }, e.lmtAny || !(e.lmt || []).length ? '不限' : e.lmt.join(',')),
       h('td', { class: 'fsm' }, String(e.fsmId)),
-      h('td', { title: (e.def || []).map(s => s.path).join('\n') },
+      h('td', { title: entrySounds(e).map(s => s.path).join('\n') || '没有音效' },
         h('span', { class: 'snd' }, sm.text,
         e.conds && e.conds.length ? h('span', { class: 'badge', text: '判定' }) : null,
         sm.fixed ? h('span', { class: 'badge', text: 'F' }) : null,
