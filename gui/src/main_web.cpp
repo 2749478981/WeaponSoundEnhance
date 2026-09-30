@@ -48,7 +48,8 @@ ComPtr<ICoreWebView2Controller> g_ctrl;
 ComPtr<ICoreWebView2>           g_web;
 HWND                 g_hwnd = nullptr;
 UINT_PTR             g_pollTimer = 0;
-bool                 g_ready = false;
+bool                 g_ready = false;    // true = 网页已就绪可显示（前端发 ui.ready 后置位）
+int                  g_animPhase = 0;    // 启动加载画面的动画帧（图标呼吸/文字点点）
 
 std::wstring Utf8ToWide(const std::string& s) {
     if (s.empty()) return std::wstring();
@@ -233,18 +234,30 @@ void PaintLoading(HWND hwnd) {
     HBRUSH bg = ::CreateSolidBrush(RGB(246, 247, 249));
     ::FillRect(dc, &rc, bg);
     ::DeleteObject(bg);
+
+    // 图标呼吸：14 帧一个周期（400ms/帧 ≈ 5.6s 一个来回），缓而稳
+    //   sin 曲线让尺寸变化更平滑，不会"跳格"
+    const int wave = g_animPhase % 14;
+    const int gscale = (wave < 7) ? wave : (14 - wave);
+    const int isz = 122 + gscale;
+
     HICON icon = (HICON)::LoadImageW((HINSTANCE)::GetModuleHandleW(nullptr),
                                      MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON, 0, 0, 0);
-    const int isz = 132;
     const int ix = (rc.right - isz) / 2;
-    const int iy = rc.top + (rc.bottom - rc.top - isz - 52) / 2;
+    const int iy = rc.top + (rc.bottom - rc.top - isz - 58) / 2;
     ::DrawIconEx(dc, ix, iy, icon, isz, isz, 0, nullptr, DI_NORMAL);
+
+    // 文字：三个点轮转（正在启动. / .. / ...）
+    static const wchar_t* dots[3] = { L".", L"..", L"..." };
+    wchar_t txt[64];
+    wsprintfW(txt, L"Sonar 正在启动%s", dots[g_animPhase % 3]);
+
     HFONT f = (HFONT)::GetStockObject(DEFAULT_GUI_FONT);
     HFONT of = (HFONT)::SelectObject(dc, f);
     ::SetBkMode(dc, TRANSPARENT);
     ::SetTextColor(dc, RGB(110, 110, 115));
-    RECT tr = { 8, iy + isz + 18, rc.right - 8, rc.bottom - 6 };
-    ::DrawTextW(dc, L"Sonar 正在启动…", -1, &tr, DT_CENTER | DT_TOP);
+    RECT tr = { 8, iy + isz + 20, rc.right - 8, rc.bottom - 6 };
+    ::DrawTextW(dc, txt, -1, &tr, DT_CENTER | DT_TOP);
     ::SelectObject(dc, of);
     ::EndPaint(hwnd, &ps);
 }
@@ -259,7 +272,14 @@ void Reply(long long id, const std::string& result) {
 void OnMessage(const std::string& text) {
     Envelope env = ParseEnvelope(text);
     if (env.method == "ui.ready") {
-        // 纯通知：前端数据已就绪（WebView 已接管画面），回个 ok 让前端正常收尾
+        // 前端数据就绪 → 显示 WebView、停掉加载动画、回个 ok 收尾
+        if (!g_ready && g_ctrl) {
+            g_ready = true;
+            g_ctrl->put_IsVisible(TRUE);
+            ::KillTimer(g_hwnd, 3);
+            ::KillTimer(g_hwnd, 4);
+            ::InvalidateRect(g_hwnd, nullptr, TRUE);
+        }
         Reply(env.id, "{\"ok\":true,\"data\":{}}");
         return;
     }
@@ -447,8 +467,19 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 ::KillTimer(hwnd, 2);
                 ProbePage();
             } else if (wp == 3) {
-                // 兜底：前端一直没发 ui.ready 也说明页面已接管（或出错），无需处理
+                // 兜底：前端一直没发 ui.ready（JS 出错），8 秒后仍把 WebView 放出来，
+                // 让用户至少看到界面/错误，别卡在加载画面。
                 ::KillTimer(hwnd, 3);
+                if (!g_ready && g_ctrl) {
+                    g_ready = true;
+                    g_ctrl->put_IsVisible(TRUE);
+                    ::KillTimer(hwnd, 4);
+                    ::InvalidateRect(hwnd, nullptr, TRUE);
+                }
+            } else if (wp == 4) {
+                // 加载动画帧：重绘主窗口（图标呼吸/文字点点）
+                g_animPhase++;
+                ::InvalidateRect(hwnd, nullptr, TRUE);
             }
             return 0;
         case WM_PAINT:
@@ -463,6 +494,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_DESTROY:
             if (g_pollTimer) { ::KillTimer(hwnd, 1); g_pollTimer = 0; }
+            ::KillTimer(hwnd, 4);
             ::PostQuitMessage(0);
             return 0;
         default:
@@ -544,7 +576,9 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     g_core.SetOwnerWindow(hwnd);
     ::ShowWindow(hwnd, SW_SHOW);
     ::UpdateWindow(hwnd);
-    // ★ 主窗口此时画出"启动加载画面"（WM_PAINT 里，不等 WebView），无白屏无方框
+    // ★ 主窗口此时画出"启动加载画面"（WM_PAINT 里，不等 WebView），无白屏无方框；
+    //   动画定时器立刻开始（图标呼吸 + 文字点点），400ms 一帧、节奏舒缓
+    ::SetTimer(hwnd, 4, 400, nullptr);
 
     // ---- 启动前自检：WebView2Loader.dll / web 目录缺一不可，缺了就明确提示 ----
     {
@@ -694,10 +728,13 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
                                     }).Get(),
                                 nullptr);
                             LogLine("navigating to https://sonar.local/web/index.html ...");
+                            // ★ WebView 先隐藏：加载画面（主窗口画）保持到网页真正就绪，
+                            //   前端发 ui.ready 后才 put_IsVisible(TRUE)，中间不闪空。
+                            g_ctrl->put_IsVisible(FALSE);
                             g_web->Navigate(L"https://sonar.local/web/index.html");
-                            // 兜底定时器：8 秒内前端没发 ui.ready 就强制关加载窗
+                            // 兜底定时器：8 秒内前端没发 ui.ready 就把 WebView 放出来
                             ::SetTimer(g_hwnd, 3, 8000, nullptr);
-                            g_ready = true;
+                            g_ready = false;
                             StartPolling();   // 实时捕获 / 更新进度靠它主动推给前端
                             return S_OK;
                         }).Get());
