@@ -305,6 +305,9 @@ button{white-space:nowrap}
 .hrec.wem{border-left:3px solid var(--c-blue); padding-left:6px}
 .hrec.wem .ids{color:var(--c-blue)}
 .live-row.wem{border-left:3px solid var(--c-blue); padding-left:8px}
+/* 编辑器里的 wem 条目信息条 */
+.field.weminfo{background:rgba(0,120,255,.08); border:1px solid var(--c-blue); color:var(--text);
+              border-radius:var(--radius-ctl); padding:8px 10px; font-size:11.5px}
 
 /* ---------- 状态栏 ---------- */
 .status{display:flex; align-items:center; gap:9px; padding:8px 18px; font-size:11.5px;

@@ -148,10 +148,11 @@
     <button data-act="ed.close">关闭</button>
   </div>
   <div class="dbody">
+    <div class="field weminfo" id="edWemInfo" hidden></div>
     <div class="field"><span>名称</span><input type="text" id="edName"></div>
     <div class="field"><span>武器</span><select id="edWeapon"></select></div>
     <div class="field"><span>组合</span><select id="edCombo"></select></div>
-    <div class="field"><span>FSMId</span>
+    <div class="field" id="edRowFsm"><span>FSMId</span>
       <input type="number" id="edFsm" class="num" title="-1 = 不限">
       <label class="inline"><input type="checkbox" id="edLmtAny"> LMT 不限</label>
     </div>

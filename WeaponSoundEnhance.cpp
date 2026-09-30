@@ -57,6 +57,7 @@
 #include <memory>
 #include <mutex>
 #include <map>
+#include <fstream>
 #include <random>
 #include <string>
 #include <vector>
@@ -722,6 +723,20 @@ volatile int gWatchMode = 0;
 // 派生 ID 流的边沿检测状态（仅主循环线程访问，无需线程安全）
 int gWatchLastFsm = -2, gWatchLastFsmTgt = -2, gWatchLastLmt = -2, gWatchLastWeapon = -2;
 
+// ---------------------------------------------------------------------------
+//  wem 触发通道：读 SonarAudio.log（另一只 agent 的 hook 输出，与 DLL 同在
+//  plugins\ 下）的增量事件，按条目的 Media= 匹配播放我们的音效。
+//  与 FSM/LMT 判定完全独立、可同时生效。
+// ---------------------------------------------------------------------------
+std::ifstream gWemStream;
+std::wstring  gWemLogPath;
+std::uint64_t gWemLastPollMs = 0;
+long long     gWemLastId = -1;      // 同 media 防抖：300ms 内不重复触发
+std::uint64_t gWemLastPlayMs = 0;
+
+int  WemWeaponFromBank(const std::string& bank);   // 定义见下（需要 gAttacks 声明之后）
+void PollWemEvents(std::mt19937& rng);             // 定义见下
+
 // --- hotkeys (defaults; ini [Hotkeys] overrides) ---
 int gModifierKey = VK_CONTROL;
 int gReloadKey   = VK_F5;
@@ -948,6 +963,8 @@ struct Attack
     int weaponType = -1;          // -1 = any weapon
     int fsmId = -1;               // -1 = any FSM
     int fsmTarget = -1;           // FSMTarget= 目标层；-1 = 不限定（只比 id，旧行为）
+    long long media = -1;         // Media=：WWise media id >0 时按"游戏播放该 wem"触发，
+                                  // 与 fsm/lmt 判定二选一（wem 捕获添加的条目）
     std::vector<int> lmt;         // empty = any LMT
     std::string name;             // Name= display label (ignored by matching)
     std::string group;            // Group= logical action: all members fire at most
@@ -1032,6 +1049,98 @@ int GaugeTagToLevel(const std::string& tag)
 
 std::vector<Attack> gAttacks;
 std::mutex gCfgMutex;
+
+// 前向声明（gLastTrigger / FireEntry 定义在其后）
+extern std::uint64_t gLastTrigger;
+bool FireEntry(const Attack& e, int gauge, std::mt19937& rng, std::uint64_t nowMs,
+               const std::string& tag);
+
+// ---------------------------------------------------------------------------
+//  wem 触发通道（定义）—— bank 名 → 武器类型
+// ---------------------------------------------------------------------------
+int WemWeaponFromBank(const std::string& bank)
+{
+    if (bank.size() < 4 || ((bank[0] != 'w') && (bank[0] != 'W')) ||
+                           ((bank[1] != 'p') && (bank[1] != 'P')))
+        return -1;
+    std::size_t i = 2;
+    int v = 0;
+    while (i < bank.size() && bank[i] >= '0' && bank[i] <= '9') { v = v * 10 + (bank[i] - '0'); ++i; }
+    if (i > 2) return (v >= 0 && v <= 13) ? v : -1;
+    std::string low = bank;
+    for (auto& c : low) if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+    static const struct { const char* pre; int w; } tab[] = {
+        { "wp_hbg_", 12 }, { "wp_lbg_", 13 }, { "wp_bowgun", 12 },
+        { "wp_bow_", 11 }, { "wp_two_", 0 },  { "wp_one_", 1 },
+        { "wp_sou_", 2 },  { "wp_swo_", 3 },  { "wp_ham_", 4 },
+        { "wp_hue_", 5 },  { "wp_lan_", 6 },  { "wp_gun_", 7 },
+        { "wp_saxe_", 8 }, { "wp_caxe_", 9 }, { "wp_rod_", 10 },
+    };
+    for (const auto& t : tab)
+        if (low.compare(0, std::strlen(t.pre), t.pre) == 0) return t.w;
+    return -1;
+}
+
+// 增量读 SonarAudio.log，把"游戏正在播放的 wem"变成条目触发。
+// 只在 gEnabled 开启时调用（WorkerProc 内，与 FSM 判定同线程、同锁规则）。
+void PollWemEvents(std::mt19937& rng)
+{
+    const std::uint64_t now = ::GetTickCount64();
+    if (now - gWemLastPollMs < 100) return;
+    gWemLastPollMs = now;
+    if (gWemLogPath.empty()) return;
+    if (gWemStream.is_open() && gWemStream.eof()) gWemStream.clear();
+    if (!gWemStream.is_open()) gWemStream.open(gWemLogPath, std::ios::binary);
+    if (!gWemStream.is_open()) return;
+
+    struct Hit { long long media; int weapon; };
+    std::vector<Hit> hits;
+    std::string line;
+    while (std::getline(gWemStream, line)) {
+        if (line.size() < 8) continue;
+        const std::size_t mp = line.find("media=");
+        if (mp == std::string::npos) continue;
+        long long m = std::strtoll(line.c_str() + mp + 6, nullptr, 10);
+        if (m <= 0) continue;
+        std::string bank;
+        const std::size_t bp = line.find("bank=");
+        if (bp != std::string::npos) {
+            std::size_t en = bp + 5;
+            while (en < line.size() && line[en] != ' ' && line[en] != '\t' && line[en] != '\r') ++en;
+            bank = line.substr(bp + 5, en - (bp + 5));
+        }
+        hits.push_back({ m, WemWeaponFromBank(bank) });
+    }
+    gWemStream.clear();
+    gWemStream.seekg(0, std::ios::end);
+    if (hits.empty()) return;
+
+    std::lock_guard<std::mutex> lk(gCfgMutex);
+    for (const auto& h : hits) {
+        if (h.media == gWemLastId && now - gWemLastPlayMs < 300)
+            continue;   // 同一条 wem 300ms 内只响一次
+        for (auto& e : gAttacks) {
+            if (e.media != h.media) continue;
+            if (e.weaponType >= 0 && h.weapon >= 0 && e.weaponType != h.weapon)
+                continue;
+            if (e.stop) {                       // Stop 条目：命中即停（不播放）
+                audio::StopAll();
+                gWemLastId = h.media;
+                gWemLastPlayMs = now;
+                LogD("[wem] stop %s (media=%lld)", e.name.c_str(), (long long)h.media);
+                break;
+            }
+            if (now - gLastTrigger < (std::uint64_t)gDebounceMs) break;
+            const std::string tag = "a[" + e.name + "] media=" + std::to_string((long long)h.media);
+            if (FireEntry(e, player::gGauge, rng, now, tag)) {
+                gWemLastId = h.media;
+                gWemLastPlayMs = now;
+                LogD("[wem] fired %s (bank wp? weapon=%d)", e.name.c_str(), h.weapon);
+            }
+            break;
+        }
+    }
+}
 
 std::vector<Attack> SnapshotAttacks()
 {
@@ -1611,6 +1720,8 @@ void LoadConfig()
             cur.weaponType = std::atoi(val.c_str());
         } else if (key == "FSMId") {
             cur.fsmId = std::atoi(val.c_str());
+        } else if (key == "Media") {
+            cur.media = std::strtoll(val.c_str(), nullptr, 10);
         } else if (key == "FSMTarget") {
             cur.fsmTarget = std::atoi(val.c_str());
         } else if (key == "ActionLMT" || key == "LMT") {
@@ -2569,6 +2680,8 @@ DWORD WINAPI WorkerProc(LPVOID)
 
         if (gEnabled == 0) continue;
 
+        PollWemEvents(rng);   // wem 触发通道（SonarAudio.log → Media= 条目），与 fsm 判定并行
+
         // Iterate the REAL container under the config lock. Entry latches
         // (inMatch) must persist across polls or the same action would be
         // re-fired on every poll once DebounceMs elapses. Reload swaps the
@@ -2769,6 +2882,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         gModuleDir = (sl == std::wstring::npos) ? std::wstring() : selfw.substr(0, sl + 1);
         gDataDir  = ResolveDataDir();
         gIniPath  = gDataDir + L"WeaponSoundEnhance.ini";
+        gWemLogPath = gModuleDir + L"SonarAudio.log";   // 与 DLL 同在 plugins\（SonarAudio hook 输出）
         LogInit();
         SeedIniFromTemplate();
         LoadConfig();

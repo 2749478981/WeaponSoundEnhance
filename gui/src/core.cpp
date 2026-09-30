@@ -35,6 +35,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstring>
 #include <fstream>
 #include <unordered_map>
 #include <cstdio>
@@ -1493,13 +1494,27 @@ struct Core::Impl {
         hasWemNames = !wemNames.empty();
     }
 
-    // bank 名 wp11_bow_epvsp_shell（或 path wp11/xx.wem）→ 武器类型 11
+    // bank（nbnk 名）→ 武器类型。数字前缀 wp00..wp11 直接取值；
+    // 命名 bank 用对照表（源自 D:\下载\音效源文件（含笔记） 的目录结构）。
     int WemWeapon(const std::string& bank) const {
-        if (bank.size() > 2 && (bank[0] == 'w' || bank[0] == 'W') && (bank[1] == 'p' || bank[1] == 'P')) {
-            int v = 0, i = 2;
-            while (i < (int)bank.size() && bank[i] >= '0' && bank[i] <= '9') { v = v * 10 + (bank[i] - '0'); ++i; }
-            if (i > 2 && v >= 0 && v <= 13) return v;
-        }
+        if (bank.size() < 4 || ((bank[0] != 'w') && (bank[0] != 'W')) ||
+                               ((bank[1] != 'p') && (bank[1] != 'P')))
+            return -1;
+        std::size_t i = 2;
+        int v = 0;
+        while (i < bank.size() && bank[i] >= '0' && bank[i] <= '9') { v = v * 10 + (bank[i] - '0'); ++i; }
+        if (i > 2) return (v >= 0 && v <= 13) ? v : -1;
+        std::string low = bank;
+        for (auto& c : low) if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+        static const struct { const char* pre; int w; } tab[] = {
+            { "wp_hbg_", 12 }, { "wp_lbg_", 13 }, { "wp_bowgun", 12 },
+            { "wp_bow_", 11 }, { "wp_two_", 0 },  { "wp_one_", 1 },
+            { "wp_sou_", 2 },  { "wp_swo_", 3 },  { "wp_ham_", 4 },
+            { "wp_hue_", 5 },  { "wp_lan_", 6 },  { "wp_gun_", 7 },
+            { "wp_saxe_", 8 }, { "wp_caxe_", 9 }, { "wp_rod_", 10 },
+        };
+        for (const auto& t : tab)
+            if (low.compare(0, std::strlen(t.pre), t.pre) == 0) return t.w;
         return -1;
     }
 
@@ -3291,9 +3306,13 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
         }
 
         if (method == "game.reload") {
+            // ★ 重载前先把当前改动保存进 ini（点击重载 = 保存 + 生效，一步到位）
+            if (im->cfg.loaded && !im->cfg.path.empty())
+                (void)SaveConfig(im->cfg.path, im->cfg);
+            im->dirty = false;
             // 游戏内插件轮询到这个文件就立刻重载（等价 /wse reload）
             FsWrite(im->BaseDir() + "_wse_reload.flag", "1");
-            im->SetStatus("已请求游戏重载配置（游戏内会立即生效；顺便把正在播的音效停掉）");
+            im->SetStatus("已保存 ini 并请求游戏重载配置（游戏内会立即生效；顺便把正在播的音效停掉）");
             JVal d = JVal::obj();
             d.set("flag", JVal(ToSlash(im->BaseDir() + "_wse_reload.flag")));
             d.set("status", JVal(im->status));

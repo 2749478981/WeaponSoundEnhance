@@ -510,8 +510,15 @@ async function askDelete(indices) {
    右栏：实时捕获
    =========================================================================== */
 function wemLabel(r) {
-  // 标识 = nbnk(bank) 名 + wemid，例如 wp_bow_cmn#873092594
-  return ((r.bank || r.wemBank || '?') + '#' + r.wemMedia);
+  // 主标识 = nbnk(bank) 名 + 该 bank 里的序号（mediaids 名形如 "wp_bow_cmn/30.ogg"）
+  const nm = r.name || '';
+  let m = nm.match(/^([^/]+)\/(\d+)(?:\.[a-z0-9]+)?$/i);
+  if (m) return m[1] + '/' + m[2];
+  m = nm.match(/^([^/]+)\/([^/]+)$/);
+  if (m) return m[1] + '/' + m[2];
+  const bank = r.bank || r.wemBank || '';
+  if (bank) return bank + '#m' + r.wemMedia;
+  return 'media#' + r.wemMedia;
 }
 function histFiltered(H) {
   // 按当前选中武器隔离：选了具体武器只显示该武器的捕获
@@ -755,6 +762,7 @@ async function openEditor(index) {
   }
   ED.open = true; ED.index = index == null ? null : index;
   ED.draft = e;
+  ED.isWem = !!(e && e.media != null && e.media > 0);
   ED.adv = !!(e.group || e.stop || (e.fsmTarget >= 0) || (e.checkTimeoutMs > 0) ||
               (e.gauge || []).some(g => g && g.length));
   ED.judgeBox = ED.adv;
@@ -766,6 +774,27 @@ async function openEditor(index) {
 function fillEditor() {
   const e = ED.draft;
   $('#edName').value = e.name || '';
+
+  // wem 条目：显示 nbnk 相关信息，隐藏 FSM 行（触发不依赖 fsm/lmt）
+  const isWem = ED.isWem;
+  const wi = $('#edWemInfo');
+  if (isWem) {
+    let seq = '';
+    const m = (e.name || '').match(/^([^/]+)\/(\d+)(?:\.[a-z0-9]+)?$/i);
+    if (m) seq = m[1] + ' / 第 ' + m[2] + ' 个';
+    const wname = ((ST.weapons || []).find(w => w.id === e.weaponType) || {}).name || ('武器 ' + e.weaponType);
+    wi.hidden = false;
+    wi.textContent = 'wem 条目：' + (seq || e.name || ('media ' + e.media)) +
+      ' · 媒体 id ' + e.media + ' · ' + wname +
+      '（游戏播放该 wem 时触发，不依赖 fsm/lmt）';
+    const row = $('#edRowFsm');
+    if (row) row.style.display = 'none';
+  } else {
+    wi.hidden = true;
+    const row = $('#edRowFsm');
+    if (row) row.style.display = '';
+  }
+
   $('#edFsm').value = e.fsmId;
   $('#edLmtAny').checked = !!e.lmtAny;
   $('#edLmt').value = (e.lmt || []).join(',');
