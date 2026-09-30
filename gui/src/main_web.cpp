@@ -26,10 +26,12 @@
 #include <cstdio>
 #include <cstdarg>
 #include <wrl.h>
+#include <gdiplus.h>
 
 #include "../third_party/webview2/include/WebView2.h"
 #include "core.h"
 
+#pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "shlwapi.lib")
 
 #pragma comment(lib, "shell32.lib")
@@ -45,6 +47,7 @@ using Microsoft::WRL::ComPtr;
 namespace {
 
 Core                 g_core;
+ULONG_PTR            g_gdiToken = 0;   // GDI+ 启动令牌（启动加载画面用）
 ComPtr<ICoreWebView2Controller> g_ctrl;
 ComPtr<ICoreWebView2>           g_web;
 HWND                 g_hwnd = nullptr;
@@ -237,28 +240,44 @@ void PaintLoading(HWND hwnd) {
     ::DeleteObject(bg);
 
     // 图标呼吸：40ms/帧的高帧率 + 正弦曲线 → 又慢又平滑（约 4 秒一个来回）。
-    //   之前用 14 帧离散步进，虽然周期长但看着是一格一格跳，帧率很低。
     const double ang = (double)(g_animPhase % 100) / 100.0 * 6.28318530718;
     const int isz = 122 + (int)(6.0 + 6.0 * std::sin(ang));   // 122..134
-
-    HICON icon = (HICON)::LoadImageW((HINSTANCE)::GetModuleHandleW(nullptr),
-                                     MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON, 0, 0, 0);
     const int ix = (rc.right - isz) / 2;
-    const int iy = rc.top + (rc.bottom - rc.top - isz - 58) / 2;
-    ::DrawIconEx(dc, ix, iy, icon, isz, isz, 0, nullptr, DI_NORMAL);
+    const int iy = rc.top + (rc.bottom - rc.top - isz - 62) / 2;
 
-    // 文字：三个点轮转（正在启动. / .. / ...），每 13 帧（约 0.5s）换一个
+    // ★ 用 GDI+ 从 exe 目录加载 256px 的 sonar_icon.png，再做高质量双三次缩放。
+    //   之前用 DrawIconEx 放大的其实是系统默认(32px)小图标，所以糊。
+    bool drew = false;
+    {
+        Gdiplus::Bitmap bmp((ExeDirW() + L"sonar_icon.png").c_str());
+        if (g_gdiToken && bmp.GetLastStatus() == Gdiplus::Ok) {
+            Gdiplus::Graphics g(dc);
+            g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+            g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+            g.DrawImage(&bmp, ix, iy, isz, isz);
+            drew = true;
+        }
+    }
+    if (!drew) {   // 回退：指定 256 尺寸加载图标（别再拿默认小尺寸放大）
+        HICON icon = (HICON)::LoadImageW((HINSTANCE)::GetModuleHandleW(nullptr),
+                                         MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON, 256, 256, 0);
+        ::DrawIconEx(dc, ix, iy, icon, isz, isz, 0, nullptr, DI_NORMAL);
+    }
+
+    // 文字：三个点轮转，每约 0.5s 换一个；大号雅黑，避免小字体在高 DPI 下发糊
     static const wchar_t* dots[3] = { L".", L"..", L"..." };
     wchar_t txt[64];
     wsprintfW(txt, L"Sonar 正在启动%s", dots[(g_animPhase / 13) % 3]);
 
-    HFONT f = (HFONT)::GetStockObject(DEFAULT_GUI_FONT);
+    HFONT f = ::CreateFontW(-24, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+                            0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei UI");
     HFONT of = (HFONT)::SelectObject(dc, f);
     ::SetBkMode(dc, TRANSPARENT);
     ::SetTextColor(dc, RGB(110, 110, 115));
-    RECT tr = { 8, iy + isz + 20, rc.right - 8, rc.bottom - 6 };
+    RECT tr = { 8, iy + isz + 24, rc.right - 8, rc.bottom - 6 };
     ::DrawTextW(dc, txt, -1, &tr, DT_CENTER | DT_TOP);
     ::SelectObject(dc, of);
+    ::DeleteObject(f);
     ::EndPaint(hwnd, &ps);
 }
 
@@ -541,6 +560,12 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     LogLine("---- start (dpi aware) ----");
 
+    // GDI+ 初始化（启动加载画面用，画高品质 PNG）
+    {
+        Gdiplus::GdiplusStartupInput gsi;
+        Gdiplus::GdiplusStartup(&g_gdiToken, &gsi, nullptr);
+    }
+
     // ---- 窗口类（图标沿用 resource.rc 里的 IDI_APP）----
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
@@ -756,6 +781,7 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
 
     g_web.Reset();
     g_ctrl.Reset();
+    if (g_gdiToken) Gdiplus::GdiplusShutdown(g_gdiToken);
     ::CoUninitialize();
     return 0;
 }
