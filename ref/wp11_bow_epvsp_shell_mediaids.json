@@ -1,0 +1,398 @@
+[
+    {
+        "seq":  1,
+        "media_id":  20505677,
+        "wem":  "01.wem",
+        "note":  "落石"
+    },
+    {
+        "seq":  2,
+        "media_id":  39800200,
+        "wem":  "02.wem",
+        "note":  ""
+    },
+    {
+        "seq":  3,
+        "media_id":  56987078,
+        "wem":  "03.wem",
+        "note":  ""
+    },
+    {
+        "seq":  4,
+        "media_id":  57188950,
+        "wem":  "04.wem",
+        "note":  ""
+    },
+    {
+        "seq":  5,
+        "media_id":  68436795,
+        "wem":  "05.wem",
+        "note":  ""
+    },
+    {
+        "seq":  6,
+        "media_id":  108171524,
+        "wem":  "06.wem",
+        "note":  ""
+    },
+    {
+        "seq":  7,
+        "media_id":  111570796,
+        "wem":  "07.wem",
+        "note":  ""
+    },
+    {
+        "seq":  8,
+        "media_id":  113462783,
+        "wem":  "08.wem",
+        "note":  ""
+    },
+    {
+        "seq":  9,
+        "media_id":  116537007,
+        "wem":  "09.wem",
+        "note":  ""
+    },
+    {
+        "seq":  10,
+        "media_id":  154435878,
+        "wem":  "10.wem",
+        "note":  "落石"
+    },
+    {
+        "seq":  11,
+        "media_id":  191401661,
+        "wem":  "11.wem",
+        "note":  ""
+    },
+    {
+        "seq":  12,
+        "media_id":  217590158,
+        "wem":  "12.wem",
+        "note":  "射箭"
+    },
+    {
+        "seq":  13,
+        "media_id":  250507895,
+        "wem":  "13.wem",
+        "note":  ""
+    },
+    {
+        "seq":  14,
+        "media_id":  269846322,
+        "wem":  "14.wem",
+        "note":  ""
+    },
+    {
+        "seq":  15,
+        "media_id":  283137092,
+        "wem":  "15.wem",
+        "note":  ""
+    },
+    {
+        "seq":  16,
+        "media_id":  288640544,
+        "wem":  "16.wem",
+        "note":  ""
+    },
+    {
+        "seq":  17,
+        "media_id":  296691164,
+        "wem":  "17.wem",
+        "note":  ""
+    },
+    {
+        "seq":  18,
+        "media_id":  302569407,
+        "wem":  "18.wem",
+        "note":  "射地板"
+    },
+    {
+        "seq":  19,
+        "media_id":  304692171,
+        "wem":  "19.wem",
+        "note":  ""
+    },
+    {
+        "seq":  20,
+        "media_id":  329424829,
+        "wem":  "20.wem",
+        "note":  ""
+    },
+    {
+        "seq":  21,
+        "media_id":  331650634,
+        "wem":  "21.wem",
+        "note":  ""
+    },
+    {
+        "seq":  22,
+        "media_id":  346034238,
+        "wem":  "22.wem",
+        "note":  ""
+    },
+    {
+        "seq":  23,
+        "media_id":  354314788,
+        "wem":  "23.wem",
+        "note":  ""
+    },
+    {
+        "seq":  24,
+        "media_id":  376676857,
+        "wem":  "24.wem",
+        "note":  ""
+    },
+    {
+        "seq":  25,
+        "media_id":  411530305,
+        "wem":  "25.wem",
+        "note":  ""
+    },
+    {
+        "seq":  26,
+        "media_id":  429092717,
+        "wem":  "26.wem",
+        "note":  ""
+    },
+    {
+        "seq":  27,
+        "media_id":  444340436,
+        "wem":  "27.wem",
+        "note":  ""
+    },
+    {
+        "seq":  28,
+        "media_id":  445274279,
+        "wem":  "28.wem",
+        "note":  ""
+    },
+    {
+        "seq":  29,
+        "media_id":  446271429,
+        "wem":  "29.wem",
+        "note":  ""
+    },
+    {
+        "seq":  30,
+        "media_id":  454052540,
+        "wem":  "30.wem",
+        "note":  ""
+    },
+    {
+        "seq":  31,
+        "media_id":  459005945,
+        "wem":  "31.wem",
+        "note":  ""
+    },
+    {
+        "seq":  32,
+        "media_id":  473159840,
+        "wem":  "32.wem",
+        "note":  "龙矢发射"
+    },
+    {
+        "seq":  33,
+        "media_id":  480304630,
+        "wem":  "33.wem",
+        "note":  ""
+    },
+    {
+        "seq":  34,
+        "media_id":  483269058,
+        "wem":  "34.wem",
+        "note":  ""
+    },
+    {
+        "seq":  35,
+        "media_id":  526439609,
+        "wem":  "35.wem",
+        "note":  ""
+    },
+    {
+        "seq":  36,
+        "media_id":  563255565,
+        "wem":  "36.wem",
+        "note":  ""
+    },
+    {
+        "seq":  37,
+        "media_id":  574526735,
+        "wem":  "37.wem",
+        "note":  ""
+    },
+    {
+        "seq":  38,
+        "media_id":  577573119,
+        "wem":  "38.wem",
+        "note":  ""
+    },
+    {
+        "seq":  39,
+        "media_id":  581720717,
+        "wem":  "39.wem",
+        "note":  ""
+    },
+    {
+        "seq":  40,
+        "media_id":  599462403,
+        "wem":  "40.wem",
+        "note":  ""
+    },
+    {
+        "seq":  41,
+        "media_id":  617353279,
+        "wem":  "41.wem",
+        "note":  ""
+    },
+    {
+        "seq":  42,
+        "media_id":  637879907,
+        "wem":  "42.wem",
+        "note":  ""
+    },
+    {
+        "seq":  43,
+        "media_id":  652667617,
+        "wem":  "43.wem",
+        "note":  ""
+    },
+    {
+        "seq":  44,
+        "media_id":  654105188,
+        "wem":  "44.wem",
+        "note":  ""
+    },
+    {
+        "seq":  45,
+        "media_id":  681754060,
+        "wem":  "45.wem",
+        "note":  ""
+    },
+    {
+        "seq":  46,
+        "media_id":  729874171,
+        "wem":  "46.wem",
+        "note":  ""
+    },
+    {
+        "seq":  47,
+        "media_id":  766270597,
+        "wem":  "47.wem",
+        "note":  ""
+    },
+    {
+        "seq":  48,
+        "media_id":  778838111,
+        "wem":  "48.wem",
+        "note":  ""
+    },
+    {
+        "seq":  49,
+        "media_id":  787879243,
+        "wem":  "49.wem",
+        "note":  ""
+    },
+    {
+        "seq":  50,
+        "media_id":  790999829,
+        "wem":  "50.wem",
+        "note":  ""
+    },
+    {
+        "seq":  51,
+        "media_id":  829824005,
+        "wem":  "51.wem",
+        "note":  "一段蓄力"
+    },
+    {
+        "seq":  52,
+        "media_id":  847895091,
+        "wem":  "52.wem",
+        "note":  ""
+    },
+    {
+        "seq":  53,
+        "media_id":  848644996,
+        "wem":  "53.wem",
+        "note":  ""
+    },
+    {
+        "seq":  54,
+        "media_id":  850337852,
+        "wem":  "54.wem",
+        "note":  "龙之矢飞行音效"
+    },
+    {
+        "seq":  55,
+        "media_id":  857404759,
+        "wem":  "55.wem",
+        "note":  ""
+    },
+    {
+        "seq":  56,
+        "media_id":  867265309,
+        "wem":  "56.wem",
+        "note":  ""
+    },
+    {
+        "seq":  57,
+        "media_id":  891843164,
+        "wem":  "57.wem",
+        "note":  ""
+    },
+    {
+        "seq":  58,
+        "media_id":  906268417,
+        "wem":  "58.wem",
+        "note":  ""
+    },
+    {
+        "seq":  59,
+        "media_id":  919075022,
+        "wem":  "59.wem",
+        "note":  ""
+    },
+    {
+        "seq":  60,
+        "media_id":  921211120,
+        "wem":  "60.wem",
+        "note":  ""
+    },
+    {
+        "seq":  61,
+        "media_id":  956195820,
+        "wem":  "61.wem",
+        "note":  ""
+    },
+    {
+        "seq":  62,
+        "media_id":  962187441,
+        "wem":  "62.wem",
+        "note":  ""
+    },
+    {
+        "seq":  63,
+        "media_id":  982207718,
+        "wem":  "63.wem",
+        "note":  "射箭2"
+    },
+    {
+        "seq":  64,
+        "media_id":  1025297513,
+        "wem":  "64.wem",
+        "note":  ""
+    },
+    {
+        "seq":  65,
+        "media_id":  1041525340,
+        "wem":  "65.wem",
+        "note":  ""
+    },
+    {
+        "seq":  66,
+        "media_id":  1066965560,
+        "wem":  "66.wem",
+        "note":  ""
+    }
+]

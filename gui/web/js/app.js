@@ -539,6 +539,23 @@ function renderLive() {
       '这是最近一次被捕获的动作，点击可直接编辑 / 添加条目。'));
   } else now.hidden = true;
 
+  // 顶部：最近一次 wem 播放（装瓶/射箭这类"fsm 读不到但确实在播"的 WWise 音效）
+  const wemBox = $('#liveWem');
+  if (L.wemMedia > 0) {
+    wemBox.hidden = false;
+    wemBox.innerHTML = '';
+    const wr = h('div', { class: 'live-row wem', title: '游戏正在播放的 WWise 音效 → 点击添加为条目' },
+      h('b', { text: (L.wemAdded ? '✔ ' : '') + (L.wemName || ('media ' + L.wemMedia)) }),
+      h('span', { text: 'wem · media ' + L.wemMedia }),
+      L.wemAdded
+        ? h('em', { class: 'tag', text: '编辑' })
+        : h('em', { class: 'tag add', text: '＋ 添加' }));
+    wr.onclick = () => addWemRecord({ kind: 1, wemMedia: L.wemMedia, name: L.wemName, weapon: -1, added: L.wemAdded });
+    wemBox.appendChild(wr);
+    wemBox.appendChild(h('div', { style: 'margin-top:6px;color:var(--muted);font-size:11px' },
+      '游戏正在播放的 WWise 音效（wem 捕获），点击可直接添加条目。'));
+  } else wemBox.hidden = true;
+
   const hist = $('#liveHist');
   hist.innerHTML = '';
   const H = L.history || [];
@@ -550,21 +567,23 @@ function renderLive() {
     `捕获历史（${H.length} 条，点击记录可直接加入条目）`));
   const show = ST.histExpanded ? H : H.slice(0, 8);
   show.forEach(r => {
-    // 每条记录 core 已经解析出动作名(name)和市场里有/无条目(added)，
-    // 直接显示 + 可点击：已有条目 → 打开编辑；没有 → 预填新建。
+    // 每条记录 core 已经解析出名字(name)和市场里有/无条目(added)。
+    // kind===1 是 wem 捕获（WWise 音效播放），kind===0 是派生(fsm/lmt)捕获。
+    const isWem = r.kind === 1;
     const el = h('div', {
-      class: 'hrec' + (r.added ? ' added' : ''),
-      title: (r.added ? '该动作已配了条目 → 点击编辑\n'
-                       : '点击把这个动作加入条目\n') +
-             (r.name ? r.name : '未知动作') + `\n武器 ${r.weapon} · fsm ${r.fsm} · lmt ${r.lmt}`,
+      class: 'hrec' + (r.added ? ' added' : '') + (isWem ? ' wem' : ''),
+      title: (r.added ? '该记录已配了条目 → 点击编辑\n'
+                      : '点击把这条记录加入条目\n') +
+             (r.name || (isWem ? ('media ' + r.wemMedia) : '未知动作')) +
+             (isWem ? ('\nmedia ' + r.wemMedia) : `\n武器 ${r.weapon} · fsm ${r.fsm} · lmt ${r.lmt}`),
     },
       h('b', { text: r.time || '' }),
-      h('span', { class: 'n', text: (r.name || ('fsm ' + r.fsm)) }),
-      h('span', { class: 'ids', text: `w${r.weapon} ${r.fsm}/${r.lmt}` }),
+      h('span', { class: 'n', text: (isWem ? '🎵 ' : '') + (r.name || (isWem ? ('media ' + r.wemMedia) : ('fsm ' + r.fsm))) }),
+      h('span', { class: 'ids', text: isWem ? ('media ' + r.wemMedia) : (`w${r.weapon} ${r.fsm}/${r.lmt}`) }),
       r.added
         ? h('em', { class: 'tag', text: '编辑' })
         : h('em', { class: 'tag add', text: '＋ 添加' }));
-    el.onclick = () => captureToEntry(r);
+    el.onclick = () => (isWem ? addWemRecord(r) : captureToEntry(r));
     hist.appendChild(el);
   });
   if (!ST.histExpanded && H.length > 8) {
@@ -616,6 +635,37 @@ async function captureToEntry(r) {
     await refresh();
     if (res && res.index != null) openEditor(res.index);
     toast('已添加条目（配好音效后记得保存）', 'ok');
+  } catch (e) { toast('添加失败：' + e.message, 'err'); }
+}
+
+/* wem 捕获 → 添加/编辑条目（触发方式 = media id，与 fsm/lmt 二选一） */
+async function addWemRecord(r) {
+  const media = r.wemMedia;
+  if (media == null || media <= 0) { toast('这条记录没有 media id，无法添加', 'err'); return; }
+  const w = (r.weapon != null && r.weapon >= 0 && r.weapon <= 13) ? r.weapon : -1;
+  const combo = w < 0 ? '' : (ST.active[w] || '');
+  // 当前组合里已有同 media → 打开编辑（w<0 时找任意武器条目）
+  const hit = ST.entries.findIndex(e =>
+    e.media === media && (w < 0 || e.weaponType === w) && (e.combo || '') === combo);
+  if (hit >= 0) {
+    const idx = ST.entries[hit].index != null ? ST.entries[hit].index : hit;
+    openEditor(idx);
+    toast('当前组合已有这个 wem，已打开编辑', 'ok');
+    return;
+  }
+  const entry = {
+    name: r.name || ('media ' + media), weaponType: w, combo,
+    media: media, fsmId: -1, fsmTarget: -1, group: '', stop: false,
+    lmt: [], lmtAny: true,
+    def: [], gauge: [[], [], [], []],
+    checkDelayMs: 0, checkTimeoutMs: 0, checkOffsetMs: 150, endOnAction: true,
+    checkMode: 0, judgePreset: 0, conds: [],
+  };
+  try {
+    const res = await Backend.call('entries.save', { index: null, entry });
+    await refresh();
+    if (res && res.index != null) openEditor(res.index);
+    toast('已添加 wem 条目（触发方式 = media id，配好音效后记得保存）', 'ok');
   } catch (e) { toast('添加失败：' + e.message, 'err'); }
 }
 

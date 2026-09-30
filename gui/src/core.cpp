@@ -35,6 +35,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <fstream>
+#include <unordered_map>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -990,6 +992,7 @@ JVal EntryToJson(const SoundEntry& e, int index) {
     v.set("combo", JVal(e.combo));
     v.set("fsmId", JVal(e.fsmId));
     v.set("fsmTarget", JVal(e.fsmTarget));
+    v.set("media", JVal(e.media));
     v.set("group", JVal(e.group));
     v.set("stop", JVal(e.stop));
 
@@ -1037,6 +1040,7 @@ SoundEntry EntryFromJson(const JVal& v, const std::vector<std::string>& allowedC
     e.stop = v.optBool("stop", false);
     e.fsmId = v.optInt("fsmId", -1);
     e.fsmTarget = v.optInt("fsmTarget", -1);
+    e.media = (long long)v.optInt("media", -1);   // wem/media id；id < 2^31
 
     // 组合归属：任意武器没有组合概念，固定进默认组合
     //（否则保存时会被丢进一个不存在的 [Weapon-1:名字] 段）
@@ -1214,10 +1218,24 @@ struct Core::Impl {
         int lmt = -1;
         int weapon = -1;
         int weaponId = -1;
+        int kind = 0;           // 0 = 派生（fsm/lmt），1 = wem
+        int wemMedia = -1;      // kind=1：WWise media id
+        std::string wemName;    // kind=1：可读名（bank/path）
         std::string time;
         unsigned long long ms = 0;     // GetTickCount64 时间戳，用于"短时间同动作合并"
     };
     std::vector<HistEntry> history;
+
+    // ---- wem 捕获（读 SonarAudio.log，GUI 进程内即可，不进游戏）----
+    std::string wemLogPath;                                        // plugins\SonarAudio.log
+    std::string wemMapPath;                                        // plugins\SonarAudio.mediaids.txt
+    std::unordered_map<int, std::string> wemNames;                 // media id -> 可读名(UTF-8)
+    std::ifstream wemStream;
+    unsigned long long wemLastPoll = 0;
+    long long lastWemMedia = -2;                                   // 推送去重
+    int curWemMedia = -1;                                          // 最近一条 wem
+    std::string curWemName;
+    bool hasWemNames = false;
 
     unsigned long long lastPoll = 0;    // 按 ini 的 PollMs 节流
     bool dirty = false;                 // cfg 有未保存改动
@@ -1289,6 +1307,8 @@ struct Core::Impl {
         }
 
         LoadUiPrefs();
+        InitWemWatch();     // 定位 SonarAudio.log / mediaids.txt
+        LoadWemMap();
     }
 
     ~Impl() { game.Detach(); }
@@ -1427,6 +1447,130 @@ struct Core::Impl {
     }
 
     // ---- 实时捕获 ----
+    // ---- wem 捕获通道（读 SonarAudio.log 的增量，单独走，不需要游戏内插件）----
+    void InitWemWatch() {
+        std::vector<std::string> cand;
+        const std::size_t pl = gameIniPath.find("nativePC\\plugins\\");
+        if (pl != std::string::npos)
+            cand.push_back(gameIniPath.substr(0, pl + std::string("nativePC\\plugins\\").size()));
+        cand.push_back(exeDir + "..\\");
+        for (const auto& d : cand) {
+            if (FsExists(d + "SonarAudio.log")) {
+                wemLogPath = d + "SonarAudio.log";
+                wemMapPath = d + "SonarAudio.mediaids.txt";
+                return;
+            }
+        }
+        if (!cand.empty()) {   // log 还没生成（游戏没跑过）也先占位，运行时照常尝试
+            wemLogPath = cand[0] + "SonarAudio.log";
+            wemMapPath = cand[0] + "SonarAudio.mediaids.txt";
+        }
+    }
+
+    void LoadWemMap() {
+        wemNames.clear();
+        hasWemNames = false;
+        if (wemMapPath.empty()) return;
+        std::ifstream f(wemMapPath, std::ios::binary);
+        if (!f) return;
+        std::string line;
+        while (std::getline(f, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.empty() || line[0] == '#') continue;
+            const std::size_t tab = line.find('\t');
+            if (tab == std::string::npos) continue;
+            const int id = std::atoi(line.substr(0, tab).c_str());
+            const std::string nm = line.substr(tab + 1);
+            if (id > 0 && !nm.empty()) wemNames[id] = nm;
+        }
+        hasWemNames = !wemNames.empty();
+    }
+
+    // bank 名 wp11_bow_epvsp_shell（或 path wp11/xx.wem）→ 武器类型 11
+    int WemWeapon(const std::string& bank) const {
+        if (bank.size() > 2 && (bank[0] == 'w' || bank[0] == 'W') && (bank[1] == 'p' || bank[1] == 'P')) {
+            int v = 0, i = 2;
+            while (i < (int)bank.size() && bank[i] >= '0' && bank[i] <= '9') { v = v * 10 + (bank[i] - '0'); ++i; }
+            if (i > 2 && v >= 0 && v <= 13) return v;
+        }
+        return -1;
+    }
+
+    // 解析 SonarAudio.log 的事件行：evt ... media=873092594 ... bank=wp_bow_cmn ... path=...
+    bool ParseWemLine(const std::string& line, int& media, std::string& bank, std::string& path) const {
+        if (line.find("media=") == std::string::npos) return false;
+        auto grab = [&](const char* key, std::string& dst) {
+            const std::string k(key);
+            std::size_t p = line.find(k);
+            if (p == std::string::npos) return;
+            p += k.size();
+            std::size_t en = p;
+            while (en < line.size() && line[en] != ' ' && line[en] != '\t' && line[en] != '\r') ++en;
+            dst = line.substr(p, en - p);
+        };
+        std::string ms;
+        grab("media=", ms);
+        if (ms.empty()) return false;
+        try { media = std::stoi(ms); } catch (...) { return false; }
+        grab("bank=", bank);
+        grab("path=", path);
+        return true;
+    }
+
+    // 每 ~250ms 增量扫一遍 SonarAudio.log，把新 wem 事件收进捕获历史
+    void RecordWemEvents() {
+        const unsigned long long nowMs = ::GetTickCount64();
+        if (nowMs - wemLastPoll < 250) return;
+        wemLastPoll = nowMs;
+        if (wemLogPath.empty()) return;
+        if (wemStream.is_open() && wemStream.eof()) wemStream.clear();
+        if (!wemStream.is_open()) wemStream.open(wemLogPath, std::ios::binary);
+        if (!wemStream.is_open()) return;
+        std::string line;
+        while (std::getline(wemStream, line)) {
+            if (line.size() < 8) continue;
+            int media = 0;
+            std::string bank, path;
+            if (!ParseWemLine(line, media, bank, path)) continue;
+            if (media <= 0) continue;
+            // 去重：连续同 media，或 1.5s 窗口内同 media
+            bool dup = false;
+            if (!history.empty()) {
+                const HistEntry& top = history.front();
+                if (top.kind == 1 && top.wemMedia == media) dup = true;
+            }
+            if (!dup) {
+                const unsigned long long win = 1500;
+                for (std::size_t i = 0; i < history.size(); ++i) {
+                    const HistEntry& ph = history[i];
+                    if (nowMs - ph.ms >= win) break;
+                    if (ph.kind == 1 && ph.wemMedia == media) { dup = true; break; }
+                }
+            }
+            if (dup) continue;
+            std::string name;
+            const std::unordered_map<int, std::string>::const_iterator it = wemNames.find(media);
+            if (it != wemNames.end()) name = it->second;
+            else if (!path.empty()) name = path;
+            else if (!bank.empty()) name = bank + "/media " + std::to_string(media);
+            else name = "media " + std::to_string(media);
+            HistEntry h;
+            h.kind = 1;
+            h.wemMedia = media;
+            h.wemName = name;
+            h.weapon = WemWeapon(bank);
+            h.weaponId = -1;
+            h.ms = nowMs;
+            h.time = TimeNowHms();
+            history.insert(history.begin(), h);
+            if (history.size() > 64) history.pop_back();
+            curWemMedia = media;
+            curWemName = name;
+        }
+        wemStream.clear();
+        wemStream.seekg(0, std::ios::end);   // 始终从尾部续读（文件被游戏重建/截断时也稳）
+    }
+
     void RecordHistory() {
         if (!(liveOk && live.attached) || !live.inScene) return;
         if (live.fsm == -1) return;
@@ -1484,6 +1628,7 @@ struct Core::Impl {
         }
         liveOk = game.Poll(pr, live);
         if (!game.IsAttached()) liveOk = false;
+        RecordWemEvents();     // wem 捕获（读 SonarAudio.log；不依赖进场景/附着）
         RecordHistory();
     }
 
@@ -1491,16 +1636,36 @@ struct Core::Impl {
         JVal a = JVal::arr();
         for (std::size_t i = 0; i < history.size(); ++i) {
             JVal h = JVal::obj();
-            h.set("fsm", JVal(history[i].fsm));
-            h.set("lmt", JVal(history[i].lmt));
-            h.set("weapon", JVal(history[i].weapon));
-            h.set("weaponId", JVal(history[i].weaponId));
-            h.set("time", JVal(history[i].time));
-            h.set("name", JVal(ResolveName(history[i].weapon, history[i].fsm, history[i].lmt)));
-            h.set("added", JVal(IsCapturedAdded(history[i].weapon, history[i].fsm, history[i].lmt)));
+            h.set("kind", JVal(history[i].kind));
+            if (history[i].kind == 1) {   // wem 捕获
+                h.set("wemMedia", JVal(history[i].wemMedia));
+                h.set("name", JVal(history[i].wemName));
+                h.set("weapon", JVal(history[i].weapon));
+                h.set("weaponId", JVal(history[i].weaponId));
+                h.set("time", JVal(history[i].time));
+                h.set("added", JVal(IsWemAdded(history[i].wemMedia)));
+            } else {                      // 派生捕获（fsm/lmt）
+                h.set("fsm", JVal(history[i].fsm));
+                h.set("lmt", JVal(history[i].lmt));
+                h.set("weapon", JVal(history[i].weapon));
+                h.set("weaponId", JVal(history[i].weaponId));
+                h.set("time", JVal(history[i].time));
+                h.set("name", JVal(ResolveName(history[i].weapon, history[i].fsm, history[i].lmt)));
+                h.set("added", JVal(IsCapturedAdded(history[i].weapon, history[i].fsm, history[i].lmt)));
+            }
             a.push(h);
         }
         return a;
+    }
+
+    bool IsWemAdded(int wemMedia) const {
+        if (wemMedia <= 0) return false;
+        for (std::size_t i = 0; i < cfg.entries.size(); ++i) {
+            const SoundEntry& e = cfg.entries[i];
+            if (!EntryActive(e)) continue;
+            if (e.media == (long long)wemMedia) return true;
+        }
+        return false;
     }
 
     bool IsCapturedAdded(int weapon, int fsm, int lmt) const {
@@ -1531,6 +1696,9 @@ struct Core::Impl {
                                ? ResolveName(live.weapon, live.fsm, live.lmt)
                                : std::string()));
         d.set("added", JVal(live.inScene && IsCapturedAdded(live.weapon, live.fsm, live.lmt)));
+        d.set("wemMedia", JVal(curWemMedia));      // 最近一次 wem 播放（无则 -1）
+        d.set("wemName", JVal(curWemName.empty() ? std::string() : curWemName));
+        d.set("wemAdded", JVal(curWemMedia > 0 && IsWemAdded(curWemMedia)));
         d.set("history", HistoryJson());
         return d;
     }
@@ -2449,7 +2617,7 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
             const JVal* je = p.find("entry");
             if (!je || !je->isObj()) return ErrJson("缺少 entry 对象");
             const int idx = p.optInt("index", -1);
-            const SoundEntry e = EntryFromJson(*je, im->AllowedCombos(je->optInt("weaponType", -1)));
+            SoundEntry e = EntryFromJson(*je, im->AllowedCombos(je->optInt("weaponType", -1)));
             if (idx < 0) {
                 im->cfg.entries.push_back(e);
                 im->dirty = true;
@@ -2463,6 +2631,8 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
             }
             if (idx >= (int)im->cfg.entries.size())
                 return ErrJson("index 越界: " + std::to_string(idx));
+            // 编辑器没带 media 字段（老界面）→ 保留原值，别把 wem 条目的 id 抹掉
+            if (!je->has("media")) e.media = im->cfg.entries[idx].media;
             im->cfg.entries[idx] = e;
             im->dirty = true;
             im->SetStatus("已修改（记得保存）");
@@ -3444,6 +3614,9 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
 
         if (method == "live.clear") {
             im->history.clear();
+            im->curWemMedia = -1;
+            im->curWemName.clear();
+            im->lastWemMedia = -2;
             JVal d = JVal::obj();
             d.set("cleared", JVal(true));
             d.set("history", im->HistoryJson());
@@ -3532,7 +3705,8 @@ std::string Core::PollEvents() {
         const bool changed = !im->hadLive || att != im->lastAttached ||
                              inScene != im->lastInScene || err != im->lastError ||
                              fsm != im->lastFsm || lmt != im->lastLmt ||
-                             weapon != im->lastWeapon || weaponId != im->lastWeaponId;
+                             weapon != im->lastWeapon || weaponId != im->lastWeaponId ||
+                             im->curWemMedia != im->lastWemMedia;
         if (!changed) {
             // UI 偏好有改动就顺手落盘（重连/清历史这类操作不改变 live 值，
             // 但窗口尺寸等偏好不能等到退出才写），最多 1 秒写一次。
@@ -3552,6 +3726,7 @@ std::string Core::PollEvents() {
         im->lastLmt = lmt;
         im->lastWeapon = weapon;
         im->lastWeaponId = weaponId;
+        im->lastWemMedia = im->curWemMedia;
 
         JVal ev = JVal::obj();
         ev.set("event", JVal(std::string("live")));

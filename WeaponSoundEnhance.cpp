@@ -702,6 +702,26 @@ volatile int g_useChatEcho = 1;
 volatile int g_useChatCommands = 1;
 volatile int g_hotkeysEnabled = 1;   // 启用/关闭热键（ini [WeaponSoundEnhance] Hotkeys=0）
 
+// ---------------------------------------------------------------------------
+//  监听模式（WatchMode）—— 把"捕获到的东西"分别显示出来
+//
+//  这是作者的调试/勘察开关：Sonar 的玩法靠 FSM/LMT 匹配来触发音效，
+//  但想知道"某个派生到底叫什么 ID、最终调用了哪个 wem"时，光看配置很费劲。
+//  打开它就能在日志里看到两条独立的流：
+//
+//    位 0 (1) = **派生 ID 流**：FSM / FSM层 / LMT 逐帧变化，变化时才打
+//                （附当前武器与动作名），用来查一个动作的真实 ID。
+//    位 1 (2) = **WEM 调用流**：每次真正播放音效时，打出来自哪条条目、
+//                哪个 wem 文件、音量，用来核对"ID 匹配上以后到底响了什么"。
+//
+//  组合：0=关（默认，零开销） 1=只看派生 2=只看 wem 3=两者都看
+//  运行时可聊天命令 `/wse watch 0..3` 热切换，或 ini `WatchMode=`。
+// ---------------------------------------------------------------------------
+volatile int gWatchMode = 0;
+
+// 派生 ID 流的边沿检测状态（仅主循环线程访问，无需线程安全）
+int gWatchLastFsm = -2, gWatchLastFsmTgt = -2, gWatchLastLmt = -2, gWatchLastWeapon = -2;
+
 // --- hotkeys (defaults; ini [Hotkeys] overrides) ---
 int gModifierKey = VK_CONTROL;
 int gReloadKey   = VK_F5;
@@ -1535,6 +1555,7 @@ void LoadConfig()
                 else if (key == "ChatCommands") g_useChatCommands = std::atoi(val.c_str()) != 0;
                 else if (key == "Hotkeys") g_hotkeysEnabled = std::atoi(val.c_str()) != 0;
                 else if (key == "PersistActiveCombo") gPersistActiveCombo = std::atoi(val.c_str()) != 0;
+                else if (key == "WatchMode") gWatchMode = ClampInt(std::atoi(val.c_str()), 0, 3);
                 else if (key == "Debug") gDebug = std::atoi(val.c_str()) != 0;
                 else if (key == "GaugePtrOff") { std::uintptr_t v = ParseHex(val); if (v) gGaugePtrOff = (std::uint32_t)v; }
                 else if (key == "GaugeValOff") { std::uintptr_t v = ParseHex(val); if (v) gGaugeValOff = (std::uint32_t)v; }
@@ -1952,7 +1973,34 @@ inline bool HandleWseCommand(const std::string& rest, bool& used)
         gMoreSounds = 0; ShowMessage("wse extra sounds OFF (single)", true);
     } else if (rest == "help" || rest == "h") {
         ShowMessage("/wse reload | on | off | more | one | stop | vol N | vol+ | vol- | "
-                    "combo [名字] | combos (列出组合)");
+                    "combo [名字] | combos (列出组合) | watch [0..3]");
+    } else if (rest == "watch" || rest.rfind("watch ", 0) == 0) {
+        // 监听模式：0=关 1=派生ID流 2=WEM调用流 3=两者
+        // 不带参数时打印当前状态与用法。
+        const std::string arg = Trim(rest.size() > 5 ? rest.substr(5) : std::string());
+        char msg[0x180] = {};
+        if (arg.empty()) {
+            const int m = gWatchMode;
+            _snprintf_s(msg, _TRUNCATE,
+                "wse watch=%d (%s%s%s)", m,
+                (m & 1) ? "派生ID" : "",
+                (m == 3) ? "+" : "",
+                (m & 2) ? "WEM调用" : "");
+            if (m == 0) _snprintf_s(msg, _TRUNCATE, "wse watch=0 (关闭)");
+            ShowMessage(msg, true);
+            ShowMessage("用法: /wse watch 0=关 1=派生ID 2=WEM 3=两者", true);
+        } else {
+            const int v = ClampInt(std::atoi(arg.c_str()), 0, 3);
+            gWatchMode = v;
+            // 打开派生流时清一次边沿状态，保证下一帧一定会打一条当前状态
+            if (v & 1) {
+                gWatchLastFsm = gWatchLastFsmTgt = gWatchLastLmt = gWatchLastWeapon = -2;
+            }
+            _snprintf_s(msg, _TRUNCATE,
+                "wse watch=%d (%s)", v,
+                v == 0 ? "关闭" : (v == 1 ? "派生ID流" : (v == 2 ? "WEM调用流" : "派生ID+WEM")));
+            ShowMessage(msg, true);
+        }
     } else if (rest == "combo" || rest.rfind("combo ", 0) == 0 || rest.rfind("cb", 0) == 0) {
         const int w = player::gWeapon;
         std::string arg = Trim((rest.rfind("combo", 0) == 0) ? rest.substr(5) : rest.substr(2));
@@ -2148,18 +2196,30 @@ bool PlayOne(const SoundSpec& sp, const std::string& what, unsigned* durMsOut = 
     }
     if (!hasWav) {
         LogD("MISS: %s (%s)", what.c_str(), strconv::ToUtf8(abs).c_str());
+        // 监听位1：连 wem 都没找到也记一笔，方便区分"没匹配条目"与"匹配了但缺文件"
+        if (plugin::gWatchMode & 2)
+            plugin::Log("[watch/wem] MISS  %s  ->  %s",
+                        what.c_str(), strconv::ToUtf8(abs).c_str());
         return false;
     }
     if (ok) {
         LogD("PLAY: %s -> %s | ch=%u rate=%u bits=%u bytes=%zu vol=%d",
              what.c_str(), strconv::ToUtf8(abs).c_str(), wch, wrate, wbits, wsz,
              (int)gVolumePct);
+        // 监听位1：WEM 调用流 —— 这条才是"到底响了什么"的确证
+        if (plugin::gWatchMode & 2)
+            plugin::Log("[watch/wem] PLAY  %s  ->  %s  (ch=%u rate=%u bytes=%zu vol=%d%% delay=%ums)",
+                        what.c_str(), strconv::ToUtf8(abs).c_str(),
+                        wch, wrate, wsz, (int)gVolumePct, (unsigned)sp.delay);
         return true;
     }
     LogD("waveOut rejected (hr=0x%08X), PlaySoundW fallback: %s",
          (unsigned)audio::g_audio.LastHr(), strconv::ToUtf8(abs).c_str());
     ok = ::PlaySoundW(abs.c_str(), nullptr, SND_FILENAME | SND_ASYNC | SND_NODEFAULT) != FALSE;
     LogD(ok ? "PLAY(fallback): %s" : "PLAYFAIL: %s", strconv::ToUtf8(abs).c_str());
+    if (plugin::gWatchMode & 2)
+        plugin::Log("[watch/wem] %s  %s  ->  %s",
+                    ok ? "PLAY(fb)" : "FAIL", what.c_str(), strconv::ToUtf8(abs).c_str());
     return ok;
 }
 
@@ -2454,6 +2514,47 @@ DWORD WINAPI WorkerProc(LPVOID)
         const int fsm = player::gFsm;
         const int weapon = player::gWeapon;
         const int gauge = player::gGauge;
+
+        // -------------------------------------------------------------------
+        //  监听位 0：派生 ID 流
+        //  只在 FSM / FSM层 / LMT / 武器 与上一帧不同时打一行，避免刷屏。
+        //  同时尽量反查出"这个派生叫什么名字"——遍历配置里的条目，找一条
+        //  武器/FSM/FSM层/LMT 都能对上的，取它的 name 作为参考动作名。
+        //  （纯显示用途；即使没配条目也会照打，方便勘察未收录的派生。）
+        // -------------------------------------------------------------------
+        if (gWatchMode & 1) {
+            const int fsmTgt = player::gFsmTarget;
+            if (fsm != gWatchLastFsm || fsmTgt != gWatchLastFsmTgt ||
+                lmt != gWatchLastLmt || weapon != gWatchLastWeapon) {
+
+                // 反查动作名：取第一个基础匹配的条目名
+                std::string nameHint;
+                {
+                    std::lock_guard<std::mutex> lk(gCfgMutex);
+                    for (const auto& e : gAttacks) {
+                        if (e.weaponType >= 0 && e.weaponType != weapon) continue;
+                        if (e.fsmId >= 0 && e.fsmId != fsm) continue;
+                        if (e.fsmTarget >= 0 && e.fsmTarget != fsmTgt) continue;
+                        if (!e.lmt.empty()) {
+                            bool ok = false;
+                            for (int x : e.lmt) if (x == lmt) { ok = true; break; }
+                            if (!ok) continue;
+                        }
+                        nameHint = e.name;
+                        break;
+                    }
+                }
+
+                Log("[watch/derived] weapon=%d fsm=%d fsmtgt=%d lmt=%d gauge=%d  %s",
+                    weapon, fsm, fsmTgt, lmt, gauge,
+                    nameHint.empty() ? "(无匹配条目)" : nameHint.c_str());
+
+                gWatchLastFsm    = fsm;
+                gWatchLastFsmTgt = fsmTgt;
+                gWatchLastLmt    = lmt;
+                gWatchLastWeapon = weapon;
+            }
+        }
 
         PollChatCommand();
         HandleGuiRequests();   // GUI 按钮写的标记文件 → 立即重载 / 停止音效

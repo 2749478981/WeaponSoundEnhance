@@ -33,6 +33,9 @@ struct SoundEntry {
     std::vector<int> lmt;       // 触发的 LMT 列表；空 = 不限
     int fsmId = -1;             // 动作状态机 ID，-1 = 不限
     int fsmTarget = -1;         // FSMTarget= 目标层；-1 = 不限定
+    long long media = -1;       // WEM/media id（WWise）：>0 时用"游戏播放该 wem"触发，
+                                // 与 fsm/lmt 判定二选一。-1 = 不按 media 判定
+                                // （从 wem 捕获历史添加的条目会带这个值）
     std::string combo;          // 所属配置组合名（"" = 默认组合）
     std::string name;           // 显示名（Name=，插件匹配时忽略）
     std::string group;          // 动作组（Group=）：同一招的多个触发条目填相同组名，
