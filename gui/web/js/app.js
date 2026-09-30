@@ -178,6 +178,7 @@ const ST = {
   ready: false,
   theme: 'clean-light',
   themes: [],
+  wemView: false,          // 捕获面板视图：false=派生，true=WEM 音效
   assetBase: '../',
   iconBase: '../weapons_icons/',
   logoUrl: '../sonar_icon.png',
@@ -508,6 +509,35 @@ async function askDelete(indices) {
 /* ===========================================================================
    右栏：实时捕获
    =========================================================================== */
+function wemLabel(r) {
+  // 标识 = nbnk(bank) 名 + wemid，例如 wp_bow_cmn#873092594
+  return ((r.bank || r.wemBank || '?') + '#' + r.wemMedia);
+}
+function histFiltered(H) {
+  // 按当前选中武器隔离：选了具体武器只显示该武器的捕获
+  if (ST.weaponFilter >= 0) return H.filter(r => r.weapon === ST.weaponFilter);
+  return H;
+}
+
+function setWemView(v) {
+  if (ST.wemView === v) return;
+  ST.wemView = v;
+  const f = $('#viewFsm'), w = $('#viewWem');
+  if (f && w) { f.className = 'vs' + (v ? '' : ' on'); w.className = 'vs' + (v ? ' on' : ''); }
+  const fb = $('#viewFsmBox'), wb = $('#viewWemBox');
+  if (fb) fb.hidden = v;
+  if (wb) wb.hidden = !v;
+  renderLive();
+  Backend.call('ui.set', { wemView: v }).catch(() => {});
+}
+
+function wireWemView() {
+  const f = $('#viewFsm'), w = $('#viewWem');
+  if (!f || !w) return;
+  f.onclick = () => setWemView(false);
+  w.onclick = () => setWemView(true);
+}
+
 function renderLive() {
   const L = ST.live;
   $('#liveDot').className = 'dot' + (L.attached ? '' : ' off');
@@ -516,18 +546,24 @@ function renderLive() {
     : '未连接';
   $('#liveNote').textContent = L.attached ? '' :
     '未找到 MonsterHunterWorld.exe（游戏没开，或还没进任务）。';
+  // 视图切换按钮状态
+  const f = $('#viewFsm'), w = $('#viewWem');
+  if (f && w) { f.className = 'vs' + (ST.wemView ? '' : ' on'); w.className = 'vs' + (ST.wemView ? ' on' : ''); }
+  const fb = $('#viewFsmBox'), wb = $('#viewWemBox');
+  if (fb) fb.hidden = ST.wemView;
+  if (wb) wb.hidden = !ST.wemView;
 
+  const H = histFiltered(L.history || []);
+  const derH = H.filter(r => r.kind !== 1);   // 派生
+  const wemH = H.filter(r => r.kind === 1);   // wem
+
+  // ---- 派生视图 ----
   const now = $('#liveNow');
-  // 顶部显示"上一条 fsm≠0 的动作"——实时值里 fsm 经常是过渡帧(0/临时值)，
-  // 直接摆放只会看到一堆 0。取历史里最新一条 fsm>0 的记录，并可点击编辑/添加。
-  const Hn = (L.history || []);
-  const lastAct = Hn.find(r => r.fsm > 0);
+  const lastAct = derH.find(r => r.fsm > 0);
   if (L.attached && lastAct) {
     now.hidden = false;
     now.innerHTML = '';
     const row = h('div', { class: 'live-row', title: '点击编辑或添加这条动作' },
-      // 没有收录名字时直接用 fsm 值，别再写「动作 N」——窄栏里会被截成「动」，
-      // 看起来像乱码。
       h('b', { text: lastAct.name || ('fsm ' + lastAct.fsm) }),
       h('span', { text: `w${lastAct.weapon} · lmt ${lastAct.lmt}` }),
       lastAct.added
@@ -535,67 +571,86 @@ function renderLive() {
         : h('em', { class: 'tag add', text: '＋ 添加' }));
     row.onclick = () => captureToEntry(lastAct);
     now.appendChild(row);
-    now.appendChild(h('div', { style: 'margin-top:6px;color:var(--muted);font-size:11px' },
-      '这是最近一次被捕获的动作，点击可直接编辑 / 添加条目。'));
   } else now.hidden = true;
-
-  // 顶部：最近一次 wem 播放（装瓶/射箭这类"fsm 读不到但确实在播"的 WWise 音效）
-  const wemBox = $('#liveWem');
-  if (L.wemMedia > 0) {
-    wemBox.hidden = false;
-    wemBox.innerHTML = '';
-    const wr = h('div', { class: 'live-row wem', title: '游戏正在播放的 WWise 音效 → 点击添加为条目' },
-      h('b', { text: (L.wemAdded ? '✔ ' : '') + (L.wemName || ('media ' + L.wemMedia)) }),
-      h('span', { text: 'wem · media ' + L.wemMedia }),
-      L.wemAdded
-        ? h('em', { class: 'tag', text: '编辑' })
-        : h('em', { class: 'tag add', text: '＋ 添加' }));
-    wr.onclick = () => addWemRecord({ kind: 1, wemMedia: L.wemMedia, name: L.wemName, weapon: -1, added: L.wemAdded });
-    wemBox.appendChild(wr);
-    wemBox.appendChild(h('div', { style: 'margin-top:6px;color:var(--muted);font-size:11px' },
-      '游戏正在播放的 WWise 音效（wem 捕获），点击可直接添加条目。'));
-  } else wemBox.hidden = true;
 
   const hist = $('#liveHist');
   hist.innerHTML = '';
-  const H = L.history || [];
-  if (!H.length) {
-    hist.appendChild(h('div', { class: 'note' }, '还没有捕获记录：进游戏做派生动作后回来查看'));
-    return;
+  if (!derH.length) {
+    hist.appendChild(h('div', { class: 'note' },
+      ST.weaponFilter >= 0
+        ? `当前武器还没有派生捕获记录：进游戏做派生动作后回来查看`
+        : '还没有派生捕获记录：进游戏做派生动作后回来查看'));
+  } else {
+    hist.appendChild(h('div', { class: 'note', style: 'margin-bottom:6px' },
+      `派生捕获（${derH.length} 条，点击可直接加入条目）`));
+    const show = ST.histExpanded ? derH : derH.slice(0, 8);
+    show.forEach(r => {
+      const el = h('div', {
+        class: 'hrec' + (r.added ? ' added' : ''),
+        title: (r.added ? '该动作已配了条目 → 点击编辑\n' : '点击把这个动作加入条目\n') +
+               (r.name || ('fsm ' + r.fsm)) + `\n武器 ${r.weapon} · fsm ${r.fsm} · lmt ${r.lmt}`,
+      },
+        h('b', { text: r.time || '' }),
+        h('span', { class: 'n', text: (r.name || ('fsm ' + r.fsm)) }),
+        h('span', { class: 'ids', text: `w${r.weapon} ${r.fsm}/${r.lmt}` }),
+        r.added ? h('em', { class: 'tag', text: '编辑' })
+                : h('em', { class: 'tag add', text: '＋ 添加' }));
+      el.onclick = () => captureToEntry(r);
+      hist.appendChild(el);
+    });
+    if (!ST.histExpanded && derH.length > 8) {
+      const b = h('div', { class: 'hrec more', text: `展开更早的 ${derH.length - 8} 条 ▼` });
+      b.onclick = () => { ST.histExpanded = true; renderLive();
+                          Backend.call('ui.set', { histExpanded: true }).catch(() => {}); };
+      hist.appendChild(b);
+    } else if (ST.histExpanded && derH.length > 8) {
+      const b = h('div', { class: 'hrec more', text: '收起历史 ▲' });
+      b.onclick = () => { ST.histExpanded = false; renderLive();
+                          Backend.call('ui.set', { histExpanded: false }).catch(() => {}); };
+      hist.appendChild(b);
+    }
   }
-  hist.appendChild(h('div', { class: 'note', style: 'margin-bottom:6px' },
-    `捕获历史（${H.length} 条，点击记录可直接加入条目）`));
-  const show = ST.histExpanded ? H : H.slice(0, 8);
-  show.forEach(r => {
-    // 每条记录 core 已经解析出名字(name)和市场里有/无条目(added)。
-    // kind===1 是 wem 捕获（WWise 音效播放），kind===0 是派生(fsm/lmt)捕获。
-    const isWem = r.kind === 1;
-    const el = h('div', {
-      class: 'hrec' + (r.added ? ' added' : '') + (isWem ? ' wem' : ''),
-      title: (r.added ? '该记录已配了条目 → 点击编辑\n'
-                      : '点击把这条记录加入条目\n') +
-             (r.name || (isWem ? ('media ' + r.wemMedia) : '未知动作')) +
-             (isWem ? ('\nmedia ' + r.wemMedia) : `\n武器 ${r.weapon} · fsm ${r.fsm} · lmt ${r.lmt}`),
-    },
-      h('b', { text: r.time || '' }),
-      h('span', { class: 'n', text: (isWem ? '🎵 ' : '') + (r.name || (isWem ? ('media ' + r.wemMedia) : ('fsm ' + r.fsm))) }),
-      h('span', { class: 'ids', text: isWem ? ('media ' + r.wemMedia) : (`w${r.weapon} ${r.fsm}/${r.lmt}`) }),
-      r.added
+
+  // ---- WEM 视图 ----
+  const wemBox = $('#liveWem');
+  if (L.wemMedia > 0 && (ST.weaponFilter < 0 || L.wemWeapon === ST.weaponFilter)) {
+    wemBox.hidden = false;
+    wemBox.innerHTML = '';
+    const wr = h('div', { class: 'live-row wem', title: '游戏正在播放的 WWise 音效 → 点击添加为条目' },
+      h('b', { text: (L.wemAdded ? '✔ ' : '') + wemLabel(L) }),
+      h('span', { text: (L.wemName || '') }),
+      L.wemAdded
         ? h('em', { class: 'tag', text: '编辑' })
         : h('em', { class: 'tag add', text: '＋ 添加' }));
-    el.onclick = () => (isWem ? addWemRecord(r) : captureToEntry(r));
-    hist.appendChild(el);
-  });
-  if (!ST.histExpanded && H.length > 8) {
-    const b = h('div', { class: 'hrec more', text: `展开更早的 ${H.length - 8} 条 ▼` });
-    b.onclick = () => { ST.histExpanded = true; renderLive();
-                        Backend.call('ui.set', { histExpanded: true }).catch(() => {}); };
-    hist.appendChild(b);
-  } else if (ST.histExpanded && H.length > 8) {
-    const b = h('div', { class: 'hrec more', text: '收起历史 ▲' });
-    b.onclick = () => { ST.histExpanded = false; renderLive();
-                        Backend.call('ui.set', { histExpanded: false }).catch(() => {}); };
-    hist.appendChild(b);
+    wr.onclick = () => addWemRecord({ kind: 1, wemMedia: L.wemMedia, name: L.wemName, bank: L.wemBank, weapon: L.wemWeapon || -1, added: L.wemAdded });
+    wemBox.appendChild(wr);
+  } else wemBox.hidden = true;
+
+  const wh = $('#liveHistWem');
+  wh.innerHTML = '';
+  if (!wemH.length) {
+    wh.appendChild(h('div', { class: 'note' },
+      ST.weaponFilter >= 0
+        ? '当前武器还没有 wem 捕获记录：进游戏做装瓶/射箭等动作后回来查看'
+        : '还没有 wem 捕获记录：进游戏做装瓶/射箭等动作后回来查看'));
+  } else {
+    wh.appendChild(h('div', { class: 'note', style: 'margin-bottom:6px' },
+      `WEM 捕获（${wemH.length} 条，点击可直接加入条目，触发方式 = media id）`));
+    const show = ST.histExpanded ? wemH : wemH.slice(0, 8);
+    show.forEach(r => {
+      const el = h('div', {
+        class: 'hrec wem' + (r.added ? ' added' : ''),
+        title: (r.added ? '该音效已配了条目 → 点击编辑\n' : '点击把这个 wem 音效加入条目\n') +
+               wemLabel(r) + (r.name ? ('\n' + r.name) : ''),
+      },
+        h('b', { text: r.time || '' }),
+        h('span', { class: 'n', text: wemLabel(r) }),
+        h('span', { class: 'ids', text: (r.weapon >= 0 ? 'w' + r.weapon + ' · ' : '') + (r.name || '') }),
+        r.added ? h('em', { class: 'tag', text: '编辑' })
+                : h('em', { class: 'tag add', text: '＋ 添加' }));
+      el.onclick = () => addWemRecord(r);
+      wh.appendChild(el);
+    });
   }
 }
 
@@ -1338,6 +1393,14 @@ async function refresh() {
       const cb = $('#onlyActive');
       if (cb) cb.checked = s.ui.onlyActive;
     }
+    if (typeof s.ui.wemView === 'boolean') {
+      ST.wemView = s.ui.wemView;
+      const f = $('#viewFsm'), w = $('#viewWem');
+      if (f && w) { f.className = 'vs' + (s.ui.wemView ? '' : ' on'); w.className = 'vs' + (s.ui.wemView ? ' on' : ''); }
+      const fb = $('#viewFsmBox'), wb = $('#viewWemBox');
+      if (fb) fb.hidden = s.ui.wemView;
+      if (wb) wb.hidden = !s.ui.wemView;
+    }
   }
   if (!ST.ready) { applyTheme(s.theme || s.defaultTheme || 'clean-light'); renderThemePicker(); }
 
@@ -1500,6 +1563,7 @@ Backend.onEvent(ev => {
 
   wireToolbar();
   wireGlobal();
+  wireWemView();            // 派生 / WEM 捕获视图切换
   bindLogoEgg();            // 左上角图标彩蛋
   renderChatCmds();          // 指令表是静态的，建一次就行
   const tBoot = Date.now();

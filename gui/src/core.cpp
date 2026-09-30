@@ -822,6 +822,7 @@ struct UiPrefs {
     int weaponFilter = -1;
     bool histExpanded = false;
     bool onlyActive = false;   // 列表默认只看当前激活组合的条目
+    bool wemView = false;      // 捕获面板视图：false=派生 fsm，true=WEM 音效
 
     UiPrefs() {
         colWidths.set("name", JVal(180));
@@ -1221,6 +1222,7 @@ struct Core::Impl {
         int kind = 0;           // 0 = 派生（fsm/lmt），1 = wem
         int wemMedia = -1;      // kind=1：WWise media id
         std::string wemName;    // kind=1：可读名（bank/path）
+        std::string bank;       // kind=1：nbnk bank 名（wp_bow_cmn）
         std::string time;
         unsigned long long ms = 0;     // GetTickCount64 时间戳，用于"短时间同动作合并"
     };
@@ -1235,6 +1237,8 @@ struct Core::Impl {
     long long lastWemMedia = -2;                                   // 推送去重
     int curWemMedia = -1;                                          // 最近一条 wem
     std::string curWemName;
+    std::string curWemBank;
+    int curWemWeapon = -1;
     bool hasWemNames = false;
 
     unsigned long long lastPoll = 0;    // 按 ini 的 PollMs 节流
@@ -1419,6 +1423,7 @@ struct Core::Impl {
         if (prefs.weaponFilter < -2 || prefs.weaponFilter > 13) prefs.weaponFilter = -1;
         prefs.histExpanded = v.optBool("histExpanded", false);
         prefs.onlyActive = v.optBool("onlyActive", false);
+        prefs.wemView = v.optBool("wemView", false);
     }
 
     void SaveUiPrefs() {
@@ -1430,6 +1435,7 @@ struct Core::Impl {
         v.set("weaponFilter", JVal(prefs.weaponFilter));
         v.set("histExpanded", JVal(prefs.histExpanded));
         v.set("onlyActive", JVal(prefs.onlyActive));
+        v.set("wemView", JVal(prefs.wemView));
         FsWrite(uiPath, JsonDump(v));
         uiDirty = false;
     }
@@ -1443,6 +1449,7 @@ struct Core::Impl {
         v.set("weaponFilter", JVal(prefs.weaponFilter));
         v.set("histExpanded", JVal(prefs.histExpanded));
         v.set("onlyActive", JVal(prefs.onlyActive));
+        v.set("wemView", JVal(prefs.wemView));
         return v;
     }
 
@@ -1558,6 +1565,7 @@ struct Core::Impl {
             h.kind = 1;
             h.wemMedia = media;
             h.wemName = name;
+            h.bank = bank;
             h.weapon = WemWeapon(bank);
             h.weaponId = -1;
             h.ms = nowMs;
@@ -1566,6 +1574,8 @@ struct Core::Impl {
             if (history.size() > 64) history.pop_back();
             curWemMedia = media;
             curWemName = name;
+            curWemBank = bank;
+            curWemWeapon = h.weapon;
         }
         wemStream.clear();
         wemStream.seekg(0, std::ios::end);   // 始终从尾部续读（文件被游戏重建/截断时也稳）
@@ -1639,6 +1649,7 @@ struct Core::Impl {
             h.set("kind", JVal(history[i].kind));
             if (history[i].kind == 1) {   // wem 捕获
                 h.set("wemMedia", JVal(history[i].wemMedia));
+                h.set("bank", JVal(history[i].bank));
                 h.set("name", JVal(history[i].wemName));
                 h.set("weapon", JVal(history[i].weapon));
                 h.set("weaponId", JVal(history[i].weaponId));
@@ -1698,6 +1709,8 @@ struct Core::Impl {
         d.set("added", JVal(live.inScene && IsCapturedAdded(live.weapon, live.fsm, live.lmt)));
         d.set("wemMedia", JVal(curWemMedia));      // 最近一次 wem 播放（无则 -1）
         d.set("wemName", JVal(curWemName.empty() ? std::string() : curWemName));
+        d.set("wemBank", JVal(curWemBank.empty() ? std::string() : curWemBank));
+        d.set("wemWeapon", JVal(curWemWeapon));
         d.set("wemAdded", JVal(curWemMedia > 0 && IsWemAdded(curWemMedia)));
         d.set("history", HistoryJson());
         return d;
@@ -3574,6 +3587,7 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
             }
             if (p.has("histExpanded")) im->prefs.histExpanded = p.optBool("histExpanded", false);
             if (p.has("onlyActive")) im->prefs.onlyActive = p.optBool("onlyActive", false);
+            if (p.has("wemView")) im->prefs.wemView = p.optBool("wemView", false);
             if (p.has("theme")) {
                 const std::string th = p.optStr("theme");
                 if (!IsValidThemeId(th)) return ErrJson("未知主题: " + th);
@@ -3616,6 +3630,8 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
             im->history.clear();
             im->curWemMedia = -1;
             im->curWemName.clear();
+            im->curWemBank.clear();
+            im->curWemWeapon = -1;
             im->lastWemMedia = -2;
             JVal d = JVal::obj();
             d.set("cleared", JVal(true));

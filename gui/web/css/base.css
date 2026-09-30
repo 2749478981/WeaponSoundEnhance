@@ -282,6 +282,13 @@ button{white-space:nowrap}
                border-radius:var(--radius-pill); background:var(--badge-bg); color:var(--badge-fg)}
 .live-row .tag.add{background:rgba(255,159,10,.18); color:var(--c-amber)}
 .hist{margin-top:14px; border-top:var(--bw) solid var(--line); padding-top:10px}
+/* 派生 / WEM 捕获视图切换 */
+.viewswitch{display:flex; gap:4px; margin:10px 0 2px}
+.viewswitch .vs{flex:1; font-size:11.5px; padding:5px 0; border:var(--bw) solid var(--line);
+                background:var(--panel); color:var(--muted); border-radius:var(--radius-ctl);
+                cursor:pointer; transition:all .15s}
+.viewswitch .vs.on{color:var(--text); border-color:var(--accent); background:var(--accent-soft, rgba(0,120,255,.08))}
+.viewswitch .vs:hover{border-color:var(--accent)}
 .hrec{font:11.5px ui-monospace,monospace; padding:4px 8px; color:var(--muted);
       border-radius:calc(var(--radius-ctl) - 2px); display:flex; gap:8px;
       align-items:baseline; cursor:pointer; transition:background .1s, transform .1s}
