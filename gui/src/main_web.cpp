@@ -22,6 +22,7 @@
 #include <shlwapi.h>
 #include <objbase.h>
 #include <string>
+#include <cmath>
 #include <cstdio>
 #include <cstdarg>
 #include <wrl.h>
@@ -235,11 +236,10 @@ void PaintLoading(HWND hwnd) {
     ::FillRect(dc, &rc, bg);
     ::DeleteObject(bg);
 
-    // 图标呼吸：14 帧一个周期（400ms/帧 ≈ 5.6s 一个来回），缓而稳
-    //   sin 曲线让尺寸变化更平滑，不会"跳格"
-    const int wave = g_animPhase % 14;
-    const int gscale = (wave < 7) ? wave : (14 - wave);
-    const int isz = 122 + gscale;
+    // 图标呼吸：40ms/帧的高帧率 + 正弦曲线 → 又慢又平滑（约 4 秒一个来回）。
+    //   之前用 14 帧离散步进，虽然周期长但看着是一格一格跳，帧率很低。
+    const double ang = (double)(g_animPhase % 100) / 100.0 * 6.28318530718;
+    const int isz = 122 + (int)(6.0 + 6.0 * std::sin(ang));   // 122..134
 
     HICON icon = (HICON)::LoadImageW((HINSTANCE)::GetModuleHandleW(nullptr),
                                      MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON, 0, 0, 0);
@@ -247,10 +247,10 @@ void PaintLoading(HWND hwnd) {
     const int iy = rc.top + (rc.bottom - rc.top - isz - 58) / 2;
     ::DrawIconEx(dc, ix, iy, icon, isz, isz, 0, nullptr, DI_NORMAL);
 
-    // 文字：三个点轮转（正在启动. / .. / ...）
+    // 文字：三个点轮转（正在启动. / .. / ...），每 13 帧（约 0.5s）换一个
     static const wchar_t* dots[3] = { L".", L"..", L"..." };
     wchar_t txt[64];
-    wsprintfW(txt, L"Sonar 正在启动%s", dots[g_animPhase % 3]);
+    wsprintfW(txt, L"Sonar 正在启动%s", dots[(g_animPhase / 13) % 3]);
 
     HFONT f = (HFONT)::GetStockObject(DEFAULT_GUI_FONT);
     HFONT of = (HFONT)::SelectObject(dc, f);
@@ -577,8 +577,8 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     ::ShowWindow(hwnd, SW_SHOW);
     ::UpdateWindow(hwnd);
     // ★ 主窗口此时画出"启动加载画面"（WM_PAINT 里，不等 WebView），无白屏无方框；
-    //   动画定时器立刻开始（图标呼吸 + 文字点点），400ms 一帧、节奏舒缓
-    ::SetTimer(hwnd, 4, 400, nullptr);
+    //   动画定时器立刻开始：40ms/帧的高帧率，用正弦把呼吸做得又慢又平滑
+    ::SetTimer(hwnd, 4, 40, nullptr);
 
     // ---- 启动前自检：WebView2Loader.dll / web 目录缺一不可，缺了就明确提示 ----
     {
