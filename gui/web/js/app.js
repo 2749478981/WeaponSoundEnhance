@@ -623,12 +623,14 @@ function soundCard(sp, onRemove, onChange) {
     const num = h('input', { type: 'number', class: 'mini', value: String(get()), min: String(min), max: String(max) });
     const rng = h('input', { type: 'range', min: String(min), max: String(max), value: String(get()),
       style: 'width:' + (w || 90) + 'px' });
+    paintRange(rng);   // ★ 初始化就按真实值画填充，别让滑块停在"一半蓝一半灰"
     let syncing = false;
     const push = v => {
       if (syncing) return;
       syncing = true;
       v = Math.max(min, Math.min(max, v | 0));
       set(v); num.value = String(v); rng.value = String(v);
+      paintRange(rng);   // ★ 数值变了必须重画
       syncing = false; onChange && onChange();
     };
     rng.oninput = () => push(parseInt(rng.value, 10));
@@ -1127,14 +1129,19 @@ function globalSet(k, v) {
     .catch(e => toast('保存设置失败：' + e.message, 'err'));
 }
 
-// 把音量条（range）的填充进度和它的 value 对齐。
-// ★ 这个范围条的"填充"是靠 background 渐变画出来的，不是浏览器原生画的；
-//   所以每次改 value 都必须手动重画，否则填充位置会停在旧值上。
+// 任何 range 滑块的"填充进度"都靠 background 渐变画出来（浏览器原生不画），
+// 所以每次 value 变化都必须重画，否则填充位置停在 CSS 默认的 50% 上
+//（表现为"一半蓝一半灰、与实际数值不符"）。
+function paintRange(el) {
+  const min = parseFloat(el.min) || 0;
+  const max = parseFloat(el.max) || 100;
+  const raw = parseFloat(el.value);
+  const pct = max > min ? Math.max(0, Math.min(100, (raw - min) / (max - min) * 100)) : 0;
+  el.style.background = `linear-gradient(90deg,var(--accent) ${pct}%, var(--line-2) ${pct}%)`;
+}
 function paintVolBar() {
   const el = $('#gVol');
-  const v = Math.max(0, Math.min(100, parseInt(el.value, 10) || 0));
-  el.style.background =
-    `linear-gradient(90deg,var(--accent) ${v}%, var(--line-2) ${v}%)`;
+  if (el) paintRange(el);
 }
 
 function wireGlobal() {

@@ -362,3 +362,7 @@ SoundEnd:dmg>0=sounds/命中.wav|0|100
 ## License
 
 MIT，见 [LICENSE](LICENSE)。
+
+## 贡献者
+
+见 [CONTRIBUTORS.md](CONTRIBUTORS.md)。
