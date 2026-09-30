@@ -414,6 +414,8 @@ label.inline.big{font-size:12.5px; font-weight:700}
   background:var(--panel); border:var(--bw) solid var(--line); border-radius:var(--radius-pill);
   box-shadow:var(--shadow-card); padding:9px 20px; font-size:12.5px; max-width:80vw;
   animation:tin .2s ease;
+  pointer-events:auto;   /* ★ 容器是 pointer-events:none，toast 本体要恢复可点，
+                           否则成就里的 B 站链接点了没反应 */
 }
 .toast.err{border-color:var(--c-red); color:var(--c-red)}
 .toast.ok{border-color:var(--c-green)}
