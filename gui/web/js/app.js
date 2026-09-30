@@ -466,7 +466,9 @@ function renderTable() {
         ? h('td', { class: 'lmt' }, h('span', { class: 'mono', text: String(e.media) }))
         : h('td', { class: 'lmt' }, e.lmtAny || !(e.lmt || []).length ? '不限' : e.lmt.join(',')),
       isWem
-        ? h('td', { class: 'fsm', style: 'color:var(--c-blue)' }, wemSeq(e) || '-')
+        ? h('td', { class: 'fsm', style: 'color:var(--c-blue)', title: wemSeq(e) ? '' :
+            '这个音效是运行时事件 id，不在 nbnk 文件表里，所以没有"第几个"序号（它仍能正常触发）' },
+            wemSeq(e) || '—')
         : h('td', { class: 'fsm' }, String(e.fsmId)),
       h('td', { title: entrySounds(e).map(s => s.path).join('\n') || '没有音效' },
         h('span', { class: 'snd' }, sm.text,
@@ -504,7 +506,9 @@ function renderTable() {
     (ST.wemView ? '' : (ST.sort.asc ? ' 升序' : ' 降序'));
 }
 
-// 条目 WEM 序号：从条目名（mediaids 形式 "bank/30.ogg"）取 nbnk 内第几个
+// 条目 WEM 序号：从条目名（mediaids 形式 "bank/30.ogg"）取 nbnk 内第几个。
+// 序号来自 nbnk 的 DIDX；运行时事件 id（log 的小数字 media）不属于 nbnk 文件表，
+// 所以没有序号——显示 "—" 并给出说明。
 function wemSeq(e) {
   const m = (e.name || '').match(/\/(\d+)(?:\.[a-z0-9]+)?$/i);
   return m ? ('第 ' + m[1] + ' 个') : '';
