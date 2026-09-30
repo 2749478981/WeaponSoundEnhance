@@ -280,8 +280,13 @@
     setInterval(() => {
       const s = seq[k++ % seq.length];
       const now = new Date();
+      // 和真实 core 的 HistoryJson 保持一致：带上解析出的动作名 + 是否已有条目
+      const row = FSM_ROWS.find(x => x.fsm === s.fsm && x.lmt === s.lmt) ||
+                  FSM_ROWS.find(x => x.fsm === s.fsm);
       state.history.unshift({
         weapon: 3, fsm: s.fsm, lmt: s.lmt,
+        name: row ? row.name : undefined,
+        added: state.entries.some(e => e.weaponType === 3 && e.fsmId === s.fsm),
         time: [now.getHours(), now.getMinutes(), now.getSeconds()]
           .map(n => String(n).padStart(2, '0')).join(':'),
       });

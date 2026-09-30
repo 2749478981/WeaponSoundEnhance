@@ -283,9 +283,16 @@ button{white-space:nowrap}
 .live-now b{color:var(--accent)}
 .hist{margin-top:14px; border-top:var(--bw) solid var(--line); padding-top:10px}
 .hrec{font:11.5px ui-monospace,monospace; padding:4px 8px; color:var(--muted);
-      border-radius:calc(var(--radius-ctl) - 2px); display:flex; gap:8px}
+      border-radius:calc(var(--radius-ctl) - 2px); display:flex; gap:8px;
+      align-items:baseline; cursor:pointer; transition:background .1s, transform .1s}
 .hrec:hover{background:var(--row-hover)}
-.hrec b{color:var(--text); font-weight:700}
+.hrec b{color:var(--text); font-weight:700; flex:none}
+.hrec .n{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text)}
+.hrec .ids{flex:none}
+.hrec .tag{flex:none; font-style:normal; font-size:10px; font-weight:700; padding:0 6px;
+           border-radius:var(--radius-pill); background:var(--badge-bg); color:var(--badge-fg)}
+.hrec .tag.add{background:rgba(255,159,10,.18); color:var(--c-amber)}
+.hrec.added .n{color:var(--muted)}
 .hrec.more{cursor:pointer; color:var(--accent); justify-content:center}
 
 /* ---------- 状态栏 ---------- */

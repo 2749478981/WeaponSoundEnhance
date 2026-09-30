@@ -209,6 +209,12 @@ const wInline = id => {
 function applyTheme(id) {
   ST.theme = id;
   document.documentElement.setAttribute('data-theme', id);
+  // 版本徽章右侧的主题名要跟着变，否则切了主题还显示旧的（用户看到一直是 clean-light）
+  const v = $('#verText');
+  if (v) {
+    const m = (v.textContent || '').match(/^v[^\s·]*/);
+    v.textContent = (m ? m[0] : 'v—') + ' · ' + id;
+  }
   $$('#themePicker .theme-sw').forEach(b => b.classList.toggle('on', b.dataset.t === id));
 }
 function renderThemePicker() {
@@ -464,11 +470,26 @@ function renderLive() {
     return;
   }
   hist.appendChild(h('div', { class: 'note', style: 'margin-bottom:6px' },
-    `捕获历史（${H.length} 条，fsm≠0 已高亮）`));
+    `捕获历史（${H.length} 条，点击记录可直接加入条目）`));
   const show = ST.histExpanded ? H : H.slice(0, 8);
-  show.forEach(r => hist.appendChild(h('div', { class: 'hrec' },
-    h('b', { text: r.time || '' }),
-    h('span', { text: `w${r.weapon} fsm ${r.fsm} lmt ${r.lmt}` }))));
+  show.forEach(r => {
+    // 每条记录 core 已经解析出动作名(name)和市场里有/无条目(added)，
+    // 直接显示 + 可点击：已有条目 → 打开编辑；没有 → 预填新建。
+    const el = h('div', {
+      class: 'hrec' + (r.added ? ' added' : ''),
+      title: (r.added ? '该动作已配了条目 → 点击编辑\n'
+                       : '点击把这个动作加入条目\n') +
+             (r.name ? r.name : '未知动作') + `\n武器 ${r.weapon} · fsm ${r.fsm} · lmt ${r.lmt}`,
+    },
+      h('b', { text: r.time || '' }),
+      h('span', { class: 'n', text: (r.name || ('fsm ' + r.fsm)) }),
+      h('span', { class: 'ids', text: `w${r.weapon} ${r.fsm}/${r.lmt}` }),
+      r.added
+        ? h('em', { class: 'tag', text: '编辑' })
+        : h('em', { class: 'tag add', text: '＋ 添加' }));
+    el.onclick = () => captureToEntry(r);
+    hist.appendChild(el);
+  });
   if (!ST.histExpanded && H.length > 8) {
     const b = h('div', { class: 'hrec more', text: `展开更早的 ${H.length - 8} 条 ▼` });
     b.onclick = () => { ST.histExpanded = true; renderLive();
@@ -480,6 +501,42 @@ function renderLive() {
                         Backend.call('ui.set', { histExpanded: false }).catch(() => {}); };
     hist.appendChild(b);
   }
+}
+
+/* 点击一条捕获记录：已有条目就打开编辑；没有就预填好 fsm/lmt/武器/名字新建。
+   名字取自 core 解析的动作名（ResolveName），没有时用 "fsm N" 兜底。 */
+async function captureToEntry(r) {
+  const fsm = r.fsm;
+  if (fsm == null || fsm < 0) { toast('这条记录没有 fsm，无法添加', 'err'); return; }
+  const w = (r.weapon != null && r.weapon >= 0 && r.weapon <= 13) ? r.weapon : -1;
+  const lmt = (r.lmt != null && r.lmt > 0) ? r.lmt : -1;
+
+  // 已有条目（同武器 + 同 fsm + lmt 命中）
+  const hit = ST.entries.findIndex(e =>
+    e.weaponType === w && e.fsmId === fsm &&
+    (e.lmtAny || (Array.isArray(e.lmt) && (lmt < 0 || e.lmt.includes(lmt)))));
+  if (hit >= 0) {
+    const idx = ST.entries[hit].index != null ? ST.entries[hit].index : hit;
+    openEditor(idx);
+    toast('已有这个动作的条目，已打开编辑', 'ok');
+    return;
+  }
+
+  const entry = {
+    name: r.name || ('fsm ' + fsm), weaponType: w,
+    combo: w >= 0 ? (ST.active[w] || '') : '',
+    fsmId: fsm, fsmTarget: -1, group: '', stop: false,
+    lmt: lmt > 0 ? [lmt] : [], lmtAny: lmt <= 0,
+    def: [], gauge: [[], [], [], []],
+    checkDelayMs: 0, checkTimeoutMs: 0, checkOffsetMs: 150, endOnAction: true,
+    checkMode: 0, judgePreset: 0, conds: [],
+  };
+  try {
+    const res = await Backend.call('entries.save', { index: null, entry });
+    await refresh();
+    if (res && res.index != null) openEditor(res.index);
+    toast('已添加条目（配好音效后记得保存）', 'ok');
+  } catch (e) { toast('添加失败：' + e.message, 'err'); }
 }
 
 /* ===========================================================================
@@ -500,7 +557,7 @@ function blankEntry() {
   return { name: '', weaponType: ST.weaponFilter >= 0 ? ST.weaponFilter : -1, combo: '',
     fsmId: -1, fsmTarget: -1, group: '', stop: false, lmt: [], lmtAny: true,
     def: [], gauge: [[], [], [], []],
-    checkDelayMs: 0, checkTimeoutMs: 2500, checkOffsetMs: 150, endOnAction: true,
+    checkDelayMs: 0, checkTimeoutMs: 0, checkOffsetMs: 150, endOnAction: true,
     checkMode: 0, judgePreset: 0, conds: [] };
 }
 
@@ -702,13 +759,7 @@ function buildPools(box, e) {
     });
     if (!arr.length) box.appendChild(h('div', { class: 'note', style: 'margin-bottom:8px' }, '(空)'));
 
-    const inp = h('input', { type: 'text', placeholder: '路径，如 sounds/xxx.wav' });
-    const add = h('button', { onclick: () => {
-      const v = inp.value.trim(); if (!v) return;
-      if (arr.some(s => s.path === v)) { toast('这条音效已经在了', 'err'); return; }
-      arr.push({ path: v, delay: 0, vol: 100, fixed: false, cdMs: 0, playLock: false });
-      inp.value = ''; fillPools();
-    } }, '添加');
+    // 只保留"浏览…"选文件，不手填路径（手填容易填错，选文件最稳）
     const browse = h('button', { onclick: async () => {
       const r = await Backend.call('sound.pickMulti', {});
       (r.paths || []).forEach(p => {
@@ -716,8 +767,8 @@ function buildPools(box, e) {
           arr.push({ path: p, delay: 0, vol: 100, fixed: false, cdMs: 0, playLock: false });
       });
       fillPools();
-    } }, '浏览…');
-    box.appendChild(h('div', { class: 'addrow' }, inp, add, browse));
+    } }, '浏览… 选音效');
+    box.appendChild(h('div', { class: 'addrow' }, browse));
   };
 
   $('#edDefHead').textContent = isLS ? '默认音效（任意刃时）' : '默认音效';
@@ -759,19 +810,15 @@ function fillConds() {
     c.pool = c.pool || [];
     c.pool.forEach((sp, k) => cb.appendChild(
       soundCard(sp, () => { c.pool.splice(k, 1); fillConds(); }, () => {})));
-    const inp = h('input', { type: 'text', placeholder: '路径，如 sounds/命中.wav' });
-    cb.appendChild(h('div', { class: 'addrow' }, inp,
-      h('button', { onclick: () => {
-        const v = inp.value.trim(); if (!v) return;
-        c.pool.push({ path: v, delay: 0, vol: 100, fixed: false, cdMs: 0, playLock: false });
-        inp.value = ''; fillConds();
-      } }, '添加'),
+    cb.appendChild(h('div', { class: 'addrow' },
       h('button', { onclick: async () => {
         const r = await Backend.call('sound.pickMulti', {});
-        (r.paths || []).forEach(p => c.pool.push(
-          { path: p, delay: 0, vol: 100, fixed: false, cdMs: 0, playLock: false }));
+        (r.paths || []).forEach(p => {
+          if (!c.pool.some(s => s.path === p))
+            c.pool.push({ path: p, delay: 0, vol: 100, fixed: false, cdMs: 0, playLock: false });
+        });
         fillConds();
-      } }, '浏览…')));
+      } }, '浏览… 选音效')));
     box.appendChild(cb);
   });
   if (!e.conds.length) box.appendChild(h('div', { class: 'note' }, '还没有条件：点下面「＋ 添加条件」'));
@@ -985,10 +1032,11 @@ const ACTIONS = {
     const name = inp.value.trim();
     if (!name) { toast('先填组合名', 'err'); return; }
     if (ST.combos.includes(name)) { toast('这个组合名已经有了', 'err'); return; }
+    if (ST.weaponFilter < 0) { toast('先在左栏选一把武器，再新建组合', 'err'); return; }
     await Backend.call('combo.create', { weapon: ST.weaponFilter, name });
     inp.value = '';
     await loadCombos(); renderComboPanel(); await refresh();
-    toast('已新增组合：' + name, 'ok');
+    toast('已新增空白组合：' + name + '（记得保存）', 'ok');
   },
   'combo.rename': async () => {
     const w = ST.weaponFilter, from = ST.active[w] || '';
@@ -1063,7 +1111,13 @@ const ACTIONS = {
   'upd.restart': async () => { await Backend.call('update.restart', {}); },
   'upd.open':    async () => { await Backend.call('update.openLatest', {}); },
 
-  'live.clear': () => { ST.live.history = []; renderLive(); },
+  'live.clear': async () => {
+    // 只清前端没用：实时事件一推，core 里的旧历史又会全量发回来。
+    // 必须让 core 一起清。
+    try { await Backend.call('live.clear', {}); } catch (e) { toast('清空失败：' + e.message, 'err'); }
+    ST.live.history = [];
+    renderLive();
+  },
   'live.retry': () => { Backend.call('live.retry', {}).catch(() => {}); toast('已请求重新连接'); },
 
   'ed.close':  () => { $('#editor').classList.remove('open'); ED.open = false; },

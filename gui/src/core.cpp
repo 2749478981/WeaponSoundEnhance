@@ -1426,8 +1426,9 @@ struct Core::Impl {
         h.weapon = live.weapon;
         h.weaponId = live.weaponId;
         h.time = TimeNowHms();
-        history.push_back(h);
-        if (history.size() > 64) history.erase(history.begin());   // 只留最近 64 条
+        // 最新记录放最前面：捕获面板从上往下就是"新 → 旧"，不用翻到底找刚做的动作
+        history.insert(history.begin(), h);
+        if (history.size() > 64) history.pop_back();                    // 只留最近 64 条
     }
 
     void PollGame() {
@@ -2513,23 +2514,13 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
             std::vector<std::string> combos = im->WeaponCombos(w);
             for (std::size_t i = 0; i < combos.size(); ++i)
                 if (combos[i] == name) return ErrJson("组合「" + name + "」已存在");
-            // 新组合 = 当前组合的一份拷贝：用户的习惯是"改一个变体"，从空白开始反而要重填
-            const std::string from = im->ActiveCombo(w);
-            std::vector<SoundEntry> copied;
-            for (std::size_t i = 0; i < im->cfg.entries.size(); ++i) {
-                if (im->cfg.entries[i].weaponType != w) continue;
-                if (im->cfg.entries[i].combo != from) continue;
-                SoundEntry e = im->cfg.entries[i];
-                e.combo = name;
-                copied.push_back(e);
-            }
-            for (std::size_t i = 0; i < copied.size(); ++i) im->cfg.entries.push_back(copied[i]);
+            // 新组合从空白开始：不复制当前组合的条目。
+            // （用户明确要求：新组合里的条目音效应为空，而不是把旧音效复制过来）
             im->cfg.active[w] = name;
             im->dirty = true;
-            im->SetStatus("已新建组合「" + name + "」（复制了 " + std::to_string(copied.size()) +
-                          " 条条目，记得保存）");
+            im->SetStatus("已新建组合「" + name + "」（空白组合，记得保存）");
             JVal d = JVal::obj();
-            d.set("copied", JVal((int)copied.size()));
+            d.set("copied", JVal(0));
             d.set("active", JVal(name));
             d.set("status", JVal(im->status));
             return OkJson(d);
