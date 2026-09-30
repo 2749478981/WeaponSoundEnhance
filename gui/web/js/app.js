@@ -451,15 +451,23 @@ function renderLive() {
     '未找到 MonsterHunterWorld.exe（游戏没开，或还没进任务）。';
 
   const now = $('#liveNow');
-  if (L.attached && L.fsm != null && L.fsm >= 0) {
+  // 顶部显示"上一条 fsm≠0 的动作"——实时值里 fsm 经常是过渡帧(0/临时值)，
+  // 直接摆放只会看到一堆 0。取历史里最新一条 fsm>0 的记录，并可点击编辑/添加。
+  const Hn = (L.history || []);
+  const lastAct = Hn.find(r => r.fsm > 0);
+  if (L.attached && lastAct) {
     now.hidden = false;
     now.innerHTML = '';
-    now.append(
-      h('div', {}, 'weapon ', h('b', { text: String(L.weapon) }),
-        '　fsm ', h('b', { text: String(L.fsm) }),
-        '　lmt ', h('b', { text: String(L.lmt) })),
-      h('div', { style: 'margin-top:6px;color:var(--muted);font-size:11px' },
-        '想给这一招配音效，就把上面的 fsm / lmt 填进条目的 FSMId / LMT。'));
+    const row = h('div', { class: 'live-row' },
+      h('b', { text: lastAct.name || ('动作 ' + lastAct.fsm) }),
+      h('span', { text: `w${lastAct.weapon} · fsm ${lastAct.fsm} · lmt ${lastAct.lmt}` }),
+      lastAct.added
+        ? h('em', { class: 'tag', text: '编辑' })
+        : h('em', { class: 'tag add', text: '＋ 添加' }));
+    row.onclick = () => captureToEntry(lastAct);
+    now.appendChild(row);
+    now.appendChild(h('div', { style: 'margin-top:6px;color:var(--muted);font-size:11px' },
+      '这是最近一次被捕获的动作，点击可直接编辑 / 添加条目。'));
   } else now.hidden = true;
 
   const hist = $('#liveHist');
@@ -511,9 +519,12 @@ async function captureToEntry(r) {
   const w = (r.weapon != null && r.weapon >= 0 && r.weapon <= 13) ? r.weapon : -1;
   const lmt = (r.lmt != null && r.lmt > 0) ? r.lmt : -1;
 
-  // 已有条目（同武器 + 同 fsm + lmt 命中）
+  // 已有条目：只有在**当前组合**里有才算"已有"（跟 core 的 added 判断一致）。
+  // 其它组合配过不碍事——当前组合没有这个派生，就提供"添加"。
+  const curCombo = w >= 0 ? (ST.active[w] || '') : '';
   const hit = ST.entries.findIndex(e =>
     e.weaponType === w && e.fsmId === fsm &&
+    (e.combo || '') === (w < 0 ? '' : curCombo) &&
     (e.lmtAny || (Array.isArray(e.lmt) && (lmt < 0 || e.lmt.includes(lmt)))));
   if (hit >= 0) {
     const idx = ST.entries[hit].index != null ? ST.entries[hit].index : hit;

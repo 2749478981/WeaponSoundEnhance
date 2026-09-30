@@ -281,6 +281,11 @@ button{white-space:nowrap}
 .live-now{margin-top:12px; padding:10px 12px; border-radius:var(--radius-ctl);
   background:var(--panel-2); border:var(--bw) solid var(--line); font:12px ui-monospace,monospace}
 .live-now b{color:var(--accent)}
+.live-row{display:flex; align-items:baseline; gap:8px; cursor:pointer; flex-wrap:wrap}
+.live-row b{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.live-row .tag{font-style:normal; font-size:10px; font-weight:700; padding:0 6px;
+               border-radius:var(--radius-pill); background:var(--badge-bg); color:var(--badge-fg)}
+.live-row .tag.add{background:rgba(255,159,10,.18); color:var(--c-amber)}
 .hist{margin-top:14px; border-top:var(--bw) solid var(--line); padding-top:10px}
 .hrec{font:11.5px ui-monospace,monospace; padding:4px 8px; color:var(--muted);
       border-radius:calc(var(--radius-ctl) - 2px); display:flex; gap:8px;
