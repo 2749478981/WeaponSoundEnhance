@@ -336,7 +336,11 @@ std::wstring IniGetStr(const std::string& s, const char* key) {
 
 void LoadIni(const std::wstring& dir) {
     std::vector<uint8_t> d;
-    if (!ReadWholeFile(dir + L"SonarAudio.ini", d) || d.empty()) return;
+    // 新名优先；找不到时兼容旧名 SonarAudio.ini（老用户升级不丢配置）
+    if (!ReadWholeFile(dir + L"WeaponSoundEnhance.wem.ini", d) || d.empty()) {
+        d.clear();
+        if (!ReadWholeFile(dir + L"SonarAudio.ini", d) || d.empty()) return;
+    }
     std::string s((const char*)d.data(), d.size());
     if (s.size() > 3 && (uint8_t)s[0] == 0xEF && (uint8_t)s[1] == 0xBB) s.erase(0, 3);  // 去 BOM
     g_cfg.hook_post_event = IniGetBool(s, "HookPostEvent", true);

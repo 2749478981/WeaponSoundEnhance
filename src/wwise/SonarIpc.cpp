@@ -108,7 +108,8 @@ bool RateOk() {
 }  // namespace
 
 void LogInit(const std::wstring& dir) {
-    g_logPath = dir + L"SonarAudio.log";
+    // 并入 WeaponSoundEnhance.dll 后用自己的日志名（GUI 侧兼容读取旧名）
+    g_logPath = dir + L"WeaponSoundEnhance_wem.log";
     ::InitializeCriticalSection(&g_logCs);
     g_logInit = true;
 }

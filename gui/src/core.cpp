@@ -1471,6 +1471,12 @@ struct Core::Impl {
         if (!FsExists(wemSeqPath) && !cand.empty())
             wemSeqPath = cand[0] + "WseMediaSeqs.txt";
         for (const auto& d : cand) {
+            // 新名（我们自己的 DLL 写）；旧名 SonarAudio.log 兼容老版本
+            if (FsExists(d + "WeaponSoundEnhance_wem.log")) {
+                wemLogPath = d + "WeaponSoundEnhance_wem.log";
+                wemMapPath = d + "SonarAudio.mediaids.txt";
+                return;
+            }
             if (FsExists(d + "SonarAudio.log")) {
                 wemLogPath = d + "SonarAudio.log";
                 wemMapPath = d + "SonarAudio.mediaids.txt";
@@ -1478,7 +1484,7 @@ struct Core::Impl {
             }
         }
         if (!cand.empty()) {   // log 还没生成（游戏没跑过）也先占位，运行时照常尝试
-            wemLogPath = cand[0] + "SonarAudio.log";
+            wemLogPath = cand[0] + "WeaponSoundEnhance_wem.log";
             wemMapPath = cand[0] + "SonarAudio.mediaids.txt";
         }
     }
