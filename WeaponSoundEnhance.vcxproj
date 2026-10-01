@@ -12,6 +12,18 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="WeaponSoundEnhance.cpp" />
+
+    <ClCompile Include="src\wwise\SonarAudio.cpp" />
+    <ClCompile Include="src\wwise\SonarWwise.cpp" />
+    <ClCompile Include="src\wwise\SonarBanks.cpp" />
+    <ClCompile Include="src\wwise\SonarIpc.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\wwise\SonarAudioIpc.h" />
+    <ClInclude Include="src\wwise\SonarWwise.h" />
+    <ClInclude Include="src\wwise\SonarBanks.h" />
+    <ClInclude Include="src\wwise\SonarIpc.h" />
+    <ClInclude Include="third_party\minhook\MinHook.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="resource.rc" />
@@ -59,12 +71,15 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalIncludeDirectories>$(ProjectDir)src\wwise;$(ProjectDir)third_party\minhook;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableUAC>false</EnableUAC>
+      <AdditionalLibraryDirectories>$(ProjectDir)third_party\minhook;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>libMinHook.x64.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -76,6 +91,7 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalIncludeDirectories>$(ProjectDir)src\wwise;$(ProjectDir)third_party\minhook;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
     </ClCompile>
     <Link>
@@ -84,6 +100,8 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableUAC>false</EnableUAC>
+      <AdditionalLibraryDirectories>$(ProjectDir)third_party\minhook;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>libMinHook.x64.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
 

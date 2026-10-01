@@ -325,6 +325,17 @@ bool RefreshIsInScene()
 } // namespace player
 
 // ===========================================================================
+//  合并进来的 Wwise 捕获模块的对外接口（定义在 src\wwise\SonarAudio.cpp）
+//  必须放全局作用域：那个模块在全局 namespace sonaraudio 里。
+// ===========================================================================
+namespace sonaraudio {
+void SonarAudioStart(HMODULE m);
+void SonarAudioStop();
+void SetEventSink(void (*sink)(uint32_t media_id, uint32_t event_id, uint32_t playing_id,
+                               const char* bank, const char* name));
+}
+
+// ===========================================================================
 //  Module paths + logging
 // ===========================================================================
 namespace plugin {
@@ -737,6 +748,23 @@ std::uint64_t gWemLastPlayMs = 0;
 
 int  WemWeaponFromBank(const std::string& bank);   // 定义见下（需要 gAttacks 声明之后）
 void PollWemEvents(std::mt19937& rng);             // 定义见下
+
+// ---------------------------------------------------------------------------
+//  合并进来的 Wwise 捕获模块（原 SonarAudio.dll，源码在 src\wwise\）：
+//  解析 exe 导出表拿 PostEvent → MinHook 三 hook → 扫 nbnk 建 event→media 反查
+//  → 事件经 SetEventSink 回调进来，直接触发 wem 条目。
+//  （不再需要单独的 SonarAudio.dll；它写的 SonarAudio.log 仍保留给 GUI 读）
+//
+//  注意：声明放在全局作用域（该模块本身在全局 namespace sonaraudio 里，
+//  不能写进 plugin 里，否则符号名变成 plugin::sonaraudio::*）。见文件顶部。
+// ---------------------------------------------------------------------------
+
+// 是否启用"读磁盘日志"兜底通道（hook 生效时关掉，避免同一事件触发两次）
+std::atomic<bool> g_useLogWemFallback{false};
+
+// ★ 事件出口（实现见文件后部 FireEntry 之后：依赖 gAttacks / FireEntry）
+void WemEventSink(uint32_t media_id, uint32_t event_id, uint32_t playing_id,
+                  const char* bank, const char* name);
 
 // --- hotkeys (defaults; ini [Hotkeys] overrides) ---
 int gModifierKey = VK_CONTROL;
@@ -2449,6 +2477,39 @@ bool FireEntry(const Attack& e, int gauge, std::mt19937& rng, std::uint64_t nowM
     return FirePool(pool, rng, nowMs, what);
 }
 
+// ★ 事件出口实现：SonarAudio 的日志线程每处理一条播放事件就调这里。
+//   命中"按 media id 触发"的条目 → 播放我们的音效（与 fsm 判定并行）。
+void WemEventSink(uint32_t media_id, uint32_t event_id, uint32_t playing_id,
+                  const char* bank, const char* name) {
+    (void)event_id; (void)playing_id; (void)name;
+    if (media_id == 0) return;
+    const std::uint64_t now = ::GetTickCount64();
+    if ((long long)media_id == gWemLastId && now - gWemLastPlayMs < 300) return;  // 同一条 300ms 防抖
+    static std::mt19937 s_rng((unsigned)(::GetTickCount64() ^ 0x9E3779B9u));
+    std::lock_guard<std::mutex> lk(gCfgMutex);
+    for (auto& e : gAttacks) {
+        if (e.media != (long long)media_id) continue;
+        const int w = WemWeaponFromBank(bank ? bank : "");
+        if (e.weaponType >= 0 && w >= 0 && e.weaponType != w) continue;
+        if (e.stop) {
+            audio::StopAll();
+            gWemLastId = (long long)media_id;
+            gWemLastPlayMs = now;
+            LogD("[wem] stop %s (media=%u)", e.name.c_str(), media_id);
+            break;
+        }
+        if (now - gLastTrigger < (std::uint64_t)gDebounceMs) break;
+        const std::string tag = "a[" + e.name + "] media=" + std::to_string(media_id);
+        if (FireEntry(e, player::gGauge, s_rng, now, tag)) {
+            gWemLastId = (long long)media_id;
+            gWemLastPlayMs = now;
+            LogD("[wem] fired %s (media=%u bank=%s)", e.name.c_str(), media_id,
+                 bank ? bank : "?");
+        }
+        break;
+    }
+}
+
 // ---------------------------------------------------------------------------
 //  延迟判定条目：动作匹配上只是"开窗"，然后盯一段时间再决定播哪个池。
 //
@@ -2710,7 +2771,9 @@ DWORD WINAPI WorkerProc(LPVOID)
 
         if (gEnabled == 0) continue;
 
-        PollWemEvents(rng);   // wem 触发通道（SonarAudio.log → Media= 条目），与 fsm 判定并行
+        // wem 触发：主通道 = 合并进来的 Wwise hook（事件经 WemEventSink 直接触发）；
+        // 兜底通道 = 读 SonarAudio.log（默认关，避免同一事件被触发两次）
+        if (g_useLogWemFallback.load()) PollWemEvents(rng);
 
         // Iterate the REAL container under the config lock. Entry latches
         // (inMatch) must persist across polls or the same action would be
@@ -2916,11 +2979,17 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         LogInit();
         SeedIniFromTemplate();
         LoadConfig();
+        // ★ 合并进来的 Wwise 捕获模块：解析导出表 + MinHook 三 hook + 扫 nbnk 反查表，
+        //   事件经 WemEventSink 直接触发 wem 条目（不再依赖单独的 SonarAudio.dll）。
+        //   注意：hook 若失败会自动降级（日志里会写），触发退回读磁盘日志通道。
+        ::sonaraudio::SetEventSink(&WemEventSink);
+        ::sonaraudio::SonarAudioStart(module);
         HANDLE t = ::CreateThread(nullptr, 0, &WorkerProc, nullptr, 0, nullptr);
         if (t) ::CloseHandle(t);
         HANDLE hk = ::CreateThread(nullptr, 0, &HotkeyProc, nullptr, 0, nullptr);
         if (hk) ::CloseHandle(hk);
     } else if (reason == DLL_PROCESS_DETACH) {
+        ::sonaraudio::SonarAudioStop();
         ::InterlockedExchange(&gStop, 1);
         ::Sleep(1000);
     }
