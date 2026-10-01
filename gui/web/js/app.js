@@ -421,6 +421,8 @@ function applyFilter() {
     else if (key === 'weapon') c = a.weaponType - b.weaponType;
     else if (key === 'lmt') c = firstLmt(a) - firstLmt(b);
     else if (key === 'fsm') c = a.fsmId - b.fsmId;
+    else if (key === 'media') c = (a.media || 0) - (b.media || 0);
+    else if (key === 'seq') c = (a.seqNum || 0) - (b.seqNum || 0);
     if (c === 0) c = A.i - B.i;
     return asc ? c : -c;
   });
@@ -511,9 +513,11 @@ function renderTable() {
 function wemSeq(e) {
   return (e.seqNum != null && e.seqNum > 0) ? ('第 ' + e.seqNum + ' 个') : '';
 }
-// 归属 nbnk：bank 字段（core 已按表补全）
+// 归属 nbnk：bank 字段（core 已按表补全）；老条目可从名称兜底
 function wemBank(e) {
-  return e.bank || '';
+  if (e.bank) return e.bank;
+  const m = (e.name || '').match(/^([^/\\]+)\//);
+  return m ? m[1] : '';
 }
 
 /* 删除二次确认 —— 明确列出要删什么，不可撤销 */
@@ -815,7 +819,7 @@ function fillEditor() {
     wi.hidden = false;
     wi.textContent = 'wem 条目：' + (seq || e.name || ('media ' + e.media)) +
       ' · 媒体 id ' + e.media +
-      (bank ? ' · 归属 nbnk：' + bank : '') + ' · ' + wname +
+      ' · 归属 nbnk：' + (bank || '（不在已收录的 nbnk 表内）') + ' · ' + wname +
       '（游戏播放该 wem 时触发，不依赖 fsm/lmt）';
     const row = $('#edRowFsm');
     if (row) row.style.display = 'none';
