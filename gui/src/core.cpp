@@ -1105,7 +1105,9 @@ SoundEntry EntryFromJson(const JVal& v, const std::vector<std::string>& allowedC
             if (!dup) e.lmt.push_back(val);
         }
     }
-    if (!jlmt || v.optBool("lmtAny", false) || e.lmt.empty()) e.lmt.clear();
+    // ★ 以 lmt 数组为准：lmtAny 只是前端的"不限"复选状态，不能反过来清数据
+        //   （曾经 lmtAny=true 就清空 lmt → wem 条目填的 LMT 一保存就丢）
+        if (!jlmt) e.lmt.clear();
 
     const JVal* jdef = v.find("def");
     if (jdef) PoolFromJson(*jdef, e.def);
@@ -1237,6 +1239,7 @@ struct Core::Impl {
     std::string wemSeqPath;                                        // exeDir\WseMediaSeqs.txt（media_id→bank,序号 真值表）
     std::unordered_map<int, std::string> wemNames;                 // media id -> 可读名(UTF-8)
     std::unordered_map<int, std::pair<std::string, int>> wemSeqs;  // media id -> (bank, 序号=该bank DIDX第几个)
+    std::unordered_map<int, std::pair<unsigned long long, int>> wemRates;  // 循环音检测：media -> (窗口起点, 次数)
     std::ifstream wemStream;
     unsigned long long wemLastPoll = 0;
     long long lastWemMedia = -2;                                   // 推送去重
@@ -1635,6 +1638,23 @@ struct Core::Impl {
             std::string bank, path, logName;
             if (!ParseWemLine(line, media, bank, path, &logName)) continue;
             if (media <= 0) continue;
+            // 循环音过滤：有些 wem 是持久循环音（例 wp_bow_cmn/10，约每秒一次永不停），
+            // 它们不是动作事件，会把捕获历史刷屏（"解瓶也看到 10""偶尔两次 10"就是它）。
+            // 判据：同一 media 在 1 秒窗口内出现 >= 3 次 → 本秒内后续全丢。
+            {
+                std::unordered_map<int, std::pair<unsigned long long, int> >::iterator rit =
+                    wemRates.find(media);
+                if (rit == wemRates.end()) {
+                    wemRates[media] = std::make_pair(nowMs, 1);
+                } else {
+                    if (nowMs - rit->second.first > 1000) {
+                        rit->second.first = nowMs;
+                        rit->second.second = 0;
+                    }
+                    if (++rit->second.second >= 3) continue;   // 判为循环音，丢弃
+                }
+                if (wemRates.size() > 2048) wemRates.clear();
+            }
             // 去重：连续同 media，或 1.5s 窗口内同 media
             bool dup = false;
             if (!history.empty()) {

@@ -756,7 +756,7 @@ async function addWemRecord(r) {
   const entry = {
     name: wemSeq(r) || r.name || ('media ' + media), weaponType: w, combo,
     media: media, bank: r.bank || '', fsmId: -1, fsmTarget: -1, group: '', stop: false,
-    lmt: [], lmtAny: true,
+    lmt: [], lmtAny: false,   // 不限不勾选：wem 条目可以填 LMT 作为附加条件
     def: [], gauge: [[], [], [], []],
     checkDelayMs: 0, checkTimeoutMs: 0, checkOffsetMs: 150, endOnAction: true,
     checkMode: 0, judgePreset: 0, conds: [],
@@ -869,8 +869,13 @@ function fillEditor() {
   // 事件（重新绑，避免重复）
   $('#edName').oninput = ev => e.name = ev.target.value;
   $('#edFsm').oninput = ev => e.fsmId = parseInt(ev.target.value, 10) || -1;
-  $('#edLmtAny').onchange = ev => { e.lmtAny = ev.target.checked; lmtHint(); };
-  $('#edLmt').oninput = ev => { e.lmt = parseLmt(ev.target.value); lmtHint(); };
+  $('#edLmtAny').onchange = ev => { e.lmtAny = ev.target.checked; if (e.lmtAny) { e.lmt = []; $('#edLmt').value = ''; } lmtHint(); };
+  $('#edLmt').oninput = ev => {
+    e.lmt = parseLmt(ev.target.value);
+    // 填了 LMT 就自动取消"不限"（否则用户以为填了、实际是不限）
+    if (e.lmt.length) { e.lmtAny = false; $('#edLmtAny').checked = false; }
+    lmtHint();
+  };
   $('#edAdv').onchange = ev => { ED.adv = ev.target.checked; $('#edAdvBox').hidden = !ED.adv; fillPools(); };
   $('#edGroup').oninput = ev => e.group = ev.target.value;
   $('#edFsmTarget').oninput = ev => e.fsmTarget = parseInt(ev.target.value, 10);

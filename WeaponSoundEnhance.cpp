@@ -209,6 +209,20 @@ std::uint32_t  gFsmTargetOff = 0x6274;   // FSM target 值偏移（ini FsmTarget
 std::int32_t   gCharge = -1;
 std::uint32_t  gChargeValOff = 0x2358;   // 别用 0x2370：大剑上它只从 2 起跳，分不出 1 蓄和没蓄
 
+// ---------------------------------------------------------------------------
+//  场景/装备稳定时间戳 —— 用来压制"进图/换区/切装备"时的 wem 误触发。
+//
+//  背景：wem 是全局音频事件，游戏进集会/换区/换装备时会**预先 PostEvent**
+//  一堆武器音效（把资源读进内存），并不是真的在播。表现为：一进集会就听到
+//  装瓶音效，但其实没做任何动作。
+//
+//  判定：每当玩家实体出现、或武器类型发生变化（= 加载/切装完成），就把
+//  gStableSinceMs 重置为当前时刻。此后 kWemSettleMs 毫秒内的 wem 一律忽略。
+//  （真正做动作至少要等玩家落地/出手，远大于这个窗口。）
+// ---------------------------------------------------------------------------
+std::uint64_t  gStableSinceMs = 0;    // 上次"实体出现或武器变化"的时刻
+std::int32_t   gLastWeaponStable = -2; // 用于检测武器变化（-2 = 未初始化）
+
 // 任务累计伤害。实测**只记你自己打的**，不含队友，所以拿来判命中在联机下也是干净的。
 // （对照：怪物血量是全队共享的，不能用来判"我这一下打中没有"。）
 std::int32_t   gQuestDmg     = -1;
@@ -311,6 +325,15 @@ void Refresh()
                 }
             }
         }
+    }
+
+    // ---- 场景/装备稳定检测 ----
+    // entity 已存在且武器读到了：若武器与上次不同（= 加载/切装完成），
+    // 或还没初始化过，就把"稳定起点"推到当前时刻。之后 kWemSettleMs 内的
+    // wem 会被 WemEventSink 忽略（压制进图预加载的假触发）。
+    if (gWeapon >= 0 && gWeapon != gLastWeaponStable) {
+        gLastWeaponStable = gWeapon;
+        gStableSinceMs    = ::GetTickCount64();
     }
 }
 
@@ -700,6 +723,18 @@ int gDebounceMs = 120;
 volatile int gVolumePct = 100;
 volatile int gEnabled = 1;
 volatile int gMoreSounds = 1;   // legacy: only affects pools without any fixed sound
+
+// --- wem 误触发抑制（进图/换区预加载）---
+//   KillSettleMs: 进图/切装完成后，多少毫秒内的 wem 一律忽略（0 = 关闭该抑制）
+//   WemBurstCap : 同一 60ms 窗口内超过多少条 wem 就判为"预加载整批丢弃"（0 = 关闭）
+int gKillSettleMs = 2500;
+int gWemBurstCap  = 6;
+
+// --- 循环音过滤（不是动作事件、却持续请求的 wem，例：wp_bow_cmn/10 每秒一次）---
+//   WemLoopFilter: 1 = 开（默认）
+//   WemLoopRate  : 同一 media 在 1 秒内达到这个次数即判为循环音，本秒内后续全忽略
+int gWemLoopFilter = 1;
+int gWemLoopRate   = 3;
 std::uint32_t gGaugePtrOff = 0x76B0;
 std::uint32_t gGaugeValOff = 0x2370;
 std::uint32_t gChargeValOff = 0x2358;          // 大剑蓄力等级（与刃级共用 GaugePtrOff）
@@ -1770,6 +1805,10 @@ void LoadConfig()
                 if (key == "PlayerRoot")  gPlayerRoot = ParseHex(val);
                 else if (key == "PollMs") { int v = std::atoi(val.c_str()); if (v >= 5) gPollMs = v; }
                 else if (key == "DebounceMs") { int v = std::atoi(val.c_str()); if (v >= 0) gDebounceMs = v; }
+                else if (key == "KillSettleMs") { int v = std::atoi(val.c_str()); if (v >= 0 && v <= 60000) gKillSettleMs = v; }
+                else if (key == "WemBurstCap") { int v = std::atoi(val.c_str()); if (v >= 0 && v <= 1000) gWemBurstCap = v; }
+                else if (key == "WemLoopFilter") gWemLoopFilter = std::atoi(val.c_str()) != 0;
+                else if (key == "WemLoopRate") { int v = std::atoi(val.c_str()); if (v >= 1 && v <= 100) gWemLoopRate = v; }
                 else if (key == "Volume") gVolumePct = ClampInt(std::atoi(val.c_str()), 0, 100);
                 else if (key == "Enabled") gEnabled = std::atoi(val.c_str()) != 0;
                 else if (key == "MoreSounds") gMoreSounds = std::atoi(val.c_str()) != 0;
@@ -2553,6 +2592,39 @@ void WemEventSink(uint32_t media_id, uint32_t event_id, uint32_t playing_id,
     if (player::gWeapon < 0 || player::gWeapon > 13) return;
 
     const std::uint64_t now = ::GetTickCount64();
+
+    // 1.5) 场景/装备稳定窗口：进图/换区/切装完成后的一小段时间内，游戏会
+    //      预先 PostEvent 一批音效（并非真的在播）。这段窗口内的 wem 一律忽略。
+    if (gKillSettleMs > 0 && player::gStableSinceMs != 0 &&
+        now - player::gStableSinceMs < (std::uint64_t)gKillSettleMs) {
+        return;
+    }
+
+    // 1.6) 爆发批次抑制：真正的动作一次通常只发 1~3 条 wem；而预加载会在一瞬间
+    //      连发十几条。统计同一 60ms 窗口内进来的事件数，超阈值则认为整批是
+    //      预加载，直接丢弃（含当前这条）。
+    {
+        static std::uint64_t s_burstStart = 0;
+        static int           s_burstCount = 0;
+        if (now - s_burstStart > 60) { s_burstStart = now; s_burstCount = 0; }
+        ++s_burstCount;
+        if (gWemBurstCap > 0 && s_burstCount > gWemBurstCap) {
+            LogD("[wem] 批次抑制(第%d条/60ms) media=%u", s_burstCount, media_id);
+            return;
+        }
+    }
+
+    // 1.7) 循环音过滤：有些 wem 是"持久循环音"（例：wp_bow_cmn/10 约每秒一次、
+    //      永不停），它们不是动作事件，必须挡住 —— 否则会误触发条目、也把捕获
+    //      面板刷屏（用户反馈的"解瓶也捕获到 10""偶尔两次 10"就是它）。
+    //      判据：同一 media 在 1 秒内出现 >= gWemLoopRate 次 → 本秒内后续全忽略。
+    if (gWemLoopFilter) {
+        static std::unordered_map<uint32_t, std::pair<std::uint64_t, int>> s_rate;  // 仅日志线程
+        auto& r = s_rate[media_id];
+        if (now - r.first > 1000) { r.first = now; r.second = 0; }
+        if (++r.second >= (int)gWemLoopRate) return;
+        if (s_rate.size() > 4096) s_rate.clear();
+    }
 
     // 2) 边沿锁（按媒体 id）：连续重复事件只在第一下触发，静默后才重置
     struct WemEdge { std::uint64_t lastMs = 0; bool fired = false; };
