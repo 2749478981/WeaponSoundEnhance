@@ -824,7 +824,8 @@ function fillEditor() {
     wi.textContent = 'wem 条目：' + (seq || e.name || ('media ' + e.media)) +
       ' · 媒体 id ' + e.media +
       ' · 归属 nbnk：' + (bank || '（不在已收录的 nbnk 表内）') + ' · ' + wname +
-      '（游戏播放该 wem 时触发，不依赖 fsm/lmt）';
+      '　|　LMT / FSMId 是可选附加条件（留空只按 wem 触发）';
+    // wem 条目保留 LMT 行（作为"附加条件"），隐藏 FSMId 行
     const row = $('#edRowFsm');
     if (row) row.style.display = 'none';
   } else {

@@ -2498,7 +2498,7 @@ void WemEventSink(uint32_t media_id, uint32_t event_id, uint32_t playing_id,
     // 2) 边沿锁（按媒体 id）：连续重复事件只在第一下触发，静默后才重置
     struct WemEdge { std::uint64_t lastMs = 0; bool fired = false; };
     static std::unordered_map<uint32_t, WemEdge> s_edges;   // 仅在日志线程访问
-    const std::uint64_t quiet = 600;
+    const std::uint64_t quiet = 1200;   // 同一条 wem 静默 1.2s 才算"下一轮"（游戏会重复 PostEvent）
     WemEdge& ed = s_edges[media_id];
     if (now - ed.lastMs > quiet) ed.fired = false;          // 静默足够久 → 新一轮
     ed.lastMs = now;
@@ -2512,6 +2512,16 @@ void WemEventSink(uint32_t media_id, uint32_t event_id, uint32_t playing_id,
         if (e.media != (long long)media_id) continue;
         const int w = WemWeaponFromBank(bank ? bank : "");
         if (e.weaponType >= 0 && w >= 0 && e.weaponType != w) continue;
+        // ★ 可选附加条件：条目填了 LMT / FSMId / FSMTarget 时，要求当前玩家状态也匹配。
+        //   同一个 event 在非目标场景也会被请求（进集会/切装备），靠这些条件精准限定；
+        //   留空（-1 / 不限）则只看 media。
+        if (!e.lmt.empty()) {
+            bool ok = false;
+            for (int x : e.lmt) if (x == player::gLmt) { ok = true; break; }
+            if (!ok) continue;
+        }
+        if (e.fsmId >= 0 && e.fsmId != player::gFsm) continue;
+        if (e.fsmTarget >= 0 && e.fsmTarget != player::gFsmTarget) continue;
         if (e.stop) {
             audio::StopAll();
             gWemLastId = (long long)media_id;
