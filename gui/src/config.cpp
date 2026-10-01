@@ -308,6 +308,8 @@ bool LoadConfig(const std::string& path, Config& cfg) {
         } else if (key == "Media") {
             // WWise wem/media id（wem 捕获条目）：-1/0 = 不按 media 判定
             cur.media = (long long)std::strtoll(val.c_str(), nullptr, 10);
+        } else if (key == "Bank") {
+            cur.bank = val;
         } else if (key == "FSMId") {
             cur.fsmId = std::atoi(val.c_str());
         } else if (key == "ActionLMT" || key == "LMT") {
@@ -442,6 +444,7 @@ static void WriteEntry(const SoundEntry& e, int n, std::string& o) {
     o += LmtLine(e) + "\r\n";
     o += "FSMId=" + std::to_string(e.fsmId) + "\r\n";
     if (e.media >= 0) o += "Media=" + std::to_string(e.media) + "\r\n";
+    if (!e.bank.empty()) o += "Bank=" + e.bank + "\r\n";
     if (e.fsmTarget >= 0) o += "FSMTarget=" + std::to_string(e.fsmTarget) + "\r\n";
     if (e.checkTimeoutMs > 0 && !e.conds.empty()) {
         if (e.checkDelayMs > 0)

@@ -731,6 +731,7 @@ int gWatchLastFsm = -2, gWatchLastFsmTgt = -2, gWatchLastLmt = -2, gWatchLastWea
 std::ifstream gWemStream;
 std::wstring  gWemLogPath;
 std::uint64_t gWemLastPollMs = 0;
+std::uint64_t gWemLastSize = 0;       // 文件大小跟踪：重建/截断检测（防重放）
 long long     gWemLastId = -1;      // 同 media 防抖：300ms 内不重复触发
 std::uint64_t gWemLastPlayMs = 0;
 
@@ -1089,19 +1090,57 @@ void PollWemEvents(std::mt19937& rng)
     if (now - gWemLastPollMs < 100) return;
     gWemLastPollMs = now;
     if (gWemLogPath.empty()) return;
-    if (gWemStream.is_open() && gWemStream.eof()) gWemStream.clear();
-    if (!gWemStream.is_open()) gWemStream.open(gWemLogPath, std::ios::binary);
-    if (!gWemStream.is_open()) return;
+
+    // 文件大小：重建/截断检测。log 被清空重写时绝不要重放旧事件。
+    std::uint64_t sz = 0;
+    {
+        HANDLE h = ::CreateFileW(gWemLogPath.c_str(), GENERIC_READ,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h != INVALID_HANDLE_VALUE) {
+            LARGE_INTEGER li;
+            if (::GetFileSizeEx(h, &li) && li.QuadPart > 0) sz = (std::uint64_t)li.QuadPart;
+            ::CloseHandle(h);
+        }
+    }
+    if (sz == 0) return;
+    if (gWemStream.is_open() && sz < gWemLastSize) {
+        // 文件被重建/截断 → 丢掉旧内容，只从新文件末尾开始（不读中间的历史行）
+        gWemStream.close();
+        gWemStream.open(gWemLogPath, std::ios::binary);
+        if (gWemStream.is_open()) gWemStream.seekg(0, std::ios::end);
+        gWemLastSize = sz;
+        return;
+    }
+    if (!gWemStream.is_open()) {
+        gWemStream.open(gWemLogPath, std::ios::binary);
+        if (!gWemStream.is_open()) return;
+        gWemStream.seekg(0, std::ios::end);   // ★ 首次打开只读新内容，绝不重放历史
+        gWemLastSize = sz;
+        return;
+    }
+    if (gWemStream.eof()) gWemStream.clear();
 
     struct Hit { long long media; int weapon; };
     std::vector<Hit> hits;
     std::string line;
     while (std::getline(gWemStream, line)) {
         if (line.size() < 8) continue;
-        const std::size_t mp = line.find("media=");
-        if (mp == std::string::npos) continue;
-        long long m = std::strtoll(line.c_str() + mp + 6, nullptr, 10);
-        if (m <= 0) continue;
+        long long m = 0;
+        // ★ 优先 wem= （真实 media id，agent 新输出）；旧格式用 media=
+        const std::size_t wp = line.find("wem=");
+        if (wp != std::string::npos) {
+            m = std::strtoll(line.c_str() + wp + 4, nullptr, 10);
+            if (m == 0) {   // wem=0（未匹配 bank）时退回 media= 字段
+                const std::size_t mp = line.find("media=");
+                if (mp != std::string::npos) m = std::strtoll(line.c_str() + mp + 6, nullptr, 10);
+            }
+        } else {
+            const std::size_t mp = line.find("media=");
+            if (mp != std::string::npos) m = std::strtoll(line.c_str() + mp + 6, nullptr, 10);
+        }
+        if (m < 0) m = 0;
+        if (m == 0) continue;
         std::string bank;
         const std::size_t bp = line.find("bank=");
         if (bp != std::string::npos) {
@@ -1113,6 +1152,7 @@ void PollWemEvents(std::mt19937& rng)
     }
     gWemStream.clear();
     gWemStream.seekg(0, std::ios::end);
+    gWemLastSize = sz;
     if (hits.empty()) return;
 
     std::lock_guard<std::mutex> lk(gCfgMutex);

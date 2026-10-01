@@ -506,12 +506,19 @@ function renderTable() {
     (ST.wemView ? '' : (ST.sort.asc ? ' 升序' : ' 降序'));
 }
 
-// 条目 WEM 序号：从条目名（mediaids 形式 "bank/30.ogg"）取 nbnk 内第几个。
-// 序号来自 nbnk 的 DIDX；运行时事件 id（log 的小数字 media）不属于 nbnk 文件表，
-// 所以没有序号——显示 "—" 并给出说明。
+// 条目 WEM 序号：从条目名（mediaids 形式 "wp_bow_cmn/30.ogg （装瓶）"）取 nbnk 内第几个。
+// 宽松匹配：允许带注释后缀（全角/半角括号）。
 function wemSeq(e) {
-  const m = (e.name || '').match(/\/(\d+)(?:\.[a-z0-9]+)?$/i);
-  return m ? ('第 ' + m[1] + ' 个') : '';
+  const nm = e.name || '';
+  let m = nm.match(/([^/\\]+)\/(\d+)(?:\.[a-z0-9]+)?(?:\s*[（(][^）)]*[）)])?\s*$/i)
+       || nm.match(/([^/\\]+)\/(\d+)(?:\.[a-z0-9]+)?\s*$/i);
+  return m ? ('第 ' + m[2] + ' 个') : '';
+}
+// wem 条目的归属 nbnk：从名字或 bank 字段
+function wemBank(e) {
+  if (e.bank) return e.bank;
+  const m = (e.name || '').match(/^([^/\\]+)\//);
+  return m ? m[1] : '';
 }
 
 /* 删除二次确认 —— 明确列出要删什么，不可撤销 */
@@ -746,8 +753,8 @@ async function addWemRecord(r) {
     return;
   }
   const entry = {
-    name: r.name || ('media ' + media), weaponType: w, combo,
-    media: media, fsmId: -1, fsmTarget: -1, group: '', stop: false,
+    name: wemSeq(r) || r.name || ('media ' + media), weaponType: w, combo,
+    media: media, bank: r.bank || '', fsmId: -1, fsmTarget: -1, group: '', stop: false,
     lmt: [], lmtAny: true,
     def: [], gauge: [[], [], [], []],
     checkDelayMs: 0, checkTimeoutMs: 0, checkOffsetMs: 150, endOnAction: true,
@@ -809,13 +816,13 @@ function fillEditor() {
   const isWem = ED.isWem;
   const wi = $('#edWemInfo');
   if (isWem) {
-    let seq = '';
-    const m = (e.name || '').match(/^([^/]+)\/(\d+)(?:\.[a-z0-9]+)?$/i);
-    if (m) seq = m[1] + ' / 第 ' + m[2] + ' 个';
+    let seq = wemSeq(e);
+    const bank = wemBank(e);
     const wname = ((ST.weapons || []).find(w => w.id === e.weaponType) || {}).name || ('武器 ' + e.weaponType);
     wi.hidden = false;
     wi.textContent = 'wem 条目：' + (seq || e.name || ('media ' + e.media)) +
-      ' · 媒体 id ' + e.media + ' · ' + wname +
+      ' · 媒体 id ' + e.media +
+      (bank ? ' · 归属 nbnk：' + bank : '') + ' · ' + wname +
       '（游戏播放该 wem 时触发，不依赖 fsm/lmt）';
     const row = $('#edRowFsm');
     if (row) row.style.display = 'none';

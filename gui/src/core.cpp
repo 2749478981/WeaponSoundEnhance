@@ -995,6 +995,7 @@ JVal EntryToJson(const SoundEntry& e, int index) {
     v.set("fsmId", JVal(e.fsmId));
     v.set("fsmTarget", JVal(e.fsmTarget));
     v.set("media", JVal(e.media));
+    v.set("bank", JVal(e.bank));
     v.set("group", JVal(e.group));
     v.set("stop", JVal(e.stop));
 
@@ -1043,6 +1044,7 @@ SoundEntry EntryFromJson(const JVal& v, const std::vector<std::string>& allowedC
     e.fsmId = v.optInt("fsmId", -1);
     e.fsmTarget = v.optInt("fsmTarget", -1);
     e.media = (long long)v.optInt("media", -1);   // wem/media id；id < 2^31
+    e.bank = Trim(v.optStr("bank"));
 
     // 组合归属：任意武器没有组合概念，固定进默认组合
     //（否则保存时会被丢进一个不存在的 [Weapon-1:名字] 段）
@@ -1518,9 +1520,11 @@ struct Core::Impl {
         return -1;
     }
 
-    // 解析 SonarAudio.log 的事件行：evt ... media=873092594 ... bank=wp_bow_cmn ... path=...
+    // 解析 SonarAudio.log 的事件行：evt ... media=.. wem=.. bank=.. path=..
+    // ★ 优先 wem=（真实 media id，agent 新输出）；旧格式退回 media=
     bool ParseWemLine(const std::string& line, int& media, std::string& bank, std::string& path) const {
-        if (line.find("media=") == std::string::npos) return false;
+        if (line.find("media=") == std::string::npos &&
+            line.find("wem=") == std::string::npos) return false;
         auto grab = [&](const char* key, std::string& dst) {
             const std::string k(key);
             std::size_t p = line.find(k);
@@ -1530,10 +1534,15 @@ struct Core::Impl {
             while (en < line.size() && line[en] != ' ' && line[en] != '\t' && line[en] != '\r') ++en;
             dst = line.substr(p, en - p);
         };
-        std::string ms;
+        long long m = 0;
+        std::string ws, ms;
+        grab("wem=", ws);
         grab("media=", ms);
-        if (ms.empty()) return false;
-        try { media = std::stoi(ms); } catch (...) { return false; }
+        if (!ws.empty()) m = std::strtoll(ws.c_str(), nullptr, 10);
+        if (m <= 0 && !ms.empty()) m = std::strtoll(ms.c_str(), nullptr, 10);
+        if (m <= 0) m = std::strtoll(ms.c_str(), nullptr, 10);
+        if (m <= 0) return false;
+        media = (int)m;
         grab("bank=", bank);
         grab("path=", path);
         return true;
@@ -2660,6 +2669,7 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
                 return ErrJson("index 越界: " + std::to_string(idx));
             // 编辑器没带 media 字段（老界面）→ 保留原值，别把 wem 条目的 id 抹掉
             if (!je->has("media")) e.media = im->cfg.entries[idx].media;
+            if (!je->has("bank")) e.bank = im->cfg.entries[idx].bank;
             im->cfg.entries[idx] = e;
             im->dirty = true;
             im->SetStatus("已修改（记得保存）");
