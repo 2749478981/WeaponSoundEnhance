@@ -734,7 +734,8 @@ int gWemBurstCap  = 6;
 //   WemLoopFilter: 1 = 开（默认）
 //   WemLoopRate  : 同一 media 在 1 秒内达到这个次数即判为循环音，本秒内后续全忽略
 int gWemLoopFilter = 1;
-int gWemLoopRate   = 3;
+int gWemLoopRate   = 4;      // 4 秒窗口内达到这个次数即判为循环音
+int gWemLoopMuteMs = 8000;   // 判定为循环音后，忽略该 media 的时长（毫秒）
 std::uint32_t gGaugePtrOff = 0x76B0;
 std::uint32_t gGaugeValOff = 0x2370;
 std::uint32_t gChargeValOff = 0x2358;          // 大剑蓄力等级（与刃级共用 GaugePtrOff）
@@ -1809,6 +1810,7 @@ void LoadConfig()
                 else if (key == "WemBurstCap") { int v = std::atoi(val.c_str()); if (v >= 0 && v <= 1000) gWemBurstCap = v; }
                 else if (key == "WemLoopFilter") gWemLoopFilter = std::atoi(val.c_str()) != 0;
                 else if (key == "WemLoopRate") { int v = std::atoi(val.c_str()); if (v >= 1 && v <= 100) gWemLoopRate = v; }
+                else if (key == "WemLoopMuteMs") { int v = std::atoi(val.c_str()); if (v >= 0 && v <= 120000) gWemLoopMuteMs = v; }
                 else if (key == "Volume") gVolumePct = ClampInt(std::atoi(val.c_str()), 0, 100);
                 else if (key == "Enabled") gEnabled = std::atoi(val.c_str()) != 0;
                 else if (key == "MoreSounds") gMoreSounds = std::atoi(val.c_str()) != 0;
@@ -2614,16 +2616,24 @@ void WemEventSink(uint32_t media_id, uint32_t event_id, uint32_t playing_id,
         }
     }
 
-    // 1.7) 循环音过滤：有些 wem 是"持久循环音"（例：wp_bow_cmn/10 约每秒一次、
-    //      永不停），它们不是动作事件，必须挡住 —— 否则会误触发条目、也把捕获
-    //      面板刷屏（用户反馈的"解瓶也捕获到 10""偶尔两次 10"就是它）。
-    //      判据：同一 media 在 1 秒内出现 >= gWemLoopRate 次 → 本秒内后续全忽略。
+    // 1.7) 循环音过滤：有些 wem 是"持久循环音"（例：wp_bow_cmn/10 = 182089195，
+    //      约每秒一次、持续整场），它们不是动作事件，必须挡住 —— 否则会误触发
+    //      条目、也把捕获面板刷屏（用户反馈的"解瓶也捕获到 10""两次 10"就是它）。
+    //      判据用**行为**（wem 数据里没有 loop 标志，HIRC 里才有）：
+    //        同一 media 在 4 秒内出现 >= gWemLoopRate 次 → 判为循环音，
+    //        随后 gWemLoopMuteMs 内直接忽略（真动作不可能 4 秒内重复 4 次同一 wem）。
     if (gWemLoopFilter) {
-        static std::unordered_map<uint32_t, std::pair<std::uint64_t, int>> s_rate;  // 仅日志线程
-        auto& r = s_rate[media_id];
-        if (now - r.first > 1000) { r.first = now; r.second = 0; }
-        if (++r.second >= (int)gWemLoopRate) return;
-        if (s_rate.size() > 4096) s_rate.clear();
+        struct LoopStat { std::uint64_t winStart = 0; int count = 0; std::uint64_t muteUntil = 0; };
+        static std::unordered_map<uint32_t, LoopStat> s_loop;   // 仅日志线程
+        LoopStat& ls = s_loop[media_id];
+        if (now < ls.muteUntil) return;                          // 已判为循环音，静默期内忽略
+        if (now - ls.winStart > 4000) { ls.winStart = now; ls.count = 0; }
+        if (++ls.count >= (int)gWemLoopRate) {
+            ls.muteUntil = now + (std::uint64_t)gWemLoopMuteMs;
+            LogD("[wem] 判定循环音并忽略 media=%u（4s 内第 %d 次）", media_id, ls.count);
+            return;
+        }
+        if (s_loop.size() > 4096) s_loop.clear();
     }
 
     // 2) 边沿锁（按媒体 id）：连续重复事件只在第一下触发，静默后才重置

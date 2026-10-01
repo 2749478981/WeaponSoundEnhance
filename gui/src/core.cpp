@@ -1239,7 +1239,9 @@ struct Core::Impl {
     std::string wemSeqPath;                                        // exeDir\WseMediaSeqs.txt（media_id→bank,序号 真值表）
     std::unordered_map<int, std::string> wemNames;                 // media id -> 可读名(UTF-8)
     std::unordered_map<int, std::pair<std::string, int>> wemSeqs;  // media id -> (bank, 序号=该bank DIDX第几个)
-    std::unordered_map<int, std::pair<unsigned long long, int>> wemRates;  // 循环音检测：media -> (窗口起点, 次数)
+    // 循环音检测（行为判定）：4 秒内同一 media 出现 >= 4 次 → 判为循环音并静默 8 秒
+    struct LoopStat { unsigned long long winStart = 0; int count = 0; unsigned long long muteUntil = 0; };
+    std::unordered_map<int, LoopStat> wemLoops;
     std::ifstream wemStream;
     unsigned long long wemLastPoll = 0;
     long long lastWemMedia = -2;                                   // 推送去重
@@ -1638,22 +1640,27 @@ struct Core::Impl {
             std::string bank, path, logName;
             if (!ParseWemLine(line, media, bank, path, &logName)) continue;
             if (media <= 0) continue;
-            // 循环音过滤：有些 wem 是持久循环音（例 wp_bow_cmn/10，约每秒一次永不停），
-            // 它们不是动作事件，会把捕获历史刷屏（"解瓶也看到 10""偶尔两次 10"就是它）。
-            // 判据：同一 media 在 1 秒窗口内出现 >= 3 次 → 本秒内后续全丢。
+            // 循环音过滤：有些 wem 是持久循环音（例 wp_bow_cmn/10 = 182089195，
+            // 约每秒一次、持续整场），不是动作事件，会把捕获历史刷屏。
+            // 判据用行为（wem 数据里没有 loop 标志）：4 秒内出现 >= 4 次 → 判为循环音，
+            // 随后 8 秒内直接忽略该 media（真动作不可能 4 秒内重复 4 次同一 wem）。
             {
-                std::unordered_map<int, std::pair<unsigned long long, int> >::iterator rit =
-                    wemRates.find(media);
-                if (rit == wemRates.end()) {
-                    wemRates[media] = std::make_pair(nowMs, 1);
+                std::unordered_map<int, LoopStat>::iterator lit = wemLoops.find(media);
+                if (lit == wemLoops.end()) {
+                    LoopStat st; st.winStart = nowMs; st.count = 1; st.muteUntil = 0;
+                    wemLoops[media] = st;
                 } else {
-                    if (nowMs - rit->second.first > 1000) {
-                        rit->second.first = nowMs;
-                        rit->second.second = 0;
+                    if (nowMs < lit->second.muteUntil) continue;     // 已判为循环音，静默期内不记录
+                    if (nowMs - lit->second.winStart > 4000) {
+                        lit->second.winStart = nowMs;
+                        lit->second.count = 0;
                     }
-                    if (++rit->second.second >= 3) continue;   // 判为循环音，丢弃
+                    if (++lit->second.count >= 4) {
+                        lit->second.muteUntil = nowMs + 8000;
+                        continue;                                     // 判为循环音，不记录
+                    }
                 }
-                if (wemRates.size() > 2048) wemRates.clear();
+                if (wemLoops.size() > 2048) wemLoops.clear();
             }
             // 去重：连续同 media，或 1.5s 窗口内同 media
             bool dup = false;
