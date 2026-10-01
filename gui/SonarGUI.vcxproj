@@ -78,6 +78,7 @@
   <ItemGroup>
     <ClCompile Include="src\main_web.cpp" />
     <ClCompile Include="src\core.cpp" />
+    <ClCompile Include="src\bankmod.cpp" />
     <ClCompile Include="src\config.cpp" />
     <ClCompile Include="src\game.cpp" />
     <ClCompile Include="src\fsmdb.cpp" />

@@ -43,6 +43,7 @@
     <button data-act="combo.export">导出组合</button>
     <button data-act="combo.import">导入组合</button>
     <button data-act="sound.openDir">打开 sounds\</button>
+        <button data-act="win.bank" title="把游戏音效换成你自己的（实验性）：导入 nbnk → 替换 → 导出">音效替换</button>
     <span class="sep"></span>
     <button data-act="game.stop" title="停掉游戏内正在播放的音效（等价 /wse stop）">停止音效</button>
     <button class="amber" data-act="game.launch">怪物猎人，启动！</button>
@@ -262,6 +263,40 @@
         <tbody id="cmdBody"></tbody></table>
       </div>
       <div class="note">在游戏内聊天框输入后回车；前缀 <code>/wse</code> 与 <code>/wsesound</code> 都可以。</div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 音效替换（nbnk Mod，实验性） ================= -->
+<div class="modal" id="mBank">
+  <div class="mbox box">
+    <div class="mhead"><span class="t">音效替换（nbnk Mod）</span><button data-act="m.close">关闭</button></div>
+    <div class="mbody">
+      <p class="note exp">⚠ 实验性功能，可能的问题：<br>
+        ① 导出的 nbnk 不保证所有情况下都被游戏接受（可能不响、时长/音量异常）；<br>
+        ② 转换依赖机器上的 <b>Wwise</b>；<b>mp3/ogg 等非 wav 还需 ffmpeg.exe</b>（放到 wemkit\ffmpeg.exe）；<br>
+        ③ 只替换你指定的 media，游戏里同一条 event 引用别的 media 时不受影响；<br>
+        ④ 只写新文件到输出目录，<b>不会改动游戏原文件</b>；建议先备份。</p>
+
+      <div class="btnrow">
+        <button data-act="bank.pick">导入 nbnk…</button>
+        <button data-act="bank.export" id="bankExportBtn">转换并导出 nbnk</button>
+        <button data-act="bank.openOut">打开输出目录</button>
+        <button data-act="bank.clear">清空替换列表</button>
+      </div>
+      <div class="paths" id="bankInfo">还没有导入 nbnk。</div>
+      <div class="fmtsel">
+        <label class="inline"><input type="checkbox" id="bankOnlyThis" checked>
+          捕获面板只显示这个 bank 的事件</label>
+      </div>
+
+      <div class="tablewrap small">
+        <table>
+          <thead><tr><th>序号</th><th>名称</th><th>media id</th><th>大小</th><th>替换为</th><th class="right">操作</th></tr></thead>
+          <tbody id="bankBody"></tbody>
+        </table>
+      </div>
+      <div class="cfoot" id="bankFoot"></div>
     </div>
   </div>
 </div>

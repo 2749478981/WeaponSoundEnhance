@@ -556,8 +556,11 @@ function wemLabel(r) {
 }
 function histFiltered(H) {
   // 按当前选中武器隔离：选了具体武器只显示该武器的捕获
-  if (ST.weaponFilter >= 0) return H.filter(r => r.weapon === ST.weaponFilter);
-  return H;
+  let out = H;
+  if (ST.weaponFilter >= 0) out = out.filter(r => r.weapon === ST.weaponFilter);
+  // 导入了 nbnk 且勾选"只看这个 bank"时，只显示该 bank 的事件
+  if (bankFilterOn()) out = out.filter(r => (r.bank || '') === BANK.name);
+  return out;
 }
 
 function setWemView(v) {
@@ -767,6 +770,118 @@ async function addWemRecord(r) {
     if (res && res.index != null) openEditor(res.index);
     toast('已添加 wem 条目（触发方式 = media id，配好音效后记得保存）', 'ok');
   } catch (e) { toast('添加失败：' + e.message, 'err'); }
+}
+
+/* ===========================================================================
+   音效替换（nbnk Mod，实验性）
+   流程：导入 nbnk → 为某个 media 选音频 → 转 wem（ffmpeg+Wwise）→ 替换进 bank → 导出
+   =========================================================================== */
+const BANK = { path: '', name: '', media: [], reps: {} };   // reps: mediaId -> 音频路径
+
+function bankRepCount() { return Object.keys(BANK.reps).length; }
+
+function renderBank() {
+  const info = $('#bankInfo');
+  const tb = $('#bankBody');
+  tb.innerHTML = '';
+  if (!BANK.path) {
+    info.textContent = '还没有导入 nbnk。点「导入 nbnk…」选一个 sound bank 文件。';
+    $('#bankFoot').textContent = '';
+    return;
+  }
+  info.textContent = `已导入：${BANK.name}.nbnk（${BANK.media.length} 条 media）\n${BANK.path}\n` +
+    `已选替换：${bankRepCount()} 条 · 导出目录：plugins\\WeaponSoundEnhance\\wemmod\\（可改）`;
+  const show = BANK.media.slice(0, 300);
+  show.forEach(m => {
+    const rep = BANK.reps[m.id] || '';
+    tb.appendChild(h('tr', {},
+      h('td', { class: 'lmt' }, String(m.seqInBank || m.seq)),
+      h('td', {}, h('span', { class: 'nm', title: m.name || '', text: m.name || '（无映射名）' })),
+      h('td', { class: 'fsm', style: 'color:var(--c-blue)' }, String(m.id)),
+      h('td', { class: 'lmt' }, String(m.size)),
+      h('td', { title: rep, style: 'max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' },
+        rep ? rep.split(/[\\/]/).pop() : '—'),
+      h('td', {}, h('div', { class: 'acts' },
+        h('button', { onclick: async () => {
+          const r = await Backend.call('audio.pickMulti', {});
+          if (r.cancelled || !r.files || !r.files.length) return;
+          BANK.reps[m.id] = r.files[0];
+          renderBank();
+        } }, '选音频'),
+        rep ? h('button', { class: 'del', onclick: () => { delete BANK.reps[m.id]; renderBank(); } }, '取消') : null))));
+  });
+  $('#bankFoot').textContent =
+    `${BANK.media.length} 条 media（显示前 ${show.length} 条）· 已选 ${bankRepCount()} 条替换`;
+}
+
+ACTIONS['win.bank'] = () => { openModal('#mBank'); renderBank(); };
+
+ACTIONS['bank.pick'] = async () => {
+  const r = await Backend.call('bank.pick', {});
+  if (r.cancelled || !r.path) return;
+  try {
+    const info = await Backend.call('bank.inspect', { path: r.path });
+    BANK.path = r.path;
+    BANK.name = info.bank;
+    BANK.media = info.media || [];
+    BANK.reps = {};
+    renderBank();
+    if (!info.hasWwise)
+      toast('没检测到 Wwise —— 生成 wem 需要它（可只替换已经是 wem 的文件）', 'err');
+    else toast(`已导入 ${info.bank}.nbnk（${BANK.media.length} 条 media）`, 'ok');
+  } catch (e) { toast('导入失败：' + e.message, 'err'); }
+};
+
+ACTIONS['bank.clear'] = () => { BANK.reps = {}; renderBank(); toast('已清空替换列表'); };
+
+ACTIONS['bank.openOut'] = async () => {
+  try { await Backend.call('sound.openDir', {}); } catch (e) { toast('打不开：' + e.message, 'err'); }
+};
+
+ACTIONS['bank.export'] = async () => {
+  if (!BANK.path) { toast('先导入 nbnk', 'err'); return; }
+  const mediaIds = Object.keys(BANK.reps);
+  if (!mediaIds.length) { toast('还没有选任何替换音效', 'err'); return; }
+  const btn = $('#bankExportBtn');
+  btn.disabled = true;
+  try {
+    // 1) 转 wem（同一个进度里按需转换；已是 .wem 的直接用）
+    const directWem = {};       // mediaId -> wem 路径（本来就是 wem）
+    const needConv = [];        // 需要转换的音频
+    mediaIds.forEach(id => {
+      const f = BANK.reps[id];
+      if (/\.wem$/i.test(f)) directWem[id] = f;
+      else needConv.push({ id, file: f });
+    });
+    const wemOf = Object.assign({}, directWem);
+    if (needConv.length) {
+      toast(`正在转换 ${needConv.length} 个音频为 wem…（可能要几十秒）`, 'ok');
+      const res = await Backend.call('wem.convert', { files: needConv.map(x => x.file) });
+      const wems = res.wems || [];
+      // 按文件名（不含扩展名）配对
+      needConv.forEach(x => {
+        const base = x.file.split(/[\\/]/).pop().replace(/\.[^.]+$/, '').toLowerCase();
+        const hit = wems.find(w => w.split(/[\\/]/).pop().replace(/\.wem$/i, '').toLowerCase() === base);
+        if (hit) wemOf[x.id] = hit;
+      });
+    }
+    const reps = mediaIds.filter(id => wemOf[id]).map(id => ({ media: parseInt(id, 10), wem: wemOf[id] }));
+    if (!reps.length) { toast('转换后没有可用的 wem', 'err'); return; }
+
+    // 2) 导出 nbnk（写新文件，不动游戏原文件）
+    const out = await Backend.call('bank.export', { path: BANK.path, replacements: reps });
+    toast(`已导出 ${out.replaced} 条替换 → ${out.out}`, 'ok');
+    $('#bankInfo').textContent =
+      `导出完成：${out.out}\n把该 nbnk 放到 游戏目录\\nativePC\\sound\\wwise\\Windows\\ 下即可生效。`;
+  } catch (e) {
+    toast('导出失败：' + e.message, 'err');
+  } finally { btn.disabled = false; }
+};
+
+// 捕获面板按 bank 过滤（导入 bank 后可只看它的事件）
+function bankFilterOn() {
+  const cb = $('#bankOnlyThis');
+  return !!(cb && cb.checked && BANK.name);
 }
 
 /* ===========================================================================

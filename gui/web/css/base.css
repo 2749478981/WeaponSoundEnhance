@@ -307,6 +307,10 @@ button{white-space:nowrap}
 .badge.wem{background:rgba(0,120,255,.15); color:var(--c-blue)}
 /* wem 捕获记录（WWise 音效播放）：蓝色系区分于派生记录 */
 .hrec.wem{border-left:3px solid var(--c-blue); padding-left:6px}
+/* 实验性功能提示条（音效替换面板等） */
+.note.exp{background:rgba(255,159,10,.10); border:var(--bw) solid var(--c-amber);
+          color:var(--text); border-radius:8px; padding:9px 11px; font-size:11.5px; line-height:1.7}
+.fmtsel{margin:8px 0 4px; font-size:12px}
 .hrec.wem .ids{color:var(--c-blue)}
 .live-row.wem{border-left:3px solid var(--c-blue); padding-left:8px}
 /* 编辑器里的 wem 条目信息条 */

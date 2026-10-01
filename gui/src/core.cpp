@@ -21,6 +21,7 @@
 
 #include "core.h"
 #include "app.h"        // kWseGuiVersion（版本号只此一处，避免两份对不上）
+#include "bankmod.h"    // nbnk 音效替换（Mod 制作）
 #include "config.h"
 #include "fsmdb.h"
 #include "fsutil.h"
@@ -3794,6 +3795,122 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
             JVal d = JVal::obj();
             d.set("cleared", JVal(true));
             d.set("history", im->HistoryJson());
+            return OkJson(d);
+        }
+
+        // ---------------- nbnk Mod 制作（导入 bank / 替换 wem / 导出）----------------
+        // 说明：这是"实验性"功能。流程 = 导入 nbnk → 选要替换的 media →
+        // 音频(wav/mp3/…)经 ffmpeg + WwiseConsole 转成 wem → 替换进 bank → 导出到 nativePC。
+        if (method == "bank.pick") {
+            std::vector<std::string> multi;
+            const std::string p1 = OpenFileDialog(OwnerOf(owner),
+                L"Wwise SoundBank (*.nbnk)\0*.nbnk\0所有文件 (*.*)\0*.*\0", nullptr, L"nbnk",
+                false, multi);
+            JVal d = JVal::obj();
+            d.set("cancelled", JVal(p1.empty()));
+            d.set("path", JVal(ToSlash(p1)));
+            return OkJson(d);
+        }
+
+        if (method == "audio.pickMulti") {
+            std::vector<std::string> multi;
+            const std::string p1 = OpenFileDialog(OwnerOf(owner),
+                L"音频文件 (*.wav;*.mp3;*.ogg;*.flac)\0*.wav;*.mp3;*.ogg;*.flac\0"
+                L"所有文件 (*.*)\0*.*\0", nullptr, L"wav", true, multi);
+            JVal arr = JVal::arr();
+            if (!p1.empty()) arr.push(JVal(ToSlash(p1)));
+            for (std::size_t i = 0; i < multi.size(); ++i) arr.push(JVal(ToSlash(multi[i])));
+            JVal d = JVal::obj();
+            d.set("files", arr);
+            d.set("cancelled", JVal(arr.a.empty()));
+            return OkJson(d);
+        }
+
+        if (method == "bank.inspect") {
+            const std::string path = Trim(p.optStr("path"));
+            if (path.empty()) return ErrJson("缺少 path");
+            bankmod::BankFile bf;
+            std::string err;
+            if (!bankmod::LoadBank(Utf8ToWide(path), bf, err)) return ErrJson(err);
+            JVal arr = JVal::arr();
+            for (std::size_t i = 0; i < bf.media.size(); ++i) {
+                const bankmod::MediaEntry& m = bf.media[i];
+                JVal o = JVal::obj();
+                o.set("id", JVal((long long)m.id));
+                o.set("seq", JVal(m.seq));
+                o.set("size", JVal((int)m.size));
+                // 名字来自 mediaids 映射（有就有，没有就空）
+                const std::unordered_map<int, std::string>::const_iterator it = im->wemNames.find((int)m.id);
+                o.set("name", JVal(it != im->wemNames.end() ? it->second : std::string()));
+                // 序号真值（真值表：id -> bank/第N个）
+                const std::unordered_map<int, std::pair<std::string, int>>::const_iterator sit =
+                    im->wemSeqs.find((int)m.id);
+                if (sit != im->wemSeqs.end()) o.set("seqInBank", JVal(sit->second.second));
+                arr.push(o);
+            }
+            JVal d = JVal::obj();
+            d.set("bank", JVal(bf.name));
+            d.set("path", JVal(ToSlash(path)));
+            d.set("count", JVal((int)bf.media.size()));
+            d.set("media", arr);
+            d.set("hasWwise", JVal(!bankmod::FindWwiseConsole().empty()));
+            return OkJson(d);
+        }
+
+        if (method == "wem.convert") {
+            // 音频文件（任意格式）→ wem（ffmpeg + WwiseConsole，本地完成）
+            const JVal* jf = p.find("files");
+            if (!jf || !jf->isArr() || jf->a.empty()) return ErrJson("缺少 files");
+            std::vector<std::wstring> files;
+            for (std::size_t i = 0; i < jf->a.size(); ++i)
+                files.push_back(Utf8ToWide(jf->a[i].asStr()));
+            // Wwise 工程：GUI 目录下的 wemkit\wavtowemscript.wproj（随包分发）
+            std::wstring proj = Utf8ToWide(im->exeDir) + L"wemkit\\wavtowemscript\\wavtowemscript.wproj";
+            if (::GetFileAttributesW(proj.c_str()) == INVALID_FILE_ATTRIBUTES)
+                return ErrJson("缺少 wemkit 工程（wemkit\\wavtowemscript\\wavtowemscript.wproj）");
+            // ffmpeg：wemkit\ffmpeg.exe → PATH（仅非 wav 输入才需要）
+            std::wstring ff = Utf8ToWide(im->exeDir) + L"wemkit\\ffmpeg.exe";
+            if (::GetFileAttributesW(ff.c_str()) == INVALID_FILE_ATTRIBUTES) ff.clear();
+            std::wstring work = Utf8ToWide(im->exeDir) + L"wemkit\\tmp";
+            std::vector<std::wstring> wems;
+            std::string log;
+            if (!bankmod::ConvertToWem(files, proj, ff, work, wems, log)) return ErrJson(log);
+            JVal arr = JVal::arr();
+            for (const std::wstring& w : wems) arr.push(JVal(Utf8FromWide(w)));
+            JVal d = JVal::obj();
+            d.set("wems", arr);
+            d.set("log", JVal(log));
+            return OkJson(d);
+        }
+
+        if (method == "bank.export") {
+            const std::string path = Trim(p.optStr("path"));
+            const std::string outDir = Trim(p.optStr("outDir"));
+            if (path.empty()) return ErrJson("缺少 path");
+            const JVal* jr = p.find("replacements");
+            if (!jr || !jr->isArr() || jr->a.empty()) return ErrJson("还没有要替换的音效");
+            bankmod::BankFile bf;
+            std::string err;
+            if (!bankmod::LoadBank(Utf8ToWide(path), bf, err)) return ErrJson(err);
+
+            std::vector<std::pair<uint32_t, std::wstring>> reps;
+            for (std::size_t i = 0; i < jr->a.size(); ++i) {
+                const JVal& o = jr->a[i];
+                const long long media = o.find("media") ? o.find("media")->asInt(0) : 0;
+                const std::string wem = o.find("wem") ? o.find("wem")->asStr() : std::string();
+                if (media <= 0 || wem.empty()) continue;
+                reps.push_back(std::make_pair((uint32_t)media, Utf8ToWide(wem)));
+            }
+            if (reps.empty()) return ErrJson("替换列表为空");
+
+            std::wstring outDirW = outDir.empty() ? (Utf8ToWide(im->BaseDir()) + L"wemmod")
+                                                  : Utf8ToWide(outDir);
+            ::CreateDirectoryW(outDirW.c_str(), nullptr);
+            const std::wstring outPath = outDirW + L"\\" + Utf8ToWide(bf.name) + L".nbnk";
+            if (!bankmod::ExportBank(bf, reps, outPath, err)) return ErrJson(err);
+            JVal d = JVal::obj();
+            d.set("out", JVal(ToSlash(Utf8FromWide(outPath))));
+            d.set("replaced", JVal((int)reps.size()));
             return OkJson(d);
         }
 
