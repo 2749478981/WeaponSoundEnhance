@@ -814,69 +814,6 @@ function renderBank() {
     `${BANK.media.length} 条 media（显示前 ${show.length} 条）· 已选 ${bankRepCount()} 条替换`;
 }
 
-ACTIONS['win.bank'] = () => { openModal('#mBank'); renderBank(); };
-
-ACTIONS['bank.pick'] = async () => {
-  const r = await Backend.call('bank.pick', {});
-  if (r.cancelled || !r.path) return;
-  try {
-    const info = await Backend.call('bank.inspect', { path: r.path });
-    BANK.path = r.path;
-    BANK.name = info.bank;
-    BANK.media = info.media || [];
-    BANK.reps = {};
-    renderBank();
-    if (!info.hasWwise)
-      toast('没检测到 Wwise —— 生成 wem 需要它（可只替换已经是 wem 的文件）', 'err');
-    else toast(`已导入 ${info.bank}.nbnk（${BANK.media.length} 条 media）`, 'ok');
-  } catch (e) { toast('导入失败：' + e.message, 'err'); }
-};
-
-ACTIONS['bank.clear'] = () => { BANK.reps = {}; renderBank(); toast('已清空替换列表'); };
-
-ACTIONS['bank.openOut'] = async () => {
-  try { await Backend.call('sound.openDir', {}); } catch (e) { toast('打不开：' + e.message, 'err'); }
-};
-
-ACTIONS['bank.export'] = async () => {
-  if (!BANK.path) { toast('先导入 nbnk', 'err'); return; }
-  const mediaIds = Object.keys(BANK.reps);
-  if (!mediaIds.length) { toast('还没有选任何替换音效', 'err'); return; }
-  const btn = $('#bankExportBtn');
-  btn.disabled = true;
-  try {
-    // 1) 转 wem（同一个进度里按需转换；已是 .wem 的直接用）
-    const directWem = {};       // mediaId -> wem 路径（本来就是 wem）
-    const needConv = [];        // 需要转换的音频
-    mediaIds.forEach(id => {
-      const f = BANK.reps[id];
-      if (/\.wem$/i.test(f)) directWem[id] = f;
-      else needConv.push({ id, file: f });
-    });
-    const wemOf = Object.assign({}, directWem);
-    if (needConv.length) {
-      toast(`正在转换 ${needConv.length} 个音频为 wem…（可能要几十秒）`, 'ok');
-      const res = await Backend.call('wem.convert', { files: needConv.map(x => x.file) });
-      const wems = res.wems || [];
-      // 按文件名（不含扩展名）配对
-      needConv.forEach(x => {
-        const base = x.file.split(/[\\/]/).pop().replace(/\.[^.]+$/, '').toLowerCase();
-        const hit = wems.find(w => w.split(/[\\/]/).pop().replace(/\.wem$/i, '').toLowerCase() === base);
-        if (hit) wemOf[x.id] = hit;
-      });
-    }
-    const reps = mediaIds.filter(id => wemOf[id]).map(id => ({ media: parseInt(id, 10), wem: wemOf[id] }));
-    if (!reps.length) { toast('转换后没有可用的 wem', 'err'); return; }
-
-    // 2) 导出 nbnk（写新文件，不动游戏原文件）
-    const out = await Backend.call('bank.export', { path: BANK.path, replacements: reps });
-    toast(`已导出 ${out.replaced} 条替换 → ${out.out}`, 'ok');
-    $('#bankInfo').textContent =
-      `导出完成：${out.out}\n把该 nbnk 放到 游戏目录\\nativePC\\sound\\wwise\\Windows\\ 下即可生效。`;
-  } catch (e) {
-    toast('导出失败：' + e.message, 'err');
-  } finally { btn.disabled = false; }
-};
 
 // 捕获面板按 bank 过滤（导入 bank 后可只看它的事件）
 function bankFilterOn() {
@@ -1553,6 +1490,71 @@ const ACTIONS = {
     ED.draft.conds.push({ expr: 'dmg>0', atEnd: false, pool: [] });
     fillConds();
   },
+};
+
+/* ---- 音效替换（nbnk Mod）：必须在 const ACTIONS 之后注册，否则 TDZ 报错 ---- */
+ACTIONS['win.bank'] = () => { openModal('#mBank'); renderBank(); };
+
+ACTIONS['bank.pick'] = async () => {
+  const r = await Backend.call('bank.pick', {});
+  if (r.cancelled || !r.path) return;
+  try {
+    const info = await Backend.call('bank.inspect', { path: r.path });
+    BANK.path = r.path;
+    BANK.name = info.bank;
+    BANK.media = info.media || [];
+    BANK.reps = {};
+    renderBank();
+    if (!info.hasWwise)
+      toast('没检测到 Wwise —— 生成 wem 需要它（可只替换已经是 wem 的文件）', 'err');
+    else toast(`已导入 ${info.bank}.nbnk（${BANK.media.length} 条 media）`, 'ok');
+  } catch (e) { toast('导入失败：' + e.message, 'err'); }
+};
+
+ACTIONS['bank.clear'] = () => { BANK.reps = {}; renderBank(); toast('已清空替换列表'); };
+
+ACTIONS['bank.openOut'] = async () => {
+  try { await Backend.call('sound.openDir', {}); } catch (e) { toast('打不开：' + e.message, 'err'); }
+};
+
+ACTIONS['bank.export'] = async () => {
+  if (!BANK.path) { toast('先导入 nbnk', 'err'); return; }
+  const mediaIds = Object.keys(BANK.reps);
+  if (!mediaIds.length) { toast('还没有选任何替换音效', 'err'); return; }
+  const btn = $('#bankExportBtn');
+  btn.disabled = true;
+  try {
+    // 1) 转 wem（同一个进度里按需转换；已是 .wem 的直接用）
+    const directWem = {};       // mediaId -> wem 路径（本来就是 wem）
+    const needConv = [];        // 需要转换的音频
+    mediaIds.forEach(id => {
+      const f = BANK.reps[id];
+      if (/\.wem$/i.test(f)) directWem[id] = f;
+      else needConv.push({ id, file: f });
+    });
+    const wemOf = Object.assign({}, directWem);
+    if (needConv.length) {
+      toast(`正在转换 ${needConv.length} 个音频为 wem…（可能要几十秒）`, 'ok');
+      const res = await Backend.call('wem.convert', { files: needConv.map(x => x.file) });
+      const wems = res.wems || [];
+      // 按文件名（不含扩展名）配对
+      needConv.forEach(x => {
+        const base = x.file.split(/[\\/]/).pop().replace(/\.[^.]+$/, '').toLowerCase();
+        const hit = wems.find(w => w.split(/[\\/]/).pop().replace(/\.wem$/i, '').toLowerCase() === base);
+        if (hit) wemOf[x.id] = hit;
+      });
+    }
+    const reps = mediaIds.filter(id => wemOf[id]).map(id => ({ media: parseInt(id, 10), wem: wemOf[id] }));
+    if (!reps.length) { toast('转换后没有可用的 wem', 'err'); return; }
+
+    // 2) 导出 nbnk（写新文件，不动游戏原文件）
+    const out = await Backend.call('bank.export', { path: BANK.path, replacements: reps });
+    toast(`已导出 ${out.replaced} 条替换 → ${out.out}`, 'ok');
+    $('#bankInfo').textContent =
+      `导出完成：${out.out}\n把该 nbnk 放到 游戏目录\\nativePC\\sound\\wwise\\Windows\\ 下即可生效。`;
+  } catch (e) {
+    toast('导出失败：' + e.message, 'err');
+  } finally { btn.disabled = false; }
 };
 
 /* ===========================================================================
