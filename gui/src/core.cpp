@@ -1244,6 +1244,7 @@ struct Core::Impl {
     // 循环音检测（行为判定）：4 秒内同一 media 出现 >= 4 次 → 判为循环音并静默 8 秒
     struct LoopStat { unsigned long long winStart = 0; int count = 0; unsigned long long muteUntil = 0; };
     std::unordered_map<int, LoopStat> wemLoops;
+    std::vector<unsigned char> playBuf;   // GUI 内试听：解码后的 wav（播放期间必须保活）
     std::ifstream wemStream;
     unsigned long long wemLastPoll = 0;
     long long lastWemMedia = -2;                                   // 推送去重
@@ -3805,6 +3806,90 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
         // ---------------- nbnk Mod 制作（导入 bank / 替换 wem / 导出）----------------
         // 说明：这是"实验性"功能。流程 = 导入 nbnk → 选要替换的 media →
         // 音频(wav/mp3/…)经 ffmpeg + WwiseConsole 转成 wem → 替换进 bank → 导出到 nativePC。
+        if (method == "bank.play") {
+            // ★ GUI 内播放：抽 wem → vgmstream-cli 解码到内存(标准 wav) → Windows PlaySound
+            //   （不调用任何外部播放器）
+            const std::string path = Trim(p.optStr("path"));
+            const long long media = p.find("media") ? p.find("media")->asInt(0) : 0;
+            if (path.empty() || media <= 0) return ErrJson("缺少 path/media");
+            bankmod::BankFile bf;
+            std::string err;
+            if (!bankmod::LoadBank(Utf8ToWide(path), bf, err)) return ErrJson(err);
+            std::vector<uint8_t> wem;
+            if (!bankmod::ExtractWem(bf, (uint32_t)media, wem)) return ErrJson("这条 media 没有内嵌 wem");
+
+            // vgmstream-cli.exe 随包分发（wemkit\vgmstream\）；开发目录兜底 tools\vgmstream
+            std::wstring cli = Utf8ToWide(im->exeDir) + L"wemkit\\vgmstream\\vgmstream-cli.exe";
+            if (::GetFileAttributesW(cli.c_str()) == INVALID_FILE_ATTRIBUTES)
+                cli = Utf8ToWide(im->exeDir) + L"tools\\vgmstream\\vgmstream-cli.exe";
+            if (::GetFileAttributesW(cli.c_str()) == INVALID_FILE_ATTRIBUTES)
+                return ErrJson("缺少 wemkit\\vgmstream\\vgmstream-cli.exe（随包分发的 wem 解码器）");
+
+            std::wstring tmpDir = Utf8ToWide(im->exeDir) + L"wemkit\\tmp";
+            ::CreateDirectoryW(tmpDir.c_str(), nullptr);
+            wchar_t num[32] = {};
+            ::swprintf_s(num, L"%lld", media);
+            const std::wstring wemFile = tmpDir + L"\\play_" + num + L".wem";
+            {
+                HANDLE h = ::CreateFileW(wemFile.c_str(), GENERIC_WRITE, 0, nullptr,
+                                         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                if (h == INVALID_HANDLE_VALUE) return ErrJson("无法写临时 wem");
+                DWORD wr0 = 0;
+                ::WriteFile(h, wem.data(), (DWORD)wem.size(), &wr0, nullptr);
+                ::CloseHandle(h);
+            }
+
+            SECURITY_ATTRIBUTES sa{};
+            sa.nLength = sizeof(sa);
+            sa.bInheritHandle = TRUE;
+            HANDLE rd = nullptr, wr = nullptr;
+            if (!::CreatePipe(&rd, &wr, &sa, 1 << 20)) return ErrJson("创建管道失败");
+            ::SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+            STARTUPINFOW si{};
+            si.cb = sizeof(si);
+            si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+            si.wShowWindow = SW_HIDE;
+            si.hStdOutput = wr;
+            si.hStdError = wr;
+            PROCESS_INFORMATION pi{};
+            std::wstring cmd = L"\"" + cli + L"\" -p \"" + wemFile + L"\"";
+            std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+            buf.push_back(0);
+            const BOOL ok = ::CreateProcessW(nullptr, buf.data(), nullptr, nullptr, TRUE,
+                                             CREATE_NO_WINDOW, nullptr, tmpDir.c_str(), &si, &pi);
+            ::CloseHandle(wr);
+            std::vector<unsigned char> wav;
+            if (ok) {
+                ::CloseHandle(pi.hThread);
+                unsigned char chunk[65536];
+                DWORD got = 0;
+                while (::ReadFile(rd, chunk, sizeof(chunk), &got, nullptr) && got > 0)
+                    wav.insert(wav.end(), chunk, chunk + got);
+                ::WaitForSingleObject(pi.hProcess, 15000);
+                ::CloseHandle(pi.hProcess);
+            }
+            ::CloseHandle(rd);
+            if (wav.size() < 44) return ErrJson("wem 解码失败（vgmstream 没有输出 wav）");
+
+            ::PlaySoundW(nullptr, nullptr, 0);      // 停掉上一次
+            im->playBuf.swap(wav);                  // 缓冲区要在播放期间保活
+            const BOOL played = ::PlaySoundW((LPCWSTR)im->playBuf.data(), nullptr,
+                                             SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+            JVal d = JVal::obj();
+            d.set("played", JVal(played != FALSE));
+            d.set("bytes", JVal((int)im->playBuf.size()));
+            d.set("media", JVal(media));
+            return OkJson(d);
+        }
+
+        if (method == "bank.stopPlay") {
+            ::PlaySoundW(nullptr, nullptr, 0);
+            im->playBuf.clear();
+            JVal d = JVal::obj();
+            d.set("stopped", JVal(true));
+            return OkJson(d);
+        }
+
         if (method == "bank.audition") {
             // 试听：把这条 media 的 wem 抽到临时文件，用播放器打开
             // （wem 系统没有默认关联，所以优先用用户指定的播放器，例如 foobar2000 + vgmstream）

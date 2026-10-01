@@ -777,6 +777,7 @@ async function addWemRecord(r) {
    流程：导入 nbnk → 为某个 media 选音频 → 转 wem（ffmpeg+Wwise）→ 替换进 bank → 导出
    =========================================================================== */
 const BANK = { path: '', name: '', media: [], reps: {} };   // reps: mediaId -> 音频路径
+let playingMedia = 0;                                       // 正在 GUI 内播放的 media（0=无）
 
 function bankRepCount() { return Object.keys(BANK.reps).length; }
 
@@ -802,12 +803,17 @@ function renderBank() {
       h('td', { title: rep, style: 'max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' },
         rep ? rep.split(/[\\/]/).pop() : '—'),
       h('td', {}, h('div', { class: 'acts' },
-        h('button', { title: '把这条 wem 抽出来用播放器试听（推荐 foobar2000 + vgmstream）', onclick: async () => {
+        h('button', { title: '在 GUI 内直接播放这条 wem', onclick: async (ev) => {
           try {
-            const r = await Backend.call('bank.audition', { path: BANK.path, media: m.id });
-            if (!r.usedPlayer) toast('已抽出 wem（未设置试听播放器，交给系统打开）：' + r.file, 'ok');
-          } catch (e) { toast('试听失败：' + e.message, 'err'); }
-        } }, '试听'),
+            const r = await Backend.call('bank.play', { path: BANK.path, media: m.id });
+            if (!r.played) toast('播放失败（解码器可能没就位）', 'err');
+            else { playingMedia = m.id; toast(`播放中：media ${m.id}`, 'ok'); }
+          } catch (e) { toast('播放失败：' + e.message, 'err'); }
+        } }, '播放'),
+        h('button', { title: '停止播放', onclick: async () => {
+          try { await Backend.call('bank.stopPlay', {}); } catch (e) {}
+          playingMedia = 0;
+        } }, '停止'),
         h('button', { onclick: async () => {
           const r = await Backend.call('audio.pickMulti', {});
           if (r.cancelled || !r.files || !r.files.length) return;
