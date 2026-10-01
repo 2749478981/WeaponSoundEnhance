@@ -1505,23 +1505,9 @@ const ACTIONS = {
 };
 
 /* ---- 音效替换（nbnk Mod）：必须在 const ACTIONS 之后注册，否则 TDZ 报错 ---- */
-ACTIONS['player.pick'] = async () => {
-  const r = await Backend.call('player.pick', {});
-  if (r && r.playerPath) toast('试听播放器已设为：' + r.playerPath, 'ok');
-  showPlayerPath(r);
-};
-function showPlayerPath(prefs) {
-  const el = $('#playerPath');
-  if (!el) return;
-  const p = prefs && prefs.playerPath ? prefs.playerPath : '';
-  el.textContent = p ? ('当前：' + p) : '（未设置 —— 试听会交给系统打开 .wem）';
-  el.title = p;
-}
-
 ACTIONS['win.bank'] = () => {
   openModal('#mBank');
   renderBank();
-  Backend.call('ui.get', {}).then(showPlayerPath).catch(() => {});
 };
 
 ACTIONS['bank.pick'] = async () => {
