@@ -193,6 +193,7 @@ std::int32_t   gFsm = -1;
 std::int32_t   gWeapon = -1;
 std::int32_t   gWeaponId = -1;
 std::int32_t   gGauge = -1;              // long-sword spirit gauge level 0..3, -1 unknown
+std::uintptr_t gEntity = 0;              // 玩家实体指针（Refresh 时更新；layer 探针用）
 
 std::uint32_t gGaugePtrOff = 0x76B0;     // LS spirit object: *(entity + off)
 std::uint32_t gGaugeValOff = 0x2370;     // gauge level value: *(obj + off)
@@ -254,6 +255,7 @@ void Refresh()
     const std::uintptr_t entity = mem::Walk(manager, c0, 1);
     if (!entity) return;
 
+    gEntity = entity;   // 暴露给 layer 探针（定位装瓶/平射所在的 layer 字段）
     gFsm       = mem::ReadI32(entity + 0x6278, -1);
     gFsmTarget = mem::ReadI32(entity + gFsmTargetOff, -1);
 
@@ -763,6 +765,23 @@ void PollWemEvents(std::mt19937& rng);             // 定义见下
 // 是否启用"读磁盘日志"兜底通道（hook 生效时关掉，避免同一事件触发两次）
 std::atomic<bool> g_useLogWemFallback{false};
 
+// ---------------------------------------------------------------------------
+//  ★ layer 探针：装瓶/平射这类动作在"层"(layer) 上，主状态字段(entity+0x6278)
+//  读不到。做法：wem 事件（武器 bank）到达时"武装"，下一帧把玩家实体关键区段
+//  与上一快照对比，把**变化的字段**写进 WeaponSoundEnhance_layer.log。
+//  做几次装瓶/解瓶就能从变化里认出 layer 的 fsm/lmt 字段。
+//  只在 ini LayerProbe=1 时工作（默认关，零开销）。
+// ---------------------------------------------------------------------------
+std::atomic<bool> g_layerProbeArmed{false};
+std::atomic<int>  g_layerProbeMedia{-1};
+int               gLayerProbeEnabled = 0;   // ini LayerProbe=1 打开（默认关）
+
+// 武装探针（由 WemEventSink 在武器 bank 事件时调用）
+void ArmLayerProbe(int media) {
+    g_layerProbeMedia.store(media, std::memory_order_relaxed);
+    g_layerProbeArmed.store(true, std::memory_order_release);
+}
+
 // ★ 事件出口（实现见文件后部 FireEntry 之后：依赖 gAttacks / FireEntry）
 void WemEventSink(uint32_t media_id, uint32_t event_id, uint32_t playing_id,
                   const char* bank, const char* name);
@@ -1109,6 +1128,41 @@ int WemWeaponFromBank(const std::string& bank)
     for (const auto& t : tab)
         if (low.compare(0, std::strlen(t.pre), t.pre) == 0) return t.w;
     return -1;
+}
+
+// ---------------------------------------------------------------------------
+//  layer 探针实现：把 entity+0x6200..0x6800 与上次快照对比，输出变化的字段
+//  （装瓶/平射的真实动作状态应该落在这里的某个偏移上）
+// ---------------------------------------------------------------------------
+void DumpLayerProbe() {
+    if (!g_layerProbeArmed.exchange(false, std::memory_order_acq_rel)) return;
+    if (!gLayerProbeEnabled) return;
+    const std::uintptr_t ent = player::gEntity;
+    if (!ent) return;
+
+    constexpr std::uintptr_t kBase = 0x6200;
+    constexpr std::size_t    kSpan = 0x600;      // 0x6200..0x6800，含 0x6278
+    static std::vector<int> s_prev;
+    std::vector<int> cur(kSpan / 4, 0);
+    for (std::size_t i = 0; i < cur.size(); ++i)
+        cur[i] = mem::ReadI32(ent + kBase + i * 4, 0);
+
+    const int media = g_layerProbeMedia.load();
+    if (!s_prev.empty()) {
+        char buf[2048] = {};
+        int n = _snprintf_s(buf, _TRUNCATE,
+                            "[layer] media=%d fsm=%d fsmtgt=%d lmt=%d weapon=%d | 变化:",
+                            media, player::gFsm, player::gFsmTarget, player::gLmt, player::gWeapon);
+        int changes = 0;
+        for (std::size_t i = 0; i < cur.size() && n > 0 && n < (int)sizeof(buf) - 40; ++i) {
+            if (cur[i] == s_prev[i]) continue;
+            n += _snprintf_s(buf + n, sizeof(buf) - n, _TRUNCATE, " +0x%llX:%d->%d",
+                             (unsigned long long)(kBase + i * 4), s_prev[i], cur[i]);
+            if (++changes >= 40) break;
+        }
+        if (changes) Log("%s", buf);
+    }
+    s_prev.swap(cur);
 }
 
 // 增量读 SonarAudio.log，把"游戏正在播放的 wem"变成条目触发。
@@ -1724,6 +1778,7 @@ void LoadConfig()
                 else if (key == "Hotkeys") g_hotkeysEnabled = std::atoi(val.c_str()) != 0;
                 else if (key == "PersistActiveCombo") gPersistActiveCombo = std::atoi(val.c_str()) != 0;
                 else if (key == "WatchMode") gWatchMode = ClampInt(std::atoi(val.c_str()), 0, 3);
+                else if (key == "LayerProbe") gLayerProbeEnabled = std::atoi(val.c_str()) != 0;
                 else if (key == "Debug") gDebug = std::atoi(val.c_str()) != 0;
                 else if (key == "GaugePtrOff") { std::uintptr_t v = ParseHex(val); if (v) gGaugePtrOff = (std::uint32_t)v; }
                 else if (key == "GaugeValOff") { std::uintptr_t v = ParseHex(val); if (v) gGaugeValOff = (std::uint32_t)v; }
@@ -2490,6 +2545,10 @@ void WemEventSink(uint32_t media_id, uint32_t event_id, uint32_t playing_id,
     (void)event_id; (void)playing_id; (void)name;
     if (media_id == 0) return;
 
+    // 武器 bank 的 wem 事件 → 武装 layer 探针（下一帧 dump 实体差异）
+    if (bank && (bank[0] == 'w' || bank[0] == 'W') && (bank[1] == 'p' || bank[1] == 'P'))
+        ArmLayerProbe((int)media_id);
+
     // 1) 只在真正带玩家的场景里触发（标题界面 / 菜单：gWeapon 读不到 → 直接忽略）
     if (player::gWeapon < 0 || player::gWeapon > 13) return;
 
@@ -2793,6 +2852,7 @@ DWORD WINAPI WorkerProc(LPVOID)
 
         PollChatCommand();
         HandleGuiRequests();   // GUI 按钮写的标记文件 → 立即重载 / 停止音效
+        DumpLayerProbe();      // layer 探针（ini LayerProbe=1 时）：wem 事件后 dump 实体差异
 
         const std::uint64_t nowMs = ::GetTickCount64();
         if (firstState || (nowMs - lastHeartbeat >= 4000)) {

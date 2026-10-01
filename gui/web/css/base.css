@@ -150,7 +150,7 @@ input::placeholder{color:var(--dim)}
 input.num{width:92px; font-family:ui-monospace,Consolas,monospace}
 
 /* ---------- 主体 ---------- */
-main{display:grid; grid-template-columns:208px 1fr 340px; gap:10px; flex:1; min-height:0}
+main{display:grid; grid-template-columns:200px minmax(0,1fr) 420px; gap:10px; flex:1; min-height:0}
 /* ★ Grid/Flex 子项默认 min-width:auto —— 中间列的表格内容会把这一列撑到
    "内容最小宽度"，1fr 就缩不下去，整个网格溢出视口，第三列被顶到屏幕外
    （表现：右边栏不见了、工具栏也不换行）。必须显式 min-width:0 才能正确收缩。 */
