@@ -466,8 +466,8 @@ function renderTable() {
         ? h('td', { class: 'lmt' }, h('span', { class: 'mono', text: String(e.media) }))
         : h('td', { class: 'lmt' }, e.lmtAny || !(e.lmt || []).length ? '不限' : e.lmt.join(',')),
       isWem
-        ? h('td', { class: 'fsm', style: 'color:var(--c-blue)', title: wemSeq(e) ? '' :
-            '这个音效是运行时事件 id，不在 nbnk 文件表里，所以没有"第几个"序号（它仍能正常触发）' },
+        ? h('td', { class: 'fsm', style: 'color:var(--c-blue)', title: e.seqNum ? '' :
+            '这个 media id 不在已收录的 nbnk 里，没有序号（它仍能正常触发）' },
             wemSeq(e) || '—')
         : h('td', { class: 'fsm' }, String(e.fsmId)),
       h('td', { title: entrySounds(e).map(s => s.path).join('\n') || '没有音效' },
@@ -506,19 +506,14 @@ function renderTable() {
     (ST.wemView ? '' : (ST.sort.asc ? ' 升序' : ' 降序'));
 }
 
-// 条目 WEM 序号：从条目名（mediaids 形式 "wp_bow_cmn/30.ogg （装瓶）"）取 nbnk 内第几个。
-// 宽松匹配：允许带注释后缀（全角/半角括号）。
+// 条目 WEM 序号：★ 表驱动 —— core 按 media id 查 DIDX 真值表给出 seqNum（第几个），
+// 与文件名无关。seqNum 缺失（该 id 不在已收录 nbnk）才显示空。
 function wemSeq(e) {
-  const nm = e.name || '';
-  let m = nm.match(/([^/\\]+)\/(\d+)(?:\.[a-z0-9]+)?(?:\s*[（(][^（）()]*[）)])?\s*$/i)
-       || nm.match(/([^/\\]+)\/(\d+)(?:\.[a-z0-9]+)?\s*$/i);
-  return m ? ('第 ' + m[2] + ' 个') : '';
+  return (e.seqNum != null && e.seqNum > 0) ? ('第 ' + e.seqNum + ' 个') : '';
 }
-// wem 条目的归属 nbnk：从名字或 bank 字段
+// 归属 nbnk：bank 字段（core 已按表补全）
 function wemBank(e) {
-  if (e.bank) return e.bank;
-  const m = (e.name || '').match(/^([^/\\]+)\//);
-  return m ? m[1] : '';
+  return e.bank || '';
 }
 
 /* 删除二次确认 —— 明确列出要删什么，不可撤销 */
@@ -544,13 +539,11 @@ async function askDelete(indices) {
    右栏：实时捕获
    =========================================================================== */
 function wemLabel(r) {
-  // 标识只用 nbnk 文件名（bank 名）+ 该 bank 里的序号，绝不显示本地路径。
-  const nm = r.name || '';
-  let m = nm.match(/^([^/\\]+)\/(\d+)(?:\.[a-z0-9]+)?$/i);
-  if (m) return m[1] + ' · 第' + m[2] + '个';      // wp_bow_cmn · 第30个
-  // 无序号：只取文件名（去掉一切 \ 和 / 后面的部分）
-  const base = (nm.replace(/[\\/].*$/, '') || r.bank || '').trim();
-  if (base) return base;
+  // 标识 = 归属 nbnk · 第N个（表驱动：seqNum 来自 core 的 DIDX 真值表）
+  const bank = r.bank || r.wemBank || '';
+  if (r.seqNum != null && r.seqNum > 0)
+    return (bank ? bank + ' · ' : '') + '第' + r.seqNum + '个';
+  if (bank) return bank;
   return 'media ' + r.wemMedia;
 }
 function histFiltered(H) {

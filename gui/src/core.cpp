@@ -1234,7 +1234,9 @@ struct Core::Impl {
     // ---- wem 捕获（读 SonarAudio.log，GUI 进程内即可，不进游戏）----
     std::string wemLogPath;                                        // plugins\SonarAudio.log
     std::string wemMapPath;                                        // plugins\SonarAudio.mediaids.txt
+    std::string wemSeqPath;                                        // exeDir\WseMediaSeqs.txt（media_id→bank,序号 真值表）
     std::unordered_map<int, std::string> wemNames;                 // media id -> 可读名(UTF-8)
+    std::unordered_map<int, std::pair<std::string, int>> wemSeqs;  // media id -> (bank, 序号=该bank DIDX第几个)
     std::ifstream wemStream;
     unsigned long long wemLastPoll = 0;
     long long lastWemMedia = -2;                                   // 推送去重
@@ -1314,8 +1316,9 @@ struct Core::Impl {
         }
 
         LoadUiPrefs();
-        InitWemWatch();     // 定位 SonarAudio.log / mediaids.txt
+        InitWemWatch();     // 定位 SonarAudio.log / mediaids.txt / 序号真值表
         LoadWemMap();
+        LoadWemSeqs();
     }
 
     ~Impl() { game.Detach(); }
@@ -1464,6 +1467,9 @@ struct Core::Impl {
         if (pl != std::string::npos)
             cand.push_back(gameIniPath.substr(0, pl + std::string("nativePC\\plugins\\").size()));
         cand.push_back(exeDir + "..\\");
+        wemSeqPath = exeDir + "WseMediaSeqs.txt";     // 真值表随 GUI 部署，优先 exe 目录
+        if (!FsExists(wemSeqPath) && !cand.empty())
+            wemSeqPath = cand[0] + "WseMediaSeqs.txt";
         for (const auto& d : cand) {
             if (FsExists(d + "SonarAudio.log")) {
                 wemLogPath = d + "SonarAudio.log";
@@ -1494,6 +1500,37 @@ struct Core::Impl {
             if (id > 0 && !nm.empty()) wemNames[id] = nm;
         }
         hasWemNames = !wemNames.empty();
+    }
+
+    // 加载 media_id → (bank, DIDX 序号) 真值表（离线全扫 nbnk 生成）
+    void LoadWemSeqs() {
+        wemSeqs.clear();
+        if (wemSeqPath.empty()) return;
+        std::ifstream f(wemSeqPath, std::ios::binary);
+        if (!f) return;
+        std::string line;
+        while (std::getline(f, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.empty() || line[0] == '#') continue;
+            std::size_t t1 = line.find('\t');
+            if (t1 == std::string::npos) continue;
+            std::size_t t2 = line.find('\t', t1 + 1);
+            if (t2 == std::string::npos) continue;
+            const int id = std::atoi(line.substr(0, t1).c_str());
+            const std::string bank = line.substr(t1 + 1, t2 - t1 - 1);
+            const int seq = std::atoi(line.c_str() + t2 + 1);
+            if (id > 0 && !bank.empty() && seq > 0) wemSeqs[id] = { bank, seq };
+        }
+    }
+
+    // 给条目 JSON 附 wem 序号（media id → bank/第N 个），显示不再依赖文件名
+    void AttachSeq(JVal& v, long long media) const {
+        if (media <= 0) return;
+        const auto it = wemSeqs.find((int)media);
+        if (it == wemSeqs.end()) return;
+        v.set("seqNum", JVal(it->second.second));
+        if (!v.find("seqBank")) v.set("seqBank", JVal(it->second.first));
+        if (!v.find("bank")) v.set("bank", JVal(it->second.first));
     }
 
     // bank（nbnk 名）→ 武器类型。数字前缀 wp00..wp11 直接取值；
@@ -1674,6 +1711,13 @@ struct Core::Impl {
                 h.set("wemMedia", JVal(history[i].wemMedia));
                 h.set("bank", JVal(history[i].bank));
                 h.set("name", JVal(history[i].wemName));
+                // 序号真值（DIDX 位置），显示按 id 查表
+                const std::unordered_map<int, std::pair<std::string, int>>::const_iterator sit =
+                    wemSeqs.find(history[i].wemMedia);
+                if (sit != wemSeqs.end()) {
+                    h.set("seqNum", JVal(sit->second.second));
+                    if (history[i].bank.empty()) h.set("bank", JVal(sit->second.first));
+                }
                 h.set("weapon", JVal(history[i].weapon));
                 h.set("weaponId", JVal(history[i].weaponId));
                 h.set("time", JVal(history[i].time));
@@ -1734,6 +1778,14 @@ struct Core::Impl {
         d.set("wemName", JVal(curWemName.empty() ? std::string() : curWemName));
         d.set("wemBank", JVal(curWemBank.empty() ? std::string() : curWemBank));
         d.set("wemWeapon", JVal(curWemWeapon));
+        {
+            const std::unordered_map<int, std::pair<std::string, int>>::const_iterator sit =
+                wemSeqs.find(curWemMedia);
+            if (sit != wemSeqs.end()) {
+                d.set("wemSeqNum", JVal(sit->second.second));
+                if (curWemBank.empty()) d.set("wemBank", JVal(sit->second.first));
+            }
+        }
         d.set("wemAdded", JVal(curWemMedia > 0 && IsWemAdded(curWemMedia)));
         d.set("history", HistoryJson());
         return d;
@@ -2628,7 +2680,9 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
                         ToLowerAscii(WeaponName(e.weaponType)).find(q) != std::string::npos) hit = true;
                     if (!hit) continue;
                 }
-                arr.push(EntryToJson(e, (int)i));
+                JVal v = EntryToJson(e, (int)i);
+                im->AttachSeq(v, e.media);   // wem 条目附 序号/归属 bank
+                arr.push(v);
             }
             JVal d = JVal::obj();
             d.set("entries", arr);
@@ -2644,7 +2698,9 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
             if (idx < 0 || idx >= (int)im->cfg.entries.size())
                 return ErrJson("index 越界: " + std::to_string(idx));
             JVal d = JVal::obj();
-            d.set("entry", EntryToJson(im->cfg.entries[idx], idx));
+            JVal ev = EntryToJson(im->cfg.entries[idx], idx);
+            im->AttachSeq(ev, im->cfg.entries[idx].media);
+            d.set("entry", ev);
             d.set("index", JVal(idx));
             return OkJson(d);
         }
