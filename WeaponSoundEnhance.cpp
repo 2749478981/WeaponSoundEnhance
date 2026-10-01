@@ -1126,21 +1126,11 @@ void PollWemEvents(std::mt19937& rng)
     std::string line;
     while (std::getline(gWemStream, line)) {
         if (line.size() < 8) continue;
-        long long m = 0;
-        // ★ 优先 wem= （真实 media id，agent 新输出）；旧格式用 media=
-        const std::size_t wp = line.find("wem=");
-        if (wp != std::string::npos) {
-            m = std::strtoll(line.c_str() + wp + 4, nullptr, 10);
-            if (m == 0) {   // wem=0（未匹配 bank）时退回 media= 字段
-                const std::size_t mp = line.find("media=");
-                if (mp != std::string::npos) m = std::strtoll(line.c_str() + mp + 6, nullptr, 10);
-            }
-        } else {
-            const std::size_t mp = line.find("media=");
-            if (mp != std::string::npos) m = std::strtoll(line.c_str() + mp + 6, nullptr, 10);
-        }
-        if (m < 0) m = 0;
-        if (m == 0) continue;
+        // ★ media= 才是真 media id；wem= 是 wem 字节大小（同 size 无法区分，不能当键）
+        const std::size_t mp = line.find("media=");
+        if (mp == std::string::npos) continue;
+        const long long m = std::strtoll(line.c_str() + mp + 6, nullptr, 10);
+        if (m <= 0) continue;
         std::string bank;
         const std::size_t bp = line.find("bank=");
         if (bp != std::string::npos) {

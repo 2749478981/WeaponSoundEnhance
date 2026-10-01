@@ -508,12 +508,16 @@ function renderTable() {
     (ST.wemView ? '' : (ST.sort.asc ? ' 升序' : ' 降序'));
 }
 
-// 条目 WEM 序号：★ 表驱动 —— core 按 media id 查 DIDX 真值表给出 seqNum（第几个），
-// 与文件名无关。seqNum 缺失（该 id 不在已收录 nbnk）才显示空。
+// 条目 WEM 序号：优先真值表（core 按 media id 查 DIDX 给 seqNum）；
+// 表里没有时退回从规范名解析（agent 的 name=bank/NN.wem 或 mediaids 的 bank/NN.ogg）
 function wemSeq(e) {
-  return (e.seqNum != null && e.seqNum > 0) ? ('第 ' + e.seqNum + ' 个') : '';
+  if (e.seqNum != null && e.seqNum > 0) return '第 ' + e.seqNum + ' 个';
+  const nm = e.name || '';
+  const m = nm.match(/^[^/\\]+\/(\d+)(?:\.[a-z0-9]+)?(?:\s*[（(][^（）()]*[）)])?\s*$/i)
+         || nm.match(/\/(\d+)(?:\.[a-z0-9]+)?\s*$/i);
+  return m ? ('第 ' + m[1] + ' 个') : '';
 }
-// 归属 nbnk：bank 字段（core 已按表补全）；老条目可从名称兜底
+// 归属 nbnk：bank 字段（core 已按表补全）；老条目可从规范名兜底
 function wemBank(e) {
   if (e.bank) return e.bank;
   const m = (e.name || '').match(/^([^/\\]+)\//);
@@ -663,7 +667,7 @@ function renderLive() {
       L.wemAdded
         ? h('em', { class: 'tag', text: '编辑' })
         : h('em', { class: 'tag add', text: '＋ 添加' }));
-    wr.onclick = () => addWemRecord({ kind: 1, wemMedia: L.wemMedia, name: L.wemName, bank: L.wemBank, weapon: L.wemWeapon || -1, added: L.wemAdded });
+    wr.onclick = () => addWemRecord({ kind: 1, wemMedia: L.wemMedia, name: L.wemName, bank: L.wemBank, weapon: L.wemWeapon || -1, added: L.wemAdded, seqNum: L.wemSeqNum });
     wemBox.appendChild(wr);
   } else wemBox.hidden = true;
 

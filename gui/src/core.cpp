@@ -1523,14 +1523,43 @@ struct Core::Impl {
         }
     }
 
+    // 从 "bank/NN.ext" 解析出 bank 与序号（agent 的 name= 或 mediaids 名）
+    bool ParseSeqFromName(const std::string& nm, std::string& bankOut, int& numOut) const {
+        const std::size_t slash = nm.find_last_of("/\\");
+        if (slash == std::string::npos) return false;
+        std::size_t i = slash + 1;
+        int num = 0;
+        bool hasDigit = false;
+        while (i < nm.size() && nm[i] >= '0' && nm[i] <= '9') { num = num * 10 + (nm[i] - '0'); ++i; hasDigit = true; }
+        if (!hasDigit || num <= 0) return false;
+        bankOut = nm.substr(0, slash);
+        numOut = num;
+        return true;
+    }
+
     // 给条目 JSON 附 wem 序号（media id → bank/第N 个），显示不再依赖文件名
     void AttachSeq(JVal& v, long long media) const {
         if (media <= 0) return;
         const auto it = wemSeqs.find((int)media);
-        if (it == wemSeqs.end()) return;
-        v.set("seqNum", JVal(it->second.second));
-        if (!v.find("seqBank")) v.set("seqBank", JVal(it->second.first));
-        if (!v.find("bank")) v.set("bank", JVal(it->second.first));
+        if (it != wemSeqs.end()) {
+            v.set("seqNum", JVal(it->second.second));
+            if (!v.find("seqBank")) v.set("seqBank", JVal(it->second.first));
+            if (!v.find("bank")) v.set("bank", JVal(it->second.first));
+            return;
+        }
+        // 真值表没有：从名字兜底（agent 的 name=bank/NN.wem、mediaids 的 bank/NN.ogg）
+        const std::string nm = v.optStr("name");
+        const std::size_t slash = nm.find_last_of("/\\");
+        if (slash == std::string::npos) return;
+        const std::string head = nm.substr(0, slash);
+        std::size_t i = slash + 1;
+        int num = 0;
+        bool hasDigit = false;
+        while (i < nm.size() && nm[i] >= '0' && nm[i] <= '9') { num = num * 10 + (nm[i] - '0'); ++i; hasDigit = true; }
+        if (!hasDigit || num <= 0) return;
+        v.set("seqNum", JVal(num));
+        if (!v.find("seqBank")) v.set("seqBank", JVal(head));
+        if (!v.find("bank")) v.set("bank", JVal(head));
     }
 
     // bank（nbnk 名）→ 武器类型。数字前缀 wp00..wp11 直接取值；
@@ -1557,11 +1586,12 @@ struct Core::Impl {
         return -1;
     }
 
-    // 解析 SonarAudio.log 的事件行：evt ... media=.. wem=.. bank=.. path=..
-    // ★ 优先 wem=（真实 media id，agent 新输出）；旧格式退回 media=
-    bool ParseWemLine(const std::string& line, int& media, std::string& bank, std::string& path) const {
-        if (line.find("media=") == std::string::npos &&
-            line.find("wem=") == std::string::npos) return false;
+    // 解析 SonarAudio.log 的事件行：
+    //   evt seq#.. id=.. playing=.. gobj=.. media=<真 media id> wem=<size> name=<bank/NN.wem> bank=.. path=..
+    //   ★ media= 才是 media id；wem= 是 wem 字节大小（不是 id，不能当键）
+    bool ParseWemLine(const std::string& line, int& media, std::string& bank, std::string& path,
+                     std::string* nameOut = nullptr) const {
+        if (line.find("media=") == std::string::npos) return false;
         auto grab = [&](const char* key, std::string& dst) {
             const std::string k(key);
             std::size_t p = line.find(k);
@@ -1571,17 +1601,15 @@ struct Core::Impl {
             while (en < line.size() && line[en] != ' ' && line[en] != '\t' && line[en] != '\r') ++en;
             dst = line.substr(p, en - p);
         };
-        long long m = 0;
-        std::string ws, ms;
-        grab("wem=", ws);
+        std::string ms;
         grab("media=", ms);
-        if (!ws.empty()) m = std::strtoll(ws.c_str(), nullptr, 10);
-        if (m <= 0 && !ms.empty()) m = std::strtoll(ms.c_str(), nullptr, 10);
-        if (m <= 0) m = std::strtoll(ms.c_str(), nullptr, 10);
+        if (ms.empty()) return false;
+        const long long m = std::strtoll(ms.c_str(), nullptr, 10);
         if (m <= 0) return false;
         media = (int)m;
         grab("bank=", bank);
         grab("path=", path);
+        if (nameOut) { nameOut->clear(); grab("name=", *nameOut); }
         return true;
     }
 
@@ -1598,8 +1626,8 @@ struct Core::Impl {
         while (std::getline(wemStream, line)) {
             if (line.size() < 8) continue;
             int media = 0;
-            std::string bank, path;
-            if (!ParseWemLine(line, media, bank, path)) continue;
+            std::string bank, path, logName;
+            if (!ParseWemLine(line, media, bank, path, &logName)) continue;
             if (media <= 0) continue;
             // 去重：连续同 media，或 1.5s 窗口内同 media
             bool dup = false;
@@ -1619,6 +1647,7 @@ struct Core::Impl {
             std::string name;
             const std::unordered_map<int, std::string>::const_iterator it = wemNames.find(media);
             if (it != wemNames.end()) name = it->second;         // 形如 wp_bow_cmn/30.ogg
+            else if (!logName.empty()) name = logName;           // agent 的 name=（bank/NN.wem）
             else if (!bank.empty()) name = bank;                 // 纯 nbnk 文件名，绝不用本地路径
             else name = "media " + std::to_string(media);
             HistEntry h;
@@ -1717,6 +1746,12 @@ struct Core::Impl {
                 if (sit != wemSeqs.end()) {
                     h.set("seqNum", JVal(sit->second.second));
                     if (history[i].bank.empty()) h.set("bank", JVal(sit->second.first));
+                } else {
+                    std::string b; int n = 0;
+                    if (ParseSeqFromName(history[i].wemName, b, n)) {
+                        h.set("seqNum", JVal(n));
+                        if (history[i].bank.empty()) h.set("bank", JVal(b));
+                    }
                 }
                 h.set("weapon", JVal(history[i].weapon));
                 h.set("weaponId", JVal(history[i].weaponId));
@@ -1784,6 +1819,12 @@ struct Core::Impl {
             if (sit != wemSeqs.end()) {
                 d.set("wemSeqNum", JVal(sit->second.second));
                 if (curWemBank.empty()) d.set("wemBank", JVal(sit->second.first));
+            } else {
+                std::string b; int n = 0;
+                if (ParseSeqFromName(curWemName, b, n)) {
+                    d.set("wemSeqNum", JVal(n));
+                    if (curWemBank.empty()) d.set("wemBank", JVal(b));
+                }
             }
         }
         d.set("wemAdded", JVal(curWemMedia > 0 && IsWemAdded(curWemMedia)));
