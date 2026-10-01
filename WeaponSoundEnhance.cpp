@@ -57,6 +57,7 @@
 #include <memory>
 #include <mutex>
 #include <map>
+#include <unordered_map>
 #include <fstream>
 #include <random>
 #include <string>
@@ -2479,12 +2480,32 @@ bool FireEntry(const Attack& e, int gauge, std::mt19937& rng, std::uint64_t nowM
 
 // ★ 事件出口实现：SonarAudio 的日志线程每处理一条播放事件就调这里。
 //   命中"按 media id 触发"的条目 → 播放我们的音效（与 fsm 判定并行）。
+//
+//   与 fsm 判定对齐的两条规矩（wem 是全局音频事件，不做限制会在标题界面就响）：
+//     1) **必须在有玩家的场景里**（标题/菜单/加载界面读不到玩家实体 → 不触发）
+//     2) **边沿触发**：同一条 wem 连续重复只在"开始"响一次，
+//        静默超过 kWemQuietMs 才认为下一轮（不是每次都响）
 void WemEventSink(uint32_t media_id, uint32_t event_id, uint32_t playing_id,
                   const char* bank, const char* name) {
     (void)event_id; (void)playing_id; (void)name;
     if (media_id == 0) return;
+
+    // 1) 只在真正带玩家的场景里触发（标题界面 / 菜单：gWeapon 读不到 → 直接忽略）
+    if (player::gWeapon < 0 || player::gWeapon > 13) return;
+
     const std::uint64_t now = ::GetTickCount64();
-    if ((long long)media_id == gWemLastId && now - gWemLastPlayMs < 300) return;  // 同一条 300ms 防抖
+
+    // 2) 边沿锁（按媒体 id）：连续重复事件只在第一下触发，静默后才重置
+    struct WemEdge { std::uint64_t lastMs = 0; bool fired = false; };
+    static std::unordered_map<uint32_t, WemEdge> s_edges;   // 仅在日志线程访问
+    const std::uint64_t quiet = 600;
+    WemEdge& ed = s_edges[media_id];
+    if (now - ed.lastMs > quiet) ed.fired = false;          // 静默足够久 → 新一轮
+    ed.lastMs = now;
+    if (ed.fired) return;                                    // 本轮已响过
+    if (s_edges.size() > 4096) s_edges.clear();              // 保险：别无限增长
+
+    if ((long long)media_id == gWemLastId && now - gWemLastPlayMs < 300) return;  // 双保险
     static std::mt19937 s_rng((unsigned)(::GetTickCount64() ^ 0x9E3779B9u));
     std::lock_guard<std::mutex> lk(gCfgMutex);
     for (auto& e : gAttacks) {
@@ -2495,6 +2516,7 @@ void WemEventSink(uint32_t media_id, uint32_t event_id, uint32_t playing_id,
             audio::StopAll();
             gWemLastId = (long long)media_id;
             gWemLastPlayMs = now;
+            ed.fired = true;
             LogD("[wem] stop %s (media=%u)", e.name.c_str(), media_id);
             break;
         }
@@ -2503,6 +2525,7 @@ void WemEventSink(uint32_t media_id, uint32_t event_id, uint32_t playing_id,
         if (FireEntry(e, player::gGauge, s_rng, now, tag)) {
             gWemLastId = (long long)media_id;
             gWemLastPlayMs = now;
+            ed.fired = true;
             LogD("[wem] fired %s (media=%u bank=%s)", e.name.c_str(), media_id,
                  bank ? bank : "?");
         }
