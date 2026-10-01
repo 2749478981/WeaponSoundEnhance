@@ -1098,8 +1098,14 @@ async function saveEditor() {
 /* ===========================================================================
    模态：FSM 查询 / ID 库 / 更新
    =========================================================================== */
-function openModal(id) { $(id).classList.add('open'); if (id === '#mUpd') refreshUpdate(); }
-function closeModals() { $$('.modal').forEach(m => { if (m.id !== 'mConfirm') m.classList.remove('open'); }); }
+function openModal(id) { $(id).classList.add('open'); syncModalOpenClass(); if (id === '#mUpd') refreshUpdate(); }
+function closeModals() { $$('.modal').forEach(m => { if (m.id !== 'mConfirm') m.classList.remove('open'); }); syncModalOpenClass(); }
+
+// ★ 弹窗开着时给 <body> 挂 modal-open —— CSS 借此隐藏主题装饰层
+//   （可爱风的巨型圆角装饰会盖在弹窗内容上）
+function syncModalOpenClass() {
+  document.body.classList.toggle('modal-open', !!document.querySelector('.modal.open'));
+}
 
 async function runFsmSearch() {
   const q = $('#fsmQ').value;

@@ -736,6 +736,16 @@ int gWemBurstCap  = 6;
 int gWemLoopFilter = 1;
 int gWemLoopRate   = 4;      // 4 秒窗口内达到这个次数即判为循环音
 int gWemLoopMuteMs = 8000;   // 判定为循环音后，忽略该 media 的时长（毫秒）
+
+// 永久忽略的 media 名单（ini: WemIgnoreMedia=182089195,xxx）。
+// 用于"很多行为都会触发"的持续音（行为判定也可能漏），直接点名忽略。
+std::vector<long long> gWemIgnoreMedia;
+
+bool WemIsIgnored(long long media) {
+    for (std::size_t i = 0; i < gWemIgnoreMedia.size(); ++i)
+        if (gWemIgnoreMedia[i] == media) return true;
+    return false;
+}
 std::uint32_t gGaugePtrOff = 0x76B0;
 std::uint32_t gGaugeValOff = 0x2370;
 std::uint32_t gChargeValOff = 0x2358;          // 大剑蓄力等级（与刃级共用 GaugePtrOff）
@@ -1811,6 +1821,15 @@ void LoadConfig()
                 else if (key == "WemLoopFilter") gWemLoopFilter = std::atoi(val.c_str()) != 0;
                 else if (key == "WemLoopRate") { int v = std::atoi(val.c_str()); if (v >= 1 && v <= 100) gWemLoopRate = v; }
                 else if (key == "WemLoopMuteMs") { int v = std::atoi(val.c_str()); if (v >= 0 && v <= 120000) gWemLoopMuteMs = v; }
+                else if (key == "WemIgnoreMedia") {
+                    gWemIgnoreMedia.clear();
+                    std::vector<std::string> toks;
+                    SplitList(val, toks);
+                    for (const auto& t : toks) {
+                        const long long v = std::strtoll(t.c_str(), nullptr, 10);
+                        if (v > 0) gWemIgnoreMedia.push_back(v);
+                    }
+                }
                 else if (key == "Volume") gVolumePct = ClampInt(std::atoi(val.c_str()), 0, 100);
                 else if (key == "Enabled") gEnabled = std::atoi(val.c_str()) != 0;
                 else if (key == "MoreSounds") gMoreSounds = std::atoi(val.c_str()) != 0;
@@ -2058,7 +2077,13 @@ void LoadConfig()
 
 void PreloadSounds();   // defined below
 
-void ReloadConfig() { LoadConfig(); PreloadSounds(); }
+void ReloadConfig() {
+    LoadConfig();
+    PreloadSounds();
+    // ★ 重载会重放/预加载 bank（用户反馈"每次重载都响一次装瓶"），
+    //   所以把"稳定时刻"拨到现在：接下来 KillSettleMs 内的 wem 一律忽略。
+    player::gStableSinceMs = ::GetTickCount64();
+}
 
 // ===========================================================================
 //  Wav cache / preload
@@ -2592,6 +2617,9 @@ void WemEventSink(uint32_t media_id, uint32_t event_id, uint32_t playing_id,
 
     // 1) 只在真正带玩家的场景里触发（标题界面 / 菜单：gWeapon 读不到 → 直接忽略）
     if (player::gWeapon < 0 || player::gWeapon > 13) return;
+
+    // 1.2) 点名忽略名单（ini WemIgnoreMedia=...）：持续音/环境音直接跳过
+    if (!gWemIgnoreMedia.empty() && WemIsIgnored((long long)media_id)) return;
 
     const std::uint64_t now = ::GetTickCount64();
 

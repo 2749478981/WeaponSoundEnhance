@@ -18,6 +18,7 @@
 
   /* 图标是黑线稿，深色底上必须垫浅色底片才看得见 */
   --chip-bg:#e6edf3; --chip-border:#30363d;
+  --chip-fg:#1d1d1f;   /* 浅底片上的深色字（黑线稿图标那种主题专用） */
 
   --bw:1px; --radius:10px; --radius-ctl:6px;
   --shadow-card:none; --shadow-ctl:none;

@@ -195,7 +195,9 @@ main>*{min-width:0}
 .cbar{display:flex; gap:9px; padding:11px 13px; flex:none; border-bottom:var(--bw) solid var(--line)}
 .cbar input{flex:1}
 .tablewrap{flex:1; overflow:auto; min-height:0}
-.tablewrap.small{max-height:340px; border:var(--bw) solid var(--line); border-radius:var(--radius-ctl)}
+.tablewrap.small{max-height:340px; border:var(--bw) solid var(--line); border-radius:8px}
+/* ★ 固定小圆角：不能跟 --radius-ctl 走 —— 可爱风里它是 999px（胶囊），
+   套在表格容器上会渲染成巨型椭圆把内容挡住/裁掉。 */
 table{width:100%; border-collapse:collapse; font-size:12.5px}
 /* ---- 「操作」列常驻右侧 ----
    中间列只有 560 多像素，6 列按自然宽度排是排不下的（长音效路径更会撑爆）。
@@ -361,6 +363,8 @@ label.inline.big{font-size:12.5px; font-weight:700}
 .modal{position:fixed; inset:0; z-index:80; display:none; align-items:center; justify-content:center;
        background:rgba(0,0,0,.45); backdrop-filter:blur(2px)}
 .modal.open{display:flex}
+/* 弹窗打开时隐藏主题装饰层（爪印等）：装饰不该出现在弹窗内容上 */
+body.modal-open .deco{display:none}
 .mbox{width:760px; max-width:94vw; max-height:88vh; display:flex; flex-direction:column; overflow:hidden}
 .mbox.narrow{width:520px}
 .mhead{display:flex; align-items:center; gap:10px; padding:14px 18px; flex:none;
@@ -383,13 +387,15 @@ label.inline.big{font-size:12.5px; font-weight:700}
 .upd-notes li{margin:3px 0}
 .upd-notes code{
   font-family:ui-monospace,Consolas,monospace; font-size:11.5px;
-  background:var(--chip-bg); border:var(--bw) solid var(--line);
+  background:var(--chip-bg); color:var(--chip-fg, var(--text)); border:var(--bw) solid var(--line);
   padding:1px 5px; border-radius:4px; word-break:break-all;
 }
-/* 弹窗里的行内代码（聊天指令等） */
+/* 弹窗里的行内代码（聊天指令等）
+   ★ 文字色用 --chip-fg 而不是继承 --text：深色主题里 --chip-bg 是"浅色底片"
+   （为了让黑线稿图标可见），若文字仍是浅色就会变成浅底浅字看不清。 */
 .mbody code,.note code{
   font-family:ui-monospace,Consolas,monospace; font-size:11.5px;
-  background:var(--chip-bg); border:var(--bw) solid var(--line);
+  background:var(--chip-bg); color:var(--chip-fg, var(--text)); border:var(--bw) solid var(--line);
   padding:1px 5px; border-radius:4px; white-space:nowrap;
 }
 /* 热键改键格子：点一下进入"按下新键"状态 */
