@@ -802,6 +802,12 @@ function renderBank() {
       h('td', { title: rep, style: 'max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' },
         rep ? rep.split(/[\\/]/).pop() : '—'),
       h('td', {}, h('div', { class: 'acts' },
+        h('button', { title: '把这条 wem 抽出来用播放器试听（推荐 foobar2000 + vgmstream）', onclick: async () => {
+          try {
+            const r = await Backend.call('bank.audition', { path: BANK.path, media: m.id });
+            if (!r.usedPlayer) toast('已抽出 wem（未设置试听播放器，交给系统打开）：' + r.file, 'ok');
+          } catch (e) { toast('试听失败：' + e.message, 'err'); }
+        } }, '试听'),
         h('button', { onclick: async () => {
           const r = await Backend.call('audio.pickMulti', {});
           if (r.cancelled || !r.files || !r.files.length) return;
@@ -1493,7 +1499,24 @@ const ACTIONS = {
 };
 
 /* ---- 音效替换（nbnk Mod）：必须在 const ACTIONS 之后注册，否则 TDZ 报错 ---- */
-ACTIONS['win.bank'] = () => { openModal('#mBank'); renderBank(); };
+ACTIONS['player.pick'] = async () => {
+  const r = await Backend.call('player.pick', {});
+  if (r && r.playerPath) toast('试听播放器已设为：' + r.playerPath, 'ok');
+  showPlayerPath(r);
+};
+function showPlayerPath(prefs) {
+  const el = $('#playerPath');
+  if (!el) return;
+  const p = prefs && prefs.playerPath ? prefs.playerPath : '';
+  el.textContent = p ? ('当前：' + p) : '（未设置 —— 试听会交给系统打开 .wem）';
+  el.title = p;
+}
+
+ACTIONS['win.bank'] = () => {
+  openModal('#mBank');
+  renderBank();
+  Backend.call('ui.get', {}).then(showPlayerPath).catch(() => {});
+};
 
 ACTIONS['bank.pick'] = async () => {
   const r = await Backend.call('bank.pick', {});

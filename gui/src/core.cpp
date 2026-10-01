@@ -825,6 +825,7 @@ struct UiPrefs {
     bool histExpanded = false;
     bool onlyActive = false;   // 列表默认只看当前激活组合的条目
     bool wemView = false;      // 捕获面板视图：false=派生 fsm，true=WEM 音效
+    std::string playerPath;    // 试听用的播放器（如 foobar2000 + vgmstream）
 
     UiPrefs() {
         colWidths.set("name", JVal(180));
@@ -1436,6 +1437,7 @@ struct Core::Impl {
         prefs.histExpanded = v.optBool("histExpanded", false);
         prefs.onlyActive = v.optBool("onlyActive", false);
         prefs.wemView = v.optBool("wemView", false);
+        prefs.playerPath = v.optStr("playerPath");
     }
 
     void SaveUiPrefs() {
@@ -1448,6 +1450,7 @@ struct Core::Impl {
         v.set("histExpanded", JVal(prefs.histExpanded));
         v.set("onlyActive", JVal(prefs.onlyActive));
         v.set("wemView", JVal(prefs.wemView));
+        v.set("playerPath", JVal(prefs.playerPath));
         FsWrite(uiPath, JsonDump(v));
         uiDirty = false;
     }
@@ -1462,6 +1465,7 @@ struct Core::Impl {
         v.set("histExpanded", JVal(prefs.histExpanded));
         v.set("onlyActive", JVal(prefs.onlyActive));
         v.set("wemView", JVal(prefs.wemView));
+        v.set("playerPath", JVal(prefs.playerPath));
         return v;
     }
 
@@ -3801,6 +3805,65 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
         // ---------------- nbnk Mod 制作（导入 bank / 替换 wem / 导出）----------------
         // 说明：这是"实验性"功能。流程 = 导入 nbnk → 选要替换的 media →
         // 音频(wav/mp3/…)经 ffmpeg + WwiseConsole 转成 wem → 替换进 bank → 导出到 nativePC。
+        if (method == "bank.audition") {
+            // 试听：把这条 media 的 wem 抽到临时文件，用播放器打开
+            // （wem 系统没有默认关联，所以优先用用户指定的播放器，例如 foobar2000 + vgmstream）
+            const std::string path = Trim(p.optStr("path"));
+            const long long media = p.find("media") ? p.find("media")->asInt(0) : 0;
+            if (path.empty() || media <= 0) return ErrJson("缺少 path/media");
+            bankmod::BankFile bf;
+            std::string err;
+            if (!bankmod::LoadBank(Utf8ToWide(path), bf, err)) return ErrJson(err);
+            std::vector<uint8_t> wem;
+            if (!bankmod::ExtractWem(bf, (uint32_t)media, wem)) return ErrJson("这条 media 没有内嵌 wem");
+            wchar_t tmp[MAX_PATH] = {};
+            ::GetTempPathW(MAX_PATH, tmp);
+            std::wstring dir = std::wstring(tmp) + L"sonar_audition";
+            ::CreateDirectoryW(dir.c_str(), nullptr);
+            wchar_t num[32] = {};
+            ::swprintf_s(num, L"%lld", media);
+            const std::wstring file = dir + L"\\" + Utf8ToWide(bf.name) + L"_" + num + L".wem";
+            {
+                HANDLE h = ::CreateFileW(file.c_str(), GENERIC_WRITE, 0, nullptr,
+                                         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                if (h == INVALID_HANDLE_VALUE) return ErrJson("无法写临时 wem");
+                DWORD wr = 0;
+                ::WriteFile(h, wem.data(), (DWORD)wem.size(), &wr, nullptr);
+                ::CloseHandle(h);
+            }
+            const std::string player = Trim(im->prefs.playerPath);
+            bool launched = false;
+            if (!player.empty() && ::GetFileAttributesW(Utf8ToWide(player).c_str()) != INVALID_FILE_ATTRIBUTES) {
+                std::wstring cmd = L"\"" + Utf8ToWide(player) + L"\" \"" + file + L"\"";
+                std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+                buf.push_back(0);
+                STARTUPINFOW si{}; si.cb = sizeof(si);
+                PROCESS_INFORMATION pi{};
+                if (::CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE,
+                                     0, nullptr, nullptr, &si, &pi)) {
+                    ::CloseHandle(pi.hProcess); ::CloseHandle(pi.hThread);
+                    launched = true;
+                }
+            }
+            if (!launched) {
+                // 没配播放器就交给系统（有 .wem 关联时才有效）
+                ::ShellExecuteW(nullptr, L"open", file.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            }
+            JVal d = JVal::obj();
+            d.set("file", JVal(ToSlash(Utf8FromWide(file))));
+            d.set("usedPlayer", JVal(launched));
+            d.set("bytes", JVal((int)wem.size()));
+            return OkJson(d);
+        }
+
+        if (method == "player.pick") {
+            std::vector<std::string> multi;
+            const std::string p1 = OpenFileDialog(OwnerOf(owner),
+                L"播放器 (*.exe)\0*.exe\0所有文件 (*.*)\0*.*\0", nullptr, L"exe", false, multi);
+            if (!p1.empty()) im->prefs.playerPath = p1; im->SaveUiPrefs();
+            return OkJson(im->UiPrefsJson());
+        }
+
         if (method == "bank.pick") {
             std::vector<std::string> multi;
             const std::string p1 = OpenFileDialog(OwnerOf(owner),
