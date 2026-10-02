@@ -274,6 +274,7 @@ bool LoadConfig(const std::string& path, Config& cfg) {
                 else if (key == "WemOnlyInQuest") cfg.global.wemOnlyInQuest = std::atoi(val.c_str());
                 else if (key == "WemMapWhite") cfg.global.wemMapWhite = val;
                 else if (key == "WemMapBlack") cfg.global.wemMapBlack = val;
+                else if (key == "BankOutDir") cfg.global.bankOutDir = val;
             } else if (section == "Hotkeys") {
                 if (key == "ModifierKey") cfg.hotkeys.modifierKey = std::atoi(val.c_str());
                 else if (key == "ReloadKey") cfg.hotkeys.reloadKey = std::atoi(val.c_str());
@@ -523,7 +524,8 @@ bool SaveConfig(const std::string& path, const Config& cfg) {
     if (!cfg.global.weaponEnabled.empty()) o += "WeaponEnabled=" + cfg.global.weaponEnabled + "\r\n";
     if (cfg.global.wemOnlyInQuest != 0)     o += "WemOnlyInQuest=" + std::to_string(cfg.global.wemOnlyInQuest) + "\r\n";
     if (!cfg.global.wemMapWhite.empty())    o += "WemMapWhite=" + cfg.global.wemMapWhite + "\r\n";
-    if (!cfg.global.wemMapBlack.empty())    o += "WemMapBlack=" + cfg.global.wemMapBlack + "\r\n\r\n";
+    if (!cfg.global.wemMapBlack.empty())    o += "WemMapBlack=" + cfg.global.wemMapBlack + "\r\n";
+    if (!cfg.global.bankOutDir.empty())     o += "BankOutDir=" + cfg.global.bankOutDir + "\r\n\r\n";
 
     o += "[Hotkeys]\r\n";
     o += "ModifierKey=" + std::to_string(cfg.hotkeys.modifierKey) + "\r\n";

@@ -30,6 +30,7 @@
 
 #include <windows.h>
 #include <commdlg.h>
+#include <shlobj.h>     // SHBrowseForFolder（选导出目录）
 #include <shellapi.h>
 #include <mmsystem.h>
 #include <urlmon.h>
@@ -2062,6 +2063,34 @@ HWND OwnerOf(void* owner) {
     return (h && ::IsWindow(h)) ? h : nullptr;
 }
 
+// 选文件夹（音效替换的导出目录用）。SHBrowseForFolder 不需要 COM 初始化。
+// 初始目录要用回调设置（BROWSEINFO 本身没有 lpszInitialPath 字段）。
+static int CALLBACK BrowseInitProc(HWND hwnd, UINT msg, LPARAM, LPARAM data) {
+    if (msg == BFFM_INITIALIZED && data)
+        ::SendMessageW(hwnd, BFFM_SETSELECTIONW, TRUE, data);
+    return 0;
+}
+std::string PickFolder(void* owner, const std::wstring& initDir) {
+    wchar_t disp[MAX_PATH * 2] = {};
+    BROWSEINFOW bi{};
+    bi.hwndOwner = OwnerOf(owner);
+    bi.pszDisplayName = disp;
+    bi.lpszTitle = L"选择导出目录（nbnk 会写到这里）";
+    bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+    bi.lpfn = BrowseInitProc;
+    bi.lParam = initDir.empty() ? 0 : (LPARAM)initDir.c_str();
+    LPITEMIDLIST idl = ::SHBrowseForFolderW(&bi);
+    if (!idl) return std::string();
+    std::wstring out;
+    out.resize(MAX_PATH * 2);
+    const BOOL ok = ::SHGetPathFromIDListW(idl, &out[0]);
+    ::CoTaskMemFree(idl);
+    if (!ok) return std::string();
+    const std::size_t z = out.find(L'\0');
+    if (z != std::wstring::npos) out.resize(z);
+    return Utf8FromWide(out);
+}
+
 std::string OpenFileDialog(void* owner, const wchar_t* filter, const wchar_t* initDir,
                            const wchar_t* defExt, bool multi, std::vector<std::string>& multiOut) {
     multiOut.clear();
@@ -3980,6 +4009,99 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
             d.set("history", im->HistoryJson());
             return OkJson(d);
         }
+        // ---- nbnk 导出的输出目录 ----
+        if (method == "bank.outDir") {
+            std::string dir = im->cfg.global.bankOutDir;
+            if (dir.empty()) dir = im->BaseDir() + "wemmod";
+            JVal d = JVal::obj();
+            d.set("dir", JVal(ToSlash(dir)));
+            d.set("custom", JVal(!im->cfg.global.bankOutDir.empty()));
+            return OkJson(d);
+        }
+
+        if (method == "bank.pickOutDir") {
+            std::string cur = im->cfg.global.bankOutDir;
+            if (cur.empty()) cur = im->BaseDir() + "wemmod";
+            const std::string picked = PickFolder(owner, Utf8ToWide(cur));
+            if (!picked.empty()) {
+                im->cfg.global.bankOutDir = picked;
+                if (im->cfg.loaded && !im->cfg.path.empty()) (void)SaveConfig(im->cfg.path, im->cfg);
+            }
+            JVal d = JVal::obj();
+            d.set("dir", JVal(ToSlash(im->cfg.global.bankOutDir.empty()
+                                      ? (im->BaseDir() + "wemmod")
+                                      : im->cfg.global.bankOutDir)));
+            d.set("changed", JVal(!picked.empty()));
+            return OkJson(d);
+        }
+
+        if (method == "bank.openOut") {
+            std::string dir = im->cfg.global.bankOutDir;
+            if (dir.empty()) dir = im->BaseDir() + "wemmod";
+            const std::wstring wd = Utf8ToWide(dir);
+            ::CreateDirectoryW(wd.c_str(), nullptr);
+            ::ShellExecuteW(OwnerOf(owner), L"open", wd.c_str(), nullptr, nullptr, SW_SHOW);
+            JVal d = JVal::obj();
+            d.set("dir", JVal(ToSlash(dir)));
+            return OkJson(d);
+        }
+
+        // 播放本地音频文件（替换用的 wav/mp3/ogg）：vgmstream 解码到内存 → PlaySound
+        if (method == "audio.playFile") {
+            const std::string path = Trim(p.optStr("path"));
+            if (path.empty()) return ErrJson("缺少 path");
+            const std::wstring src = Utf8ToWide(path);
+            if (::GetFileAttributesW(src.c_str()) == INVALID_FILE_ATTRIBUTES)
+                return ErrJson("文件不存在：" + path);
+            std::wstring cli = Utf8ToWide(im->exeDir) + L"wemkit\\vgmstream\\vgmstream-cli.exe";
+            if (::GetFileAttributesW(cli.c_str()) == INVALID_FILE_ATTRIBUTES)
+                cli = Utf8ToWide(im->exeDir) + L"tools\\vgmstream\\vgmstream-cli.exe";
+            if (::GetFileAttributesW(cli.c_str()) == INVALID_FILE_ATTRIBUTES)
+                return ErrJson("缺少 wemkit\\vgmstream\\vgmstream-cli.exe");
+            std::wstring tmpDir = Utf8ToWide(im->exeDir) + L"wemkit\\tmp";
+            ::CreateDirectoryW(tmpDir.c_str(), nullptr);
+
+            SECURITY_ATTRIBUTES sa{};
+            sa.nLength = sizeof(sa);
+            sa.bInheritHandle = TRUE;
+            HANDLE rd = nullptr, wr = nullptr;
+            if (!::CreatePipe(&rd, &wr, &sa, 1 << 20)) return ErrJson("创建管道失败");
+            ::SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+            STARTUPINFOW si{};
+            si.cb = sizeof(si);
+            si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+            si.wShowWindow = SW_HIDE;
+            si.hStdOutput = wr;
+            si.hStdError = wr;
+            PROCESS_INFORMATION pi{};
+            std::wstring cmd = L"\"" + cli + L"\" -p \"" + src + L"\"";
+            std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+            buf.push_back(0);
+            const BOOL ok = ::CreateProcessW(nullptr, buf.data(), nullptr, nullptr, TRUE,
+                                             CREATE_NO_WINDOW, nullptr, tmpDir.c_str(), &si, &pi);
+            ::CloseHandle(wr);
+            std::vector<unsigned char> wav;
+            if (ok) {
+                ::CloseHandle(pi.hThread);
+                unsigned char chunk[65536];
+                DWORD got = 0;
+                while (::ReadFile(rd, chunk, sizeof(chunk), &got, nullptr) && got > 0)
+                    wav.insert(wav.end(), chunk, chunk + got);
+                ::WaitForSingleObject(pi.hProcess, 15000);
+                ::CloseHandle(pi.hProcess);
+            }
+            ::CloseHandle(rd);
+            if (wav.size() < 44) return ErrJson("解码失败（格式不支持或文件损坏）");
+            ::PlaySoundW(nullptr, nullptr, 0);
+            im->playBuf.swap(wav);
+            const BOOL played = ::PlaySoundW((LPCWSTR)im->playBuf.data(), nullptr,
+                                             SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+            JVal d = JVal::obj();
+            d.set("played", JVal(played != FALSE));
+            d.set("bytes", JVal((int)im->playBuf.size()));
+            return OkJson(d);
+        }
+
         if (method == "bank.pick") {
             std::vector<std::string> multi;
             const std::string p1 = OpenFileDialog(OwnerOf(owner),
@@ -4082,8 +4204,10 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
             }
             if (reps.empty()) return ErrJson("替换列表为空");
 
-            std::wstring outDirW = outDir.empty() ? (Utf8ToWide(im->BaseDir()) + L"wemmod")
-                                                  : Utf8ToWide(outDir);
+            std::wstring outDirW;
+            if (!outDir.empty()) outDirW = Utf8ToWide(outDir);
+            else if (!im->cfg.global.bankOutDir.empty()) outDirW = Utf8ToWide(im->cfg.global.bankOutDir);
+            else outDirW = Utf8ToWide(im->BaseDir()) + L"wemmod";
             ::CreateDirectoryW(outDirW.c_str(), nullptr);
             const std::wstring outPath = outDirW + L"\\" + Utf8ToWide(bf.name) + L".nbnk";
             if (!bankmod::ExportBank(bf, reps, outPath, err)) return ErrJson(err);

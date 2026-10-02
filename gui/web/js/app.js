@@ -889,6 +889,12 @@ function renderBank() {
           try { await Backend.call('bank.stopPlay', {}); } catch (e) {}
           playingMedia = 0;
         } }, '停止'),
+        rep ? h('button', { title: '试听你选的替换音频\n' + rep, onclick: async () => {
+          try {
+            const r = await Backend.call('audio.playFile', { path: rep });
+            if (!r.played) toast('替换音播放失败', 'err');
+          } catch (e) { toast('替换音播放失败：' + e.message, 'err'); }
+        } }, '听替换音') : null,
         h('button', { onclick: async () => {
           const r = await Backend.call('audio.pickMulti', {});
           if (r.cancelled || !r.files || !r.files.length) return;
@@ -1583,21 +1589,24 @@ const ACTIONS = {
 ACTIONS['win.bank'] = () => {
   openModal('#mBank');
   renderBank();
-  // 载入场景过滤当前值
-  Backend.call('wem.scene.get', {}).then(r => {
-    $('#wemOnlyQuest').checked = !!r.onlyQuest;
-    $('#wemMapWhite').value = r.mapWhite || '';
-  }).catch(() => {});
+  loadBankOutDir();
 };
 
-ACTIONS['wem.scene.save'] = async () => {
+// 输出目录（nbnk 导出位置）
+async function loadBankOutDir() {
   try {
-    await Backend.call('wem.scene.save', {
-      onlyQuest: $('#wemOnlyQuest').checked,
-      mapWhite: $('#wemMapWhite').value.trim(),
-    });
-    toast('场景过滤已保存（游戏内已请求重载）', 'ok');
-  } catch (e) { toast('保存失败：' + e.message, 'err'); }
+    const r = await Backend.call('bank.outDir', {});
+    const el = $('#bankOutDir');
+    if (el) el.value = r.dir || '';
+  } catch {}
+}
+ACTIONS['bank.pickOutDir'] = async () => {
+  try {
+    const r = await Backend.call('bank.pickOutDir', {});
+    const el = $('#bankOutDir');
+    if (el) el.value = r.dir || '';
+    if (r.changed) toast('输出目录已改为：' + r.dir, 'ok');
+  } catch (e) { toast('选择目录失败：' + e.message, 'err'); }
 };
 
 ACTIONS['bank.pick'] = async () => {
@@ -1619,7 +1628,10 @@ ACTIONS['bank.pick'] = async () => {
 ACTIONS['bank.clear'] = () => { BANK.reps = {}; renderBank(); toast('已清空替换列表'); };
 
 ACTIONS['bank.openOut'] = async () => {
-  try { await Backend.call('sound.openDir', {}); } catch (e) { toast('打不开：' + e.message, 'err'); }
+  try {
+    const r = await Backend.call('bank.openOut', {});
+    if (r && r.dir) toast('已打开：' + r.dir, 'ok');
+  } catch (e) { toast('打不开：' + e.message, 'err'); }
 };
 
 ACTIONS['bank.export'] = async () => {

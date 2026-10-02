@@ -87,6 +87,7 @@ struct GlobalSettings {
     int     wemOnlyInQuest = 0; // 仅任务中触发 wem
     std::string wemMapWhite;    // 地图 id 白名单（逗号分隔；空 = 不限）
     std::string wemMapBlack;    // 地图 id 黑名单
+    std::string bankOutDir;     // nbnk 导出目录（空 = plugins\WeaponSoundEnhance\wemmod）
 };
 
 struct Hotkeys {
