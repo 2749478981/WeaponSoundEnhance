@@ -505,6 +505,18 @@ std::string Utf8FromWide(const std::wstring& w) {
     return s;
 }
 
+// 逗号分隔拆分（ini 里 14 个武器开关用）
+static void SplitCsv(const std::string& s, std::vector<std::string>& out) {
+    out.clear();
+    std::string cur;
+    for (char c : s) {
+        if (c == ',' || c == ' ' || c == '\t') {
+            if (!cur.empty()) { out.push_back(cur); cur.clear(); }
+        } else cur += c;
+    }
+    if (!cur.empty()) out.push_back(cur);
+}
+
 // 长路径：界面里选出来的路径很容易超 MAX_PATH（mod 管理器/解包的深层目录）
 std::wstring LongPathW(const std::string& utf8) {
     return FsLongPath(utf8);
@@ -3446,6 +3458,56 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
             d.set("launched", JVal(ok));
             d.set("running", JVal(ok));
             d.set("dir", JVal(ToSlash(gdir)));
+            d.set("status", JVal(im->status));
+            return OkJson(d);
+        }
+
+        // ---------------- 武器触发开关（每武器一个，默认全关）----------------
+        if (method == "weapons.enabled.get") {
+            // 读 ini 的 WeaponEnabled=0,1,...（14 个，缺省 0）
+            std::vector<int> en(14, 0);
+            std::string txt;
+            if (im->cfg.loaded && !im->cfg.path.empty()) FsRead(im->cfg.path, txt);
+            const std::size_t kp = txt.find("WeaponEnabled=");
+            if (kp != std::string::npos) {
+                const std::size_t e0 = txt.find_first_of("\r\n", kp);
+                std::string v = txt.substr(kp + 14, (e0 == std::string::npos ? txt.size() : e0) - (kp + 14));
+                std::vector<std::string> toks;
+                SplitCsv(v, toks);
+                for (int i = 0; i < 14; ++i)
+                    en[i] = (i < (int)toks.size() && std::atoi(toks[i].c_str()) != 0);
+            }
+            JVal arr = JVal::arr();
+            for (int i = 0; i < 14; ++i) arr.push(JVal(en[i]));
+            JVal d = JVal::obj();
+            d.set("enabled", arr);
+            return OkJson(d);
+        }
+
+        if (method == "weapons.enabled.set") {
+            const JVal* je = p.find("enabled");
+            if (!je || !je->isArr() || je->a.empty()) return ErrJson("缺少 enabled 数组");
+            std::string line = "WeaponEnabled=";
+            for (std::size_t i = 0; i < 14; ++i) {
+                if (i) line += ",";
+                line += (i < je->a.size() && je->a[i].asInt(0) != 0) ? "1" : "0";
+            }
+            if (im->cfg.loaded && !im->cfg.path.empty()) {
+                std::string txt;
+                FsRead(im->cfg.path, txt);
+                const std::size_t kp = txt.find("WeaponEnabled=");
+                if (kp != std::string::npos) {
+                    const std::size_t e0 = txt.find_first_of("\r\n", kp);
+                    txt.replace(kp, (e0 == std::string::npos ? txt.size() : e0) - kp, line);
+                } else {
+                    txt += "\r\n" + line;
+                }
+                FsWrite(im->cfg.path, txt);
+            }
+            // 请求游戏内立即重载（DLL 读到新值）
+            FsWrite(im->BaseDir() + "_wse_reload.flag", "1");
+            im->SetStatus("武器触发开关已保存，并已请求游戏重载（立即生效）");
+            JVal d = JVal::obj();
             d.set("status", JVal(im->status));
             return OkJson(d);
         }

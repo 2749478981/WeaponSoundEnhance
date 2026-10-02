@@ -170,6 +170,14 @@ main>*{min-width:0}
   border:var(--bw) solid transparent; transition:.1s;
 }
 .wrow:hover{background:var(--row-hover)}
+/* 武器触发开关（每武器一个，默认全关）：小号勾选框 */
+.wsw{width:13px; height:13px; flex:none; accent-color:var(--accent); cursor:pointer;
+     appearance:none; -webkit-appearance:none; border:var(--bw) solid var(--line-2);
+     border-radius:3px; position:relative; background:var(--input-bg)}
+.wsw:checked{background:var(--accent); border-color:var(--accent)}
+.wsw:checked::after{content:"✓"; position:absolute; inset:0; display:flex;
+     align-items:center; justify-content:center; color:var(--on-accent);
+     font-size:10px; font-weight:800; line-height:1}
 .wrow.on{background:var(--row-sel-bg); border-color:var(--accent)}
 .wchip{
   width:32px; height:32px; flex:none; border-radius:var(--radius-ctl); padding:4px;

@@ -737,6 +737,17 @@ int gWemLoopFilter = 1;
 int gWemLoopRate   = 4;      // 4 秒窗口内达到这个次数即判为循环音
 int gWemLoopMuteMs = 8000;   // 判定为循环音后，忽略该 media 的时长（毫秒）
 
+// --- 武器触发开关（每武器一个，默认全关）---
+//   WeaponEnabled=0,1,...（14 个逗号分隔的 0/1，对应武器 0..13；缺省按 0）
+//   某个武器没开 → 该武器的条目（含通用条目按当前持握武器判定）一律不触发。
+bool gWeaponEnabled[14] = {};
+// 判断"当前应不应该触发该武器的音效"：weaponType<0（通用）按当前武器走
+static inline bool WeaponPermitted(int weaponType, int curWeapon) {
+    const int w = (weaponType >= 0) ? weaponType : curWeapon;
+    if (w < 0 || w > 13) return true;   // 拿不到武器信息时不禁（保持 raw wem 路径可用）
+    return gWeaponEnabled[w];
+}
+
 // 永久忽略的 media 名单（ini: WemIgnoreMedia=182089195,xxx）。
 // 用于"很多行为都会触发"的持续音（行为判定也可能漏），直接点名忽略。
 std::vector<long long> gWemIgnoreMedia;
@@ -1280,6 +1291,7 @@ void PollWemEvents(std::mt19937& rng)
             continue;   // 同一条 wem 300ms 内只响一次
         for (auto& e : gAttacks) {
             if (e.media != h.media) continue;
+            if (!WeaponPermitted(e.weaponType, h.weapon)) continue;   // 武器触发开关（默认关）
             if (e.weaponType >= 0 && h.weapon >= 0 && e.weaponType != h.weapon)
                 continue;
             if (e.stop) {                       // Stop 条目：命中即停（不播放）
@@ -1821,6 +1833,13 @@ void LoadConfig()
                 else if (key == "WemLoopFilter") gWemLoopFilter = std::atoi(val.c_str()) != 0;
                 else if (key == "WemLoopRate") { int v = std::atoi(val.c_str()); if (v >= 1 && v <= 100) gWemLoopRate = v; }
                 else if (key == "WemLoopMuteMs") { int v = std::atoi(val.c_str()); if (v >= 0 && v <= 120000) gWemLoopMuteMs = v; }
+                else if (key == "WeaponEnabled") {
+                    // 14 个逗号分隔的 0/1（武器 0..13），缺省按 0（关）
+                    std::vector<std::string> toks;
+                    SplitList(val, toks);
+                    for (int i = 0; i < 14; ++i)
+                        gWeaponEnabled[i] = (i < (int)toks.size() && std::atoi(toks[i].c_str()) != 0);
+                }
                 else if (key == "WemIgnoreMedia") {
                     gWemIgnoreMedia.clear();
                     std::vector<std::string> toks;
@@ -2680,6 +2699,7 @@ void WemEventSink(uint32_t media_id, uint32_t event_id, uint32_t playing_id,
     for (auto& e : gAttacks) {
         if (e.media != (long long)media_id) continue;
         const int w = WemWeaponFromBank(bank ? bank : "");
+        if (!WeaponPermitted(e.weaponType, w)) continue;       // 武器触发开关（默认关）
         if (e.weaponType >= 0 && w >= 0 && e.weaponType != w) continue;
         // ★ 可选附加条件：条目填了 LMT / FSMId / FSMTarget 时，要求当前玩家状态也匹配。
         //   同一个 event 在非目标场景也会被请求（进集会/切装备），靠这些条件精准限定；
@@ -2997,7 +3017,9 @@ DWORD WINAPI WorkerProc(LPVOID)
                     for (int x : e.lmt) if (x == lmt) { lmtOk = true; break; }
 
                 // 去掉 HasSounds 的“基础匹配”：Stop 条目没有音效也要能匹配
+                // ★ 外加武器触发开关（默认全关）：该武器没勾 → 一律不匹配
                 const bool matchBase =
+                    WeaponPermitted(e.weaponType, weapon) &&
                     (e.weaponType < 0 || e.weaponType == weapon) &&
                     (e.fsmId < 0 || e.fsmId == fsm) &&
                     (e.fsmTarget < 0 || e.fsmTarget == player::gFsmTarget) &&
