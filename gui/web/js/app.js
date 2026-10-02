@@ -582,15 +582,30 @@ async function askDelete(indices) {
 /* ===========================================================================
    右栏：实时捕获
    =========================================================================== */
-// 地图 id → 名字（MHW/冰原常见图；未知显示 #id）
+// 地图 id → 名字。id 分段来自 HunterPie Stage.cs（见 MHW_Memory_Map_Skill.md §11.5）：
+//   0 主菜单 / 101-109 地图 / 201-203 竞技场 / 301-306 据点 / 501-506 房间·训练场·集会
+// 101=古代树、108=永霜冻土、109=聚魔之地 是文档明确的；102-107 按图鉴顺序补，
+// 若与实际不符，按实测改（进图后看地图 id，对照人在哪张图）。
 const MAP_NAMES = {
-  51: '古代树森林', 52: '大蚁冢荒地', 53: '陆珊瑚台地', 54: '瘴气之谷',
-  55: '龙结晶之地', 56: '永霜冻土', 80: '聚魔之地',
-  201: '月辰据点', 202: '星辰据点', 203: '集会所',
+  0: '主菜单',
+  101: '古代树森林', 102: '大蚁冢荒地', 103: '陆珊瑚台地',
+  104: '瘴气之谷', 105: '龙结晶之地',
+  108: '永霜冻土', 109: '聚魔之地',
+  201: '竞技场', 202: '竞技场', 203: '竞技场',
+  301: '星辰据点', 302: '星辰据点', 303: '研究所',
+  305: '月辰据点', 306: '月辰据点',
+  501: '房间', 502: '房间', 503: '房间', 504: '训练场',
+  505: '集会区域', 506: '房间',
 };
+// 和平区域（非狩猎场）：据点/房间/训练场/集会 —— 这些地方不该触发动作音效
+const PEACE_ZONES = [301, 302, 303, 305, 306, 501, 502, 503, 504, 505, 506];
 function sceneLabel(mapId) {
-  if (!mapId || mapId <= 0) return '场景：未知';
-  return '场景：' + (MAP_NAMES[mapId] || ('#' + mapId)) + '（地图 ' + mapId + '）';
+  if (mapId == null || mapId < 0) return '场景：未知';
+  const name = MAP_NAMES[mapId];
+  return '场景：' + (name || ('#' + mapId)) + '（地图 ' + mapId + '）';
+}
+function isPeaceZone(mapId) {
+  return PEACE_ZONES.indexOf(mapId) >= 0;
 }
 
 function wemLabel(r) {
@@ -644,10 +659,16 @@ function renderLive() {
     '未找到 MonsterHunterWorld.exe（游戏没开，或还没进任务）。';
   // ★ 当前场景（地图 id / 任务状态）
   const se = $('#liveScene');
-  if (se) se.textContent = sceneLabel(L.mapId);
+  if (se) {
+    se.textContent = sceneLabel(L.mapId);
+    se.className = (L.mapId > 0 && isPeaceZone(L.mapId)) ? 'dim' : '';
+  }
   const qt = $('#liveQuest');
-  if (qt) qt.textContent = L.questState == null || L.questState < 0 ? ''
-    : (L.questState === 2 ? '任务中' : '非任务');
+  if (qt) {
+    const peace = L.mapId > 0 && isPeaceZone(L.mapId);
+    qt.textContent = (L.questState == null || L.questState < 0 ? '' : (L.questState === 2 ? '任务中' : '非任务')) +
+      (peace ? ' · 和平区' : (L.mapId > 0 ? ' · 狩猎场' : ''));
+  }
   // 视图切换按钮状态
   const f = $('#viewFsm'), w = $('#viewWem');
   if (f && w) { f.className = 'vs' + (ST.wemView ? '' : ' on'); w.className = 'vs' + (ST.wemView ? ' on' : ''); }
