@@ -581,8 +581,9 @@ async function askDelete(indices) {
 function wemLabel(r) {
   // 标识 = 归属 nbnk · 第N个（表驱动：seqNum 来自 core 的 DIDX 真值表）
   const bank = r.bank || r.wemBank || '';
-  if (r.seqNum != null && r.seqNum > 0)
-    return (bank ? bank + ' · ' : '') + '第' + r.seqNum + '个';
+  const seq = (r.seqNum != null ? r.seqNum : r.wemSeqNum);
+  if (seq != null && seq > 0)
+    return (bank ? bank + ' · ' : '') + '第' + seq + '个';
   if (bank) return bank;
   return 'media ' + r.wemMedia;
 }
@@ -698,11 +699,11 @@ function renderLive() {
     wemBox.innerHTML = '';
     const wr = h('div', { class: 'live-row wem', title: '游戏正在播放的 WWise 音效 → 点击添加为条目' },
       h('b', { text: (L.wemAdded ? '✔ ' : '') + wemLabel(L) }),
-      h('span', { text: (L.wemName || '') }),
+      h('span', { class: 'dim', text: (L.wemMedia > 0 ? 'media ' + L.wemMedia : '') }),
       L.wemAdded
         ? h('em', { class: 'tag', text: '编辑' })
         : h('em', { class: 'tag add', text: '＋ 添加' }));
-    wr.onclick = () => addWemRecord({ kind: 1, wemMedia: L.wemMedia, name: L.wemName, bank: L.wemBank, weapon: L.wemWeapon || -1, added: L.wemAdded, seqNum: L.wemSeqNum });
+    wr.onclick = () => addWemRecord({ kind: 1, wemMedia: L.wemMedia, name: wemLabel(L), bank: L.wemBank, weapon: L.wemWeapon || -1, added: L.wemAdded, seqNum: L.wemSeqNum });
     wemBox.appendChild(wr);
   } else wemBox.hidden = true;
 
@@ -721,11 +722,11 @@ function renderLive() {
       const el = h('div', {
         class: 'hrec wem' + (r.added ? ' added' : ''),
         title: (r.added ? '该音效已配了条目 → 点击编辑\n' : '点击把这个 wem 音效加入条目\n') +
-               wemLabel(r) + (r.name ? ('\n' + r.name) : ''),
+               wemLabel(r) + (r.wemMedia ? ('\nmedia ' + r.wemMedia) : ''),
       },
         h('b', { text: r.time || '' }),
         h('span', { class: 'n', text: wemLabel(r) }),
-        h('span', { class: 'ids', text: (r.weapon >= 0 ? 'w' + r.weapon + ' · ' : '') + (r.name || '') }),
+        h('span', { class: 'ids', text: (r.weapon >= 0 ? 'w' + r.weapon + ' · ' : '') + r.bank }),
         r.added ? h('em', { class: 'tag', text: '编辑' })
                 : h('em', { class: 'tag add', text: '＋ 添加' }));
       el.onclick = () => addWemRecord(r);
@@ -789,7 +790,7 @@ async function addWemRecord(r) {
     return;
   }
   const entry = {
-    name: wemSeq(r) || r.name || ('media ' + media), weaponType: w, combo,
+    name: wemSeq(r) || wemBank(r) || ('media ' + media), weaponType: w, combo,
     media: media, bank: r.bank || '', fsmId: -1, fsmTarget: -1, group: '', stop: false,
     lmt: [], lmtAny: false,   // 不限不勾选：wem 条目可以填 LMT 作为附加条件
     def: [], gauge: [[], [], [], []],
