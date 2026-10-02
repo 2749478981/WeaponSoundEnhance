@@ -662,7 +662,20 @@ function histFiltered(H) {
   if (ST.weaponFilter >= 0) out = out.filter(r => r.weapon === ST.weaponFilter);
   // 导入了 nbnk 且勾选"只看这个 bank"时，只显示该 bank 的事件
   if (bankFilterOn()) out = out.filter(r => (r.bank || '') === BANK.name);
-  return out;
+  // ★ 双保险：连续同 fsm/lmt/weapon 的派生行，若相隔不到 3 秒就折叠掉后一条
+  //   （core 侧也去重，但插件/网络抖动时仍可能出现重复，界面上必须干净）
+  const out2 = [];
+  for (const r of out) {
+    const p = out2[out2.length - 1];
+    if (p && r.kind === 0 && p.kind === 0 &&
+        r.fsm === p.fsm && r.lmt === p.lmt && r.weapon === p.weapon &&
+        (typeof r.ageMs === 'number' && typeof p.ageMs === 'number'
+          ? Math.abs(p.ageMs - r.ageMs) < 3000 : false)) {
+      continue;   // 折叠
+    }
+    out2.push(r);
+  }
+  return out2;
 }
 
 function setWemView(v) {
@@ -708,12 +721,12 @@ function renderLive() {
   const se2 = $('#liveScene2'), qt2 = $('#liveQuest2');   // 音效替换页面里的同一信息
   if (se2) se2.textContent = sceneTxt;
   if (qt2) qt2.textContent = questTxt;
-  // 视图切换按钮状态（在 nbnk 制作页时强制显示 WEM 捕获，别被这里改回隐藏）
+  // 视图切换按钮状态（面板现在两个页面都有，统一按 ST.wemView 走）
   const f = $('#viewFsm'), w = $('#viewWem');
   if (f && w) { f.className = 'vs' + (ST.wemView ? '' : ' on'); w.className = 'vs' + (ST.wemView ? ' on' : ''); }
   const fb = $('#viewFsmBox'), wb = $('#viewWemBox');
-  if (fb) fb.hidden = ST.bankPage ? true : ST.wemView;
-  if (wb) wb.hidden = ST.bankPage ? false : !ST.wemView;
+  if (fb) fb.hidden = ST.wemView;
+  if (wb) wb.hidden = !ST.wemView;
 
   const H = histFiltered(L.history || []);
   const derH = H.filter(r => r.kind !== 1);   // 派生
@@ -1830,20 +1843,10 @@ function showBankPage(on) {
   ST.bankPage = !!on;
   document.body.classList.toggle('bankpage-on', !!on);
 
-  const cap = $('#wemCaptureBox');
+  // 捕获面板整体（含"派生捕获 / WEM 音效"切换）搬过去，两个页面都能看两种捕获
+  const cap = $('#captureBody');
   const host = on ? $('#bankCaptureHost') : $('#mainCaptureHost');
-  if (cap && host) {
-    host.appendChild(cap);          // DOM 移动：自动从原位置摘下来
-    const box = $('#viewWemBox');
-    if (box) box.hidden = false;    // nbnk 页直接显示 WEM 捕获；回条目页交回视图切换控制
-    if (!on) {
-      const fsm = ST.wemView ? false : true;
-      if (box) box.hidden = !ST.wemView;
-      const fb = $('#viewFsmBox');
-      if (fb) fb.hidden = !!ST.wemView;
-    }
-    renderLive();
-  }
+  if (cap && host) { host.appendChild(cap); renderLive(); }
 }
 
 ACTIONS['bank.return'] = () => { showBankPage(false); };

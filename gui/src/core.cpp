@@ -1910,13 +1910,14 @@ struct Core::Impl {
         // 【顺序】历史最新在头部（insert begin）：① 比 front，② 从头往后扫。
         if (!history.empty()) {
             const HistEntry& top = history.front();
-            if (top.fsm == live.fsm && top.lmt == live.lmt && top.weapon == live.weapon)
+            if (top.kind == 0 && top.fsm == live.fsm && top.lmt == live.lmt && top.weapon == live.weapon)
                 return;
         }
-        const unsigned long long win = 1500;
+        const unsigned long long win = 3000;   // 派生：3 秒内同一 fsm/lmt/weapon 只记一条
         for (std::size_t i = 0; i < history.size(); ++i) {
             const HistEntry& ph = history[i];
             if (nowMs - ph.ms >= win) break;
+            if (ph.kind != 0) continue;        // ★ 只和派生记录比，别被 wem 记录干扰
             if (ph.fsm == live.fsm && ph.lmt == live.lmt && ph.weapon == live.weapon)
                 return;
         }
@@ -1987,6 +1988,7 @@ struct Core::Impl {
                 h.set("weapon", JVal(history[i].weapon));
                 h.set("weaponId", JVal(history[i].weaponId));
                 h.set("time", JVal(history[i].time));
+                h.set("ageMs", JVal((long long)(::GetTickCount64() - history[i].ms)));
                 h.set("added", JVal(IsWemAdded(history[i].wemMedia)));
             } else {                      // 派生捕获（fsm/lmt）
                 h.set("fsm", JVal(history[i].fsm));
@@ -1994,6 +1996,7 @@ struct Core::Impl {
                 h.set("weapon", JVal(history[i].weapon));
                 h.set("weaponId", JVal(history[i].weaponId));
                 h.set("time", JVal(history[i].time));
+                h.set("ageMs", JVal((long long)(::GetTickCount64() - history[i].ms)));
                 h.set("name", JVal(ResolveName(history[i].weapon, history[i].fsm, history[i].lmt)));
                 h.set("added", JVal(IsCapturedAdded(history[i].weapon, history[i].fsm, history[i].lmt)));
             }

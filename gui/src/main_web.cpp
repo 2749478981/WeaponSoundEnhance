@@ -484,7 +484,7 @@ void ProbePage() {
         L"var r=bt?bt.getBoundingClientRect():null;"
         L"var rows=bt?bt.querySelectorAll('tbody tr').length:0;"
         // 顺便验证「nbnk 制作」页右栏的 WEM 捕获面板：手动模拟搬动 DOM 再量
-        L"var cap=document.getElementById('wemCaptureBox'),host=document.getElementById('bankCaptureHost');"
+        L"var cap=document.getElementById('captureBody'),host=document.getElementById('bankCaptureHost');"
         L"var capInfo='none';"
         L"if(host&&cap){host.appendChild(cap);var vb=document.getElementById('viewWemBox');"
         L"var wasHidden=vb?vb.hidden:true;"
@@ -526,8 +526,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 std::string ev = g_core.PollEvents();
                 if (!ev.empty()) PostJson(ev);
             } else if (wp == 2) {
-                // 延迟自检：等前端把数据拉完、DOM 渲染好之后再量
+                // 首次自检：等前端把数据拉完、DOM 渲染好之后再量；之后每 15 秒复检一次
+                // （排查"捕获到底有没有在记录"这类问题，必须能连续看到数字变化）
                 ::KillTimer(hwnd, 2);
+                ::SetTimer(hwnd, 5, 15000, nullptr);
+                ProbePage();
+            } else if (wp == 5) {
                 ProbePage();
             } else if (wp == 3) {
                 // 兜底：前端一直没发 ui.ready（JS 出错），8 秒后仍把 WebView 放出来，

@@ -565,7 +565,7 @@ button.reload:active{transform:scale(.98)}
 /* WEM 捕获面板在两个页面间搬动时的布局 */
 #mainCaptureHost{display:contents}          /* 宿主不产生布局影响 */
 #bankCaptureHost{flex:1; min-height:0; display:flex; flex-direction:column; overflow:hidden}
-#bankCaptureHost #wemCaptureBox{flex:1; min-height:0; display:flex; flex-direction:column; overflow:hidden}
+#bankCaptureHost #captureBody{flex:1; min-height:0; display:flex; flex-direction:column; overflow:hidden}
 #bankCaptureHost #viewWemBox{flex:1; min-height:42vh; display:flex; flex-direction:column; overflow:hidden}
 #bankCaptureHost .hist{flex:1; min-height:0; overflow:auto}
 /* nbnk 制作页捕获行上的「▶ 播放」标签 */

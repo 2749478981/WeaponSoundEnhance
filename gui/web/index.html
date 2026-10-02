@@ -131,19 +131,20 @@
         <button data-act="live.retry">重连</button>
       </div>
       <div class="cbody">
-        <div class="conn"><span class="dot" id="liveDot"></span><span id="liveText">未连接</span></div>
-        <div class="note" id="liveNote"></div>
-        <div class="conn"><span id="liveScene">场景：未知</span><span class="dim" id="liveQuest"></span></div>
-        <div class="viewswitch">
-          <button id="viewFsm" class="vs on">派生捕获</button>
-          <button id="viewWem" class="vs">WEM 音效</button>
-        </div>
-        <div id="viewFsmBox">
-          <div class="live-now" id="liveNow" hidden></div>
-          <div class="hist" id="liveHist"></div>
-        </div>
-        <!-- WEM 捕获：切到「nbnk 制作」页时整个节点会被移过去（复用同一份 DOM） -->
-        <div id="wemCaptureBox">
+        <!-- 捕获面板整体：切到「nbnk 制作」页时整个 #captureBody 会被搬过去（同一份 DOM），
+             连"派生捕获 / WEM 音效"切换按钮一起带过去，两个页面都能看 -->
+        <div id="captureBody">
+          <div class="conn"><span class="dot" id="liveDot"></span><span id="liveText">未连接</span></div>
+          <div class="note" id="liveNote"></div>
+          <div class="conn"><span id="liveScene">场景：未知</span><span class="dim" id="liveQuest"></span></div>
+          <div class="viewswitch">
+            <button id="viewFsm" class="vs on">派生捕获</button>
+            <button id="viewWem" class="vs">WEM 音效</button>
+          </div>
+          <div id="viewFsmBox">
+            <div class="live-now" id="liveNow" hidden></div>
+            <div class="hist" id="liveHist"></div>
+          </div>
           <div id="viewWemBox" hidden>
             <div class="note exp">⚠ 实验性：这里通过捕获游戏内的 wem 调用情况来同步播放音效。<br>
               可能受场景切换、循环音、以及同一事件被多次请求的影响，不保证与实际发声完全一致。</div>
