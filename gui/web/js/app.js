@@ -52,6 +52,20 @@ function toast(msg, kind) {
      绝不能直接当 HTML 塞进 DOM。
    ★ URL 渲染成 <code> 而不是 <a>：这是 WebView，点链接会把整个界面导航走，
      要开网页请用窗口里的「打开发布页」按钮（那个会调系统浏览器）。 */
+function notesToHtml(src) {
+  const s = String(src).trim();
+  // GitHub release 说明本身可能是 HTML（我们用 API 发的就是 <h3><ul><li>），
+  // 那就直接渲染；否则按 Markdown 处理（老版本发布说明是 md）。
+  if (/<(h[1-6]|ul|ol|li|p|br|b|strong|em|code|a|div)\b/i.test(s)) {
+    // 只允许安全标签，去掉 script/style/on* 属性，避免注入
+    return s
+      .replace(/<\s*(script|style|iframe|object|embed)[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, '')
+      .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+      .replace(/javascript:/gi, '');
+  }
+  return mdToHtml(s);
+}
+
 function mdToHtml(src) {
   const esc = s => String(s).replace(/[&<>"]/g,
     c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -617,6 +631,14 @@ function wemLabel(r) {
   if (bank) return bank;
   return 'media ' + r.wemMedia;
 }
+// 显示名：用户命名库的名字优先（history 用 r.custom，live 用 r.wemNameCustom），
+// 否则用「bank · 第N个」（官方 mediaids 的 bank/NN.ogg 形态不当名字显示）
+function wemDisplayName(r) {
+  const isCustom = !!(r.custom || r.wemNameCustom);
+  if (isCustom) return r.name || r.wemName || wemLabel(r);
+  return wemLabel(r);
+}
+
 function histFiltered(H) {
   // 按当前选中武器隔离：选了具体武器只显示该武器的捕获
   let out = H;
@@ -658,17 +680,17 @@ function renderLive() {
   $('#liveNote').textContent = L.attached ? '' :
     '未找到 MonsterHunterWorld.exe（游戏没开，或还没进任务）。';
   // ★ 当前场景（地图 id / 任务状态）
+  const sceneTxt = sceneLabel(L.mapId);
+  const peace = L.mapId > 0 && isPeaceZone(L.mapId);
+  const questTxt = (L.questState == null || L.questState < 0 ? '' : (L.questState === 2 ? '任务中' : '非任务')) +
+    (peace ? ' · 和平区' : (L.mapId > 0 ? ' · 狩猎场' : ''));
   const se = $('#liveScene');
-  if (se) {
-    se.textContent = sceneLabel(L.mapId);
-    se.className = (L.mapId > 0 && isPeaceZone(L.mapId)) ? 'dim' : '';
-  }
+  if (se) { se.textContent = sceneTxt; se.className = peace ? 'dim' : ''; }
   const qt = $('#liveQuest');
-  if (qt) {
-    const peace = L.mapId > 0 && isPeaceZone(L.mapId);
-    qt.textContent = (L.questState == null || L.questState < 0 ? '' : (L.questState === 2 ? '任务中' : '非任务')) +
-      (peace ? ' · 和平区' : (L.mapId > 0 ? ' · 狩猎场' : ''));
-  }
+  if (qt) qt.textContent = questTxt;
+  const se2 = $('#liveScene2'), qt2 = $('#liveQuest2');   // 音效替换页面里的同一信息
+  if (se2) se2.textContent = sceneTxt;
+  if (qt2) qt2.textContent = questTxt;
   // 视图切换按钮状态
   const f = $('#viewFsm'), w = $('#viewWem');
   if (f && w) { f.className = 'vs' + (ST.wemView ? '' : ' on'); w.className = 'vs' + (ST.wemView ? ' on' : ''); }
@@ -740,12 +762,12 @@ function renderLive() {
     wemBox.hidden = false;
     wemBox.innerHTML = '';
     const wr = h('div', { class: 'live-row wem', title: '游戏正在播放的 WWise 音效 → 点击添加为条目' },
-      h('b', { text: (L.wemAdded ? '✔ ' : '') + wemLabel(L) }),
+      h('b', { text: (L.wemAdded ? '✔ ' : '') + wemDisplayName(L) }),
       h('span', { class: 'dim', text: (L.wemMedia > 0 ? 'media ' + L.wemMedia : '') }),
       L.wemAdded
         ? h('em', { class: 'tag', text: '编辑' })
         : h('em', { class: 'tag add', text: '＋ 添加' }));
-    wr.onclick = () => addWemRecord({ kind: 1, wemMedia: L.wemMedia, name: wemLabel(L), bank: L.wemBank, weapon: L.wemWeapon || -1, added: L.wemAdded, seqNum: L.wemSeqNum });
+    wr.onclick = () => addWemRecord({ kind: 1, wemMedia: L.wemMedia, name: wemDisplayName(L), bank: L.wemBank, weapon: L.wemWeapon || -1, added: L.wemAdded, seqNum: L.wemSeqNum });
     wemBox.appendChild(wr);
   } else wemBox.hidden = true;
 
@@ -764,10 +786,10 @@ function renderLive() {
       const el = h('div', {
         class: 'hrec wem' + (r.added ? ' added' : ''),
         title: (r.added ? '该音效已配了条目 → 点击编辑\n' : '点击把这个 wem 音效加入条目\n') +
-               wemLabel(r) + (r.wemMedia ? ('\nmedia ' + r.wemMedia) : ''),
+               wemDisplayName(r) + (r.wemMedia ? ('\nmedia ' + r.wemMedia) : ''),
       },
         h('b', { text: r.time || '' }),
-        h('span', { class: 'n', text: wemLabel(r) }),
+        h('span', { class: 'n', text: wemDisplayName(r) }),
         h('span', { class: 'ids', text: (r.weapon >= 0 ? 'w' + r.weapon + ' · ' : '') + r.bank }),
         h('em', { class: 'tag name', title: '给这条 wem 起名字（存进名字库）', text: '命名',
           onclick: ev => { ev.stopPropagation(); openNameDialog(r.wemMedia, r.bank || ''); } }),
@@ -860,11 +882,11 @@ function bankRepCount() { return Object.keys(BANK.reps).length; }
 
 function renderBank() {
   const info = $('#bankInfo');
-  const tb = $('#bankBody');
+  const tb = $('#bankBody2') || $('#bankBody');
   tb.innerHTML = '';
   if (!BANK.path) {
     info.textContent = '还没有导入 nbnk。点「导入 nbnk…」选一个 sound bank 文件。';
-    $('#bankFoot').textContent = '';
+    $('#bankFoot2').textContent = '';
     return;
   }
   info.textContent = `已导入：${BANK.name}.nbnk（${BANK.media.length} 条 media）\n${BANK.path}\n` +
@@ -874,7 +896,7 @@ function renderBank() {
     const rep = BANK.reps[m.id] || '';
     tb.appendChild(h('tr', {},
       h('td', { class: 'lmt' }, String(m.seqInBank || m.seq)),
-      h('td', {}, h('span', { class: 'nm', title: m.name || '', text: m.name || '（无名字）' })),
+      h('td', {}, h('span', { class: 'nm', title: m.custom ? m.name : '', text: m.custom ? m.name : (m.seqInBank ? (BANK.name + ' · 第' + m.seqInBank + '个') : '（无名字）') })),
       h('td', { class: 'fsm', style: 'color:var(--c-blue)' }, String(m.id)),
       h('td', { class: 'lmt' }, String(m.size)),
       h('td', { title: rep, style: 'max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' },
@@ -906,7 +928,7 @@ function renderBank() {
         } }, '选音频'),
         rep ? h('button', { class: 'del', onclick: () => { delete BANK.reps[m.id]; renderBank(); } }, '取消') : null))));
   });
-  $('#bankFoot').textContent =
+  $('#bankFoot2').textContent =
     `${BANK.media.length} 条 media（显示前 ${show.length} 条）· 已选 ${bankRepCount()} 条替换`;
 }
 
@@ -1443,7 +1465,7 @@ function refreshUpdate() {
   const u = ST.upd;
   $('#updCur').textContent = 'v' + (ST.version || '—');
   $('#updNew').textContent = u.tag || '—';
-  $('#updNotes').innerHTML = mdToHtml(u.notes || '');
+  $('#updNotes').innerHTML = notesToHtml(u.notes || '');
   $('#updMsg').textContent = u.err ? ('出错：' + u.err) : (u.msg || '');
   const bar = $('#updBar');
   bar.hidden = !(u.state === 1 && u.progress > 0);
@@ -1604,6 +1626,12 @@ async function openNameDialog(media, fallbackName) {
   } catch (e) { /* 读不到就按空处理 */ }
   setTimeout(() => { const el = $('#nameInput'); if (el) el.focus(); }, 50);
 }
+ACTIONS['name.close'] = () => {
+  // 只关命名框：从"音效替换"或"名字库"里弹出来的，不能连带关掉底下的窗口
+  $('#mName').classList.remove('open');
+  syncModalOpenClass();
+};
+
 ACTIONS['name.save'] = async () => {
   try {
     const r = await Backend.call('wem.name.set', { media: nameDialogMedia, name: $('#nameInput').value.trim() });
@@ -1679,8 +1707,20 @@ ACTIONS['win.nameLib'] = () => { openNameLib(); };
 
 
 /* ---- 音效替换（nbnk Mod）：必须在 const ACTIONS 之后注册，否则 TDZ 报错 ---- */
+// ★ 音效替换是一个正式页面（不是弹窗）：切 mainEntries/footer ↔ mainBank
+function showBankPage(on) {
+  const a = $('#mainEntries'), b = $('#mainBank'), f = $('.status');
+  if (a) a.hidden = !!on;
+  if (b) b.hidden = !on;
+  if (f) f.hidden = !!on;
+  ST.bankPage = !!on;
+  document.body.classList.toggle('bankpage-on', !!on);
+}
+
+ACTIONS['bank.return'] = () => { showBankPage(false); };
+
 ACTIONS['win.bank'] = () => {
-  openModal('#mBank');
+  showBankPage(true);
   renderBank();
   loadBankOutDir();
 };
@@ -1731,7 +1771,7 @@ ACTIONS['bank.export'] = async () => {
   if (!BANK.path) { toast('先导入 nbnk', 'err'); return; }
   const mediaIds = Object.keys(BANK.reps);
   if (!mediaIds.length) { toast('还没有选任何替换音效', 'err'); return; }
-  const btn = $('#bankExportBtn');
+  const btn = ($('#bankExportBtn2') || $('#bankExportBtn'));
   btn.disabled = true;
   try {
     // 1) 转 wem（同一个进度里按需转换；已是 .wem 的直接用）

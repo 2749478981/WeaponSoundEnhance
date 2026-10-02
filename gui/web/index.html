@@ -61,7 +61,7 @@
   </div>
 
   <!-- ============ 主体三栏 ============ -->
-  <main>
+  <main id="mainEntries">
     <!-- 左：武器分类 + 配置组合 -->
     <aside class="rail box">
       <div class="phead">武器分类</div>
@@ -146,6 +146,61 @@
           <div class="live-now" id="liveWem" hidden></div>
           <div class="hist" id="liveHistWem"></div>
         </div>
+      </div>
+    </aside>
+  </main>
+
+  <!-- ============ 音效替换（正式页面，不是弹窗） ============ -->
+  <main id="mainBank" hidden>
+    <aside class="rail box">
+      <div class="phead">音效替换</div>
+      <div class="rail-scroll">
+        <div class="navlist">
+          <button class="nav on" data-act="bank.pick">导入 nbnk…</button>
+          <button class="nav" data-act="bank.export" id="bankExportBtn2">转换并导出</button>
+          <button class="nav" data-act="bank.clear">清空替换列表</button>
+          <button class="nav" data-act="win.nameLib">名字库…</button>
+          <button class="nav" data-act="bank.return">返回条目列表</button>
+        </div>
+      </div>
+    </aside>
+
+    <section class="center box">
+      <div class="phead">音效替换（nbnk Mod）</div>
+      <div class="bankpage">
+        <p class="note">把游戏里的某个音效换成你自己的声音：<b>导入 nbnk</b> → 找到要换的那条 → <b>选音频</b>
+          （wav / mp3 / ogg / flac）→ <b>转换并导出</b> → 把生成的 nbnk 放进
+          <code>nativePC\sound\wwise\Windows\</code> 后进游戏生效。<br>
+          只写新文件到输出目录，<b>不会改动游戏原文件</b>；非 wav 格式需要 <code>wemkit\ffmpeg.exe</code>（可选）。</p>
+
+        <div class="bankline">
+          <span class="lbl">输出目录</span>
+          <input id="bankOutDir" class="mini-in grow" readonly>
+          <button data-act="bank.pickOutDir">更改…</button>
+          <button data-act="bank.openOut">打开目录</button>
+        </div>
+        <div class="bankline">
+          <label class="inline"><input type="checkbox" id="bankOnlyThis" checked>
+            捕获面板只显示这个 bank 的事件</label>
+          <span class="dim" id="bankSummary"></span>
+        </div>
+        <div class="paths" id="bankInfo">还没有导入 nbnk。</div>
+
+        <div class="tablewrap banktable">
+          <table>
+            <thead><tr><th>序号</th><th>名称</th><th>media id</th><th>大小</th><th>替换为</th><th class="right">操作</th></tr></thead>
+            <tbody id="bankBody2"></tbody>
+          </table>
+        </div>
+        <div class="cfoot" id="bankFoot2"></div>
+      </div>
+    </section>
+
+    <aside class="capture box">
+      <div class="phead small">当前场景</div>
+      <div class="bankpage">
+        <div class="conn"><span id="liveScene2">场景：未知</span><span class="dim" id="liveQuest2"></span></div>
+        <p class="note">进游戏后这里显示你所在的场景与任务状态，方便判断正在听的是哪张图的声音。</p>
       </div>
     </aside>
   </main>
@@ -270,48 +325,11 @@
   </div>
 </div>
 
-<!-- ================= 音效替换（nbnk Mod） ================= -->
-<div class="modal" id="mBank">
-  <div class="mbox box bankbox">
-    <div class="mhead"><span class="t">音效替换（nbnk Mod）</span><button data-act="m.close">关闭</button></div>
-    <div class="mbody">
-      <p class="note">把游戏里的某个音效换成你自己的声音：导入 nbnk → 给要换的那条选音频（wav / mp3 / ogg / flac）→
-        转换并导出 → 把生成的 nbnk 放进 <code>nativePC\sound\wwise\Windows\</code> 即生效。<br>
-        导出只写新文件，<b>不会改动游戏原文件</b>；建议先备份。非 wav 格式需要 <code>wemkit\ffmpeg.exe</code>（可选）。</p>
-
-      <div class="btnrow">
-        <button data-act="bank.pick">导入 nbnk…</button>
-        <button data-act="bank.export" id="bankExportBtn">转换并导出 nbnk</button>
-        <button data-act="bank.clear">清空替换列表</button>
-        <button data-act="win.nameLib" title="管理你手动命名的 wem（保存到 WseWemNames_user.txt）">名字库…</button>
-      </div>
-      <div class="bankline">
-        <span class="lbl">输出目录</span>
-        <input id="bankOutDir" class="mini-in grow" readonly>
-        <button data-act="bank.pickOutDir">更改…</button>
-        <button data-act="bank.openOut">打开目录</button>
-      </div>
-      <div class="bankline">
-        <label class="inline"><input type="checkbox" id="bankOnlyThis" checked>
-          捕获面板只显示这个 bank 的事件</label>
-      </div>
-      <div class="paths" id="bankInfo">还没有导入 nbnk。</div>
-
-      <div class="tablewrap small banktable">
-        <table>
-          <thead><tr><th>序号</th><th>名称</th><th>media id</th><th>大小</th><th>替换为</th><th class="right">操作</th></tr></thead>
-          <tbody id="bankBody"></tbody>
-        </table>
-      </div>
-      <div class="cfoot" id="bankFoot"></div>
-    </div>
-  </div>
-</div>
 
 <!-- ================= 给 wem 命名（用户库） ================= -->
 <div class="modal" id="mName">
   <div class="mbox narrow box">
-    <div class="mhead"><span class="t">给这个 wem 命名</span><button data-act="m.close">关闭</button></div>
+    <div class="mhead"><span class="t">给这个 wem 命名</span><button data-act="name.close">关闭</button></div>
     <div class="mbody">
       <div class="bankline"><span class="lbl">media id</span><b id="nameMedia">-</b></div>
       <div class="bankline"><span class="lbl">当前名字</span><span id="nameCurrent" class="dim">（无）</span></div>

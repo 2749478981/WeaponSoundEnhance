@@ -494,3 +494,17 @@ table td{padding:8px 10px}
 .hrec .tag.name{background:var(--chip-bg); color:var(--chip-fg, var(--text)); cursor:pointer;
                 border:var(--bw) solid var(--line-2)}
 .hrec .tag.name:hover{background:var(--accent); color:var(--on-accent); border-color:var(--accent)}
+/* ===========================================================================
+   音效替换：正式页面（不是弹窗）。与条目页共用三栏栅格。
+   =========================================================================== */
+[hidden]{display:none !important}
+#mainBank{padding:0}
+.bankpage{flex:1; min-height:0; overflow:auto; padding:14px 18px; display:flex;
+          flex-direction:column; gap:9px}
+.bankpage .note{margin:0}
+.navlist{display:flex; flex-direction:column; gap:6px; padding:2px 4px}
+.navlist .nav{text-align:left; padding:9px 12px; width:100%}
+.navlist .nav.primary{background:var(--accent); color:var(--on-accent); border-color:var(--accent)}
+.banktable{flex:1; min-height:120px; max-height:none}
+.banktable table{width:100%}
+.cfoot{font-size:11.5px; color:var(--muted)}

@@ -1843,6 +1843,8 @@ struct Core::Impl {
                 h.set("wemMedia", JVal(history[i].wemMedia));
                 h.set("bank", JVal(history[i].bank));
                 h.set("name", JVal(history[i].wemName));
+                // 名字是否来自用户命名库（true 才显示这个名字，否则前端显示 bank·第N个）
+                h.set("custom", JVal(wemUserNames.find(history[i].wemMedia) != wemUserNames.end()));
                 // 序号真值（DIDX 位置），显示按 id 查表
                 const std::unordered_map<int, std::pair<std::string, int>>::const_iterator sit =
                     wemSeqs.find(history[i].wemMedia);
@@ -1916,6 +1918,8 @@ struct Core::Impl {
         d.set("wemName", JVal(curWemName.empty() ? std::string() : curWemName));
         d.set("wemBank", JVal(curWemBank.empty() ? std::string() : curWemBank));
         d.set("wemWeapon", JVal(curWemWeapon));
+        d.set("wemNameCustom", JVal(curWemMedia > 0 &&
+                                    wemUserNames.find(curWemMedia) != wemUserNames.end()));
 
         // 当前场景（DLL 写 plugins\SonarScene.txt：mapId\nquestState；GUI 1s 缓存读取）
         {
@@ -4245,6 +4249,8 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
                 // 名字来自 mediaids 映射（有就有，没有就空）
                 const std::unordered_map<int, std::string>::const_iterator it = im->wemNames.find((int)m.id);
                 o.set("name", JVal(it != im->wemNames.end() ? it->second : std::string()));
+                  // 是否用户命名（true 才把 name 当真名显示，否则前端显示 bank·第N个）
+                  o.set("custom", JVal(im->wemUserNames.find((int)m.id) != im->wemUserNames.end()));
                 // 序号真值（真值表：id -> bank/第N个）
                 const std::unordered_map<int, std::pair<std::string, int>>::const_iterator sit =
                     im->wemSeqs.find((int)m.id);
