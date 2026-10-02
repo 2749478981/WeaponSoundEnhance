@@ -332,7 +332,11 @@ function toggleWeaponOn(id) {
   ST.weaponOn[id] = !ST.weaponOn[id];
   Backend.call('weapons.enabled.set', { enabled: ST.weaponOn }).then(() => {
     toast((ST.weaponOn[id] ? '已启用：' : '已停用：') + weaponName(id), 'ok');
-  }).catch(() => { ST.weaponOn[id] = !ST.weaponOn[id]; });
+  }).catch(err => {
+    ST.weaponOn[id] = !ST.weaponOn[id];
+    toast('武器开关保存失败：' + ((err && err.message) || err), 'err');
+    renderWeapons();
+  });
   renderWeapons();
 }
 function weaponName(id) {
