@@ -519,3 +519,6 @@ table td{padding:8px 10px}
 .backbtn:hover{filter:brightness(1.08)}
 .backbtn:active{transform:scale(.98)}
 .banktitle{font-size:14px; font-weight:var(--fw-strong)}
+/* 环境自检与提示条 */
+.note.ok{border-left:3px solid var(--c-green); padding-left:9px}
+.note.warn{border-left:3px solid var(--c-amber); padding-left:9px; color:var(--text)}

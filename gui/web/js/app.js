@@ -115,6 +115,8 @@ let eggIndex = 0;
 
 // 成就专属 toast：两行（第一行成就名、第二行描述；带链接的描述可点击跳转）
 function eggToast(a) {
+  // 成就弹出音效（coinmul.wav：内嵌在 exe 里，解压到 %LOCALAPPDATA% 后播放）
+  Backend.call('ui.playAsset', { name: 'coinmul.wav' }).catch(() => {});
   const t = h('div', { class: 'toast egg' },
     h('div', { class: 'egg-line1' }, '🏆 完成成就：' + a.t),
     h('div', { class: 'egg-line2' },
@@ -194,8 +196,8 @@ const ST = {
   themes: [],
   wemView: false,          // 捕获面板视图：false=派生，true=WEM 音效
   assetBase: '../',
-  iconBase: '../weapons_icons/',
-  logoUrl: '../sonar_icon.png',
+  iconBase: 'https://sonar.assets/weapons_icons/',   // 内嵌资源（exe 里解压出来），不在游戏目录
+  logoUrl: 'https://sonar.assets/sonar_icon.png',
   weapons: [],
   anyCount: 0,
   entryCount: 0,
@@ -1720,10 +1722,29 @@ function showBankPage(on) {
 ACTIONS['bank.return'] = () => { showBankPage(false); };
 
 ACTIONS['win.bank'] = () => {
+  // ★ 已在音效替换页面时，再点一次这个按钮 = 返回条目列表
+  if (ST.bankPage) { showBankPage(false); return; }
   showBankPage(true);
   renderBank();
   loadBankOutDir();
+  refreshConvertEnv();
 };
+
+// 转换环境自检（有没有 Wwise / ffmpeg / vgmstream）
+async function refreshConvertEnv() {
+  const el = $('#bankEnv');
+  if (!el) return;
+  try {
+    const r = await Backend.call('wem.convertEnv', {});
+    const wwise = r.hasWwise
+      ? 'Wwise ✓（可把 wav/mp3/ogg 转成 wem）'
+      : '未检测到 Wwise ✗ —— 只能替换「已经是 .wem」的文件；要转换其他格式需安装 Wwise（免费，Audiokinetic 官网）';
+    const ff = r.hasFfmpeg ? 'ffmpeg ✓' : 'ffmpeg ✗（mp3/ogg 转换需要，放到 wemkit\\ffmpeg.exe）';
+    const vg = r.hasVgmstream ? '试听解码 ✓' : '试听解码 ✗（缺 wemkit\\vgmstream）';
+    el.textContent = '转换环境：' + wwise + '　|　' + ff + '　|　' + vg;
+    el.className = r.hasWwise ? 'note ok' : 'note warn';
+  } catch (e) { el.textContent = ''; }
+}
 
 // 输出目录（nbnk 导出位置）
 async function loadBankOutDir() {
@@ -1759,6 +1780,15 @@ ACTIONS['bank.pick'] = async () => {
 };
 
 ACTIONS['bank.clear'] = () => { BANK.reps = {}; renderBank(); toast('已清空替换列表'); };
+
+ACTIONS['bank.outDirToGame'] = async () => {
+  try {
+    const r = await Backend.call('bank.outDirToGame', {});
+    const el = $('#bankOutDir');
+    if (el) el.value = r.dir || '';
+    toast('导出目录已设为游戏目录，导出后按提示重载即可生效', 'ok');
+  } catch (e) { toast('设置失败：' + e.message, 'err'); }
+};
 
 ACTIONS['bank.openOut'] = async () => {
   try {
@@ -1799,7 +1829,7 @@ ACTIONS['bank.export'] = async () => {
 
     // 2) 导出 nbnk（写新文件，不动游戏原文件）
     const out = await Backend.call('bank.export', { path: BANK.path, replacements: reps });
-    toast(`已导出 ${out.replaced} 条替换 → ${out.out}`, 'ok');
+    toast(`已导出 ${out.replaced} 条 → ${out.out}；进游戏切换一次武器种类再切回即可生效（不用重启）`, 'ok');
     $('#bankInfo').textContent =
       `导出完成：${out.out}\n把该 nbnk 放到 游戏目录\\nativePC\\sound\\wwise\\Windows\\ 下即可生效。`;
   } catch (e) {

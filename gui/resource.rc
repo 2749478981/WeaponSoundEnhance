@@ -7,12 +7,18 @@
 // 版本号要和 src/app.h 里的 kWseGuiVersion 保持一致（界面标题显示的是那个）。
 #include <winver.h>
 
+
+// 内嵌资源包（武器图标 / logo / 成就音效 coinmul.wav）：启动时解压到 %LOCALAPPDATA%\Sonar\assets，
+// 通过虚拟主机 https://sonar.assets 提供给界面 —— 这样游戏目录里不再散落 png/wav。
+#define IDR_ASSETS 200
+IDR_ASSETS RCDATA "assets.zip"
+
 #define IDI_APP 100
 IDI_APP ICON DISCARDABLE "WeaponSoundEnhanceGUI.ico"
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION    2,35,0,0
- PRODUCTVERSION 2,35,0,0
+ FILEVERSION    2,36,0,0
+ PRODUCTVERSION 2,36,0,0
  FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
  FILEFLAGS      0
  FILEOS         VOS_NT_WINDOWS32
@@ -25,11 +31,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "Sonar"
             VALUE "FileDescription",  "Sonar - config tool"
-            VALUE "FileVersion",      "2.35.0.0"
+            VALUE "FileVersion",      "2.36.0.0"
             VALUE "InternalName",     "WeaponSoundEnhanceGUI"
             VALUE "OriginalFilename", "WeaponSoundEnhanceGUI.exe"
             VALUE "ProductName",      "Sonar"
-            VALUE "ProductVersion",   "2.35.0.0"
+            VALUE "ProductVersion",   "2.36.0.0"
             VALUE "LegalCopyright",   "MIT License"
         END
     END

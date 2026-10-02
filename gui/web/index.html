@@ -175,13 +175,17 @@
       <div class="bankpage">
         <p class="note">把游戏里的某个音效换成你自己的声音：<b>导入 nbnk</b> → 找到要换的那条 → <b>选音频</b>
           （wav / mp3 / ogg / flac）→ <b>转换并导出</b> → 把生成的 nbnk 放进
-          <code>nativePC\sound\wwise\Windows\</code> 后进游戏生效。<br>
-          只写新文件到输出目录，<b>不会改动游戏原文件</b>；非 wav 格式需要 <code>wemkit\ffmpeg.exe</code>（可选）。</p>
+          <code>nativePC\sound\wwise\Windows\</code> 后生效（可直接用「导出到游戏目录」）。<br>
+          只写新文件到输出目录，<b>不会改动游戏原文件</b>。</p>
+        <p class="note ok"><b>生效提示（重要）</b>：武器音效的 nbnk 改完后，<b>一般只要在游戏里切换一次武器种类、再切回来</b>
+          就会重新加载，<b>不需要重启游戏</b>；如果这样没生效，再考虑重启游戏。</p>
+        <div class="note" id="bankEnv">转换环境：检查中…</div>
 
         <div class="bankline">
           <span class="lbl">输出目录</span>
           <input id="bankOutDir" class="mini-in grow" readonly>
           <button data-act="bank.pickOutDir">更改…</button>
+          <button data-act="bank.outDirToGame" title="直接设成游戏读取 nbnk 的目录，导出后立刻生效">导出到游戏目录</button>
           <button data-act="bank.openOut">打开目录</button>
         </div>
         <div class="bankline">

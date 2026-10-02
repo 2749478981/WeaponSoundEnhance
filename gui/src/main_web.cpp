@@ -730,6 +730,19 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
                                 web3->SetVirtualHostNameToFolderMapping(
                                     L"sonar.local", webRoot.c_str(),
                                     COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_ALLOW);
+
+                                // 内嵌资源（武器图标 / logo / 成就音效）：
+                                // 启动时由 core 解压到 %LOCALAPPDATA%\Sonar\assets，
+                                // 这里映射成 https://sonar.assets，游戏目录保持干净。
+                                wchar_t la[MAX_PATH * 2] = {};
+                                if (::GetEnvironmentVariableW(L"LOCALAPPDATA", la, MAX_PATH * 2) > 0) {
+                                    std::wstring assets = std::wstring(la) + L"\\Sonar\\assets";
+                                    ::CreateDirectoryW(assets.c_str(), nullptr);
+                                    web3->SetVirtualHostNameToFolderMapping(
+                                        L"sonar.assets", assets.c_str(),
+                                        COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_ALLOW);
+                                    LogLine("assets host mapped: %s", WideToUtf8(assets).c_str());
+                                }
                             }
 
                             // ★ 导航完成前 WebView 区域默认是白底，一打开会先白屏一秒，

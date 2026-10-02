@@ -1260,6 +1260,7 @@ struct Core::Impl {
     //   格式：media_id <TAB> 名字；优先级高于随包的官方映射
     std::string wemUserNamePath;
     std::unordered_map<int, std::string> wemUserNames;
+    std::string assetsDir;      // 内嵌资源解压目录（%LOCALAPPDATA%\Sonar\assets）
     std::unordered_map<int, std::string> wemNames;                 // media id -> 可读名(UTF-8)
     std::unordered_map<int, std::pair<std::string, int>> wemSeqs;  // media id -> (bank, 序号=该bank DIDX第几个)
     // 循环音检测（行为判定）：4 秒内同一 media 出现 >= 4 次 → 判为循环音并静默 8 秒
@@ -1351,6 +1352,7 @@ struct Core::Impl {
         // 用户自定义名字库（优先级高于官方映射）
         wemUserNamePath = BaseDir() + "WseWemNames_user.txt";
         LoadWemUserNames();
+        ExtractEmbeddedAssets();   // 内嵌资源（图标 / logo / 成就音效）解压到 %LOCALAPPDATA%
     }
 
     ~Impl() { game.Detach(); }
@@ -1562,6 +1564,80 @@ struct Core::Impl {
     void ReloadWemNames() {
         LoadWemMap();
         LoadWemUserNames();
+    }
+
+    // ---- 内嵌资源（武器图标 / logo / 成就音效）解压到 %LOCALAPPDATA%\Sonar\assets ----
+    //      资源以 zip 形式编进 exe（RCDATA #200），界面通过 https://sonar.assets 访问，
+    //      所以游戏目录里不再出现 weapons_icons\ / sonar_icon.png / coinmul.wav。
+    static std::string EnvDirFallback() {
+        char tmp[MAX_PATH] = {};
+        ::GetTempPathA(MAX_PATH, tmp);
+        return std::string(tmp);
+    }
+    static std::string LocalAssetsDir() {
+        wchar_t buf[MAX_PATH * 2] = {};
+        const DWORD n = ::GetEnvironmentVariableW(L"LOCALAPPDATA", buf, MAX_PATH * 2);
+        std::string base = (n > 0) ? Utf8FromWide(buf) : EnvDirFallback();
+        std::string dir = base + "\\Sonar\\assets";
+        return dir;
+    }
+
+    void ExtractEmbeddedAssets() {
+        HMODULE mod = ::GetModuleHandleW(nullptr);
+        HRSRC res = ::FindResourceW(mod, MAKEINTRESOURCEW(200), RT_RCDATA);
+        if (!res) return;
+        const DWORD size = ::SizeofResource(mod, res);
+        HGLOBAL hg = ::LoadResource(mod, res);
+        if (!hg || size == 0) return;
+        const void* data = ::LockResource(hg);
+        if (!data) return;
+
+        assetsDir = LocalAssetsDir();
+        const std::string marker = assetsDir + "\\.assets_ver";
+        char want[64] = {};
+        _snprintf_s(want, _TRUNCATE, "%lu", (unsigned long)size);
+        {
+            std::string have;
+            if (FsRead(marker, have) && have == want) return;   // 已是最新，跳过
+        }
+        MakeDirs(Utf8ToWide(assetsDir));
+
+        mz_zip_archive zip{};
+        if (!mz_zip_reader_init_mem(&zip, data, (size_t)size, 0)) return;
+        const mz_uint n = mz_zip_reader_get_num_files(&zip);
+        for (mz_uint i = 0; i < n; ++i) {
+            char name[512] = {};
+            mz_zip_reader_get_filename(&zip, i, name, sizeof(name));
+            std::string rel(name);
+            for (std::size_t k = 0; k < rel.size(); ++k) if (rel[k] == '\\') rel[k] = '/';
+            if (rel.empty() || rel.back() == '/') continue;
+            // 目录用相对名字建（miniz 的 extract_to_file 收 ANSI 路径，文件名都是 ASCII）
+            std::string relDir = rel;
+            const std::size_t rs = relDir.find_last_of('/');
+            std::string sub = assetsDir;
+            if (rs != std::string::npos) {
+                relDir = relDir.substr(0, rs);
+                for (std::size_t k = 0; k < relDir.size(); ++k) if (relDir[k] == '/') relDir[k] = '\\';
+                sub = assetsDir + "\\" + relDir;
+            }
+            MakeDirs(Utf8ToWide(sub));
+            std::string relWin = rel;
+            for (std::size_t k = 0; k < relWin.size(); ++k) if (relWin[k] == '/') relWin[k] = '\\';
+            const std::string fullAnsi = assetsDir + "\\" + relWin;
+            mz_zip_reader_extract_to_file(&zip, i, fullAnsi.c_str(), 0);
+        }
+        mz_zip_reader_end(&zip);
+        FsWrite(marker, want);
+    }
+
+    // 播放内嵌资源里的音频（成就音效 coinmul.wav 等）
+    bool PlayAsset(const std::string& name) {
+        if (assetsDir.empty()) return false;
+        const std::string full = assetsDir + "\\" + name;
+        const std::wstring w = Utf8ToWide(full);
+        if (::GetFileAttributesW(w.c_str()) == INVALID_FILE_ATTRIBUTES) return false;
+        ::PlaySoundW(nullptr, nullptr, 0);
+        return ::PlaySoundW(w.c_str(), nullptr, SND_FILENAME | SND_ASYNC | SND_NODEFAULT) != FALSE;
     }
 
     void LoadWemMap() {
@@ -4116,6 +4192,22 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
         }
 
         // ---- nbnk 导出的输出目录 ----
+        if (method == "bank.outDirToGame") {
+            // 把输出目录一键设为游戏读取 nbnk 的位置：<游戏>\nativePC\sound\wwise\Windows
+            std::string gdir;
+            if (!FindGameDirFromSelf(gdir)) return ErrJson("找不到游戏目录（GUI 需放在游戏的 nativePC\\plugins\\WeaponSoundEnhance\\ 下）");
+            std::string dir = gdir + "nativePC\\sound\\wwise\\Windows";
+            const std::wstring wd = Utf8ToWide(dir);
+            ::CreateDirectoryW(wd.c_str(), nullptr);
+            if (::GetFileAttributesW(wd.c_str()) == INVALID_FILE_ATTRIBUTES)
+                return ErrJson("无法创建目录：" + dir);
+            im->cfg.global.bankOutDir = dir;
+            if (im->cfg.loaded && !im->cfg.path.empty()) (void)SaveConfig(im->cfg.path, im->cfg);
+            JVal d = JVal::obj();
+            d.set("dir", JVal(ToSlash(dir)));
+            return OkJson(d);
+        }
+
         if (method == "bank.outDir") {
             std::string dir = im->cfg.global.bankOutDir;
             if (dir.empty()) dir = im->BaseDir() + "wemmod";
@@ -4263,6 +4355,36 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
             d.set("count", JVal((int)bf.media.size()));
             d.set("media", arr);
             d.set("hasWwise", JVal(!bankmod::FindWwiseConsole().empty()));
+            return OkJson(d);
+        }
+
+        if (method == "ui.playAsset") {
+            // 播放内嵌资源里的音效（成就提示音 coinmul.wav 等）
+            const std::string name = Trim(p.optStr("name"));
+            if (name.empty()) return ErrJson("缺少 name");
+            JVal d = JVal::obj();
+            d.set("played", JVal(im->PlayAsset(name)));
+            return OkJson(d);
+        }
+
+        if (method == "ui.assetsDir") {
+            JVal d = JVal::obj();
+            d.set("dir", JVal(ToSlash(im->assetsDir)));
+            return OkJson(d);
+        }
+
+        if (method == "wem.convertEnv") {
+            // 转换环境自检：给界面显示"能不能转 wem"
+            const std::wstring wwise = bankmod::FindWwiseConsole();
+            std::wstring ff = Utf8ToWide(im->exeDir) + L"wemkit\\ffmpeg.exe";
+            const bool hasFf = ::GetFileAttributesW(ff.c_str()) != INVALID_FILE_ATTRIBUTES;
+            std::wstring vg = Utf8ToWide(im->exeDir) + L"wemkit\\vgmstream\\vgmstream-cli.exe";
+            const bool hasVg = ::GetFileAttributesW(vg.c_str()) != INVALID_FILE_ATTRIBUTES;
+            JVal d = JVal::obj();
+            d.set("hasWwise", JVal(!wwise.empty()));
+            d.set("wwisePath", JVal(Utf8FromWide(wwise)));
+            d.set("hasFfmpeg", JVal(hasFf));
+            d.set("hasVgmstream", JVal(hasVg));
             return OkJson(d);
         }
 
