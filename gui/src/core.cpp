@@ -1262,6 +1262,7 @@ struct Core::Impl {
     std::unordered_map<int, std::string> wemUserNames;
     std::string assetsDir;      // 内嵌资源解压目录（%LOCALAPPDATA%\Sonar\assets）
     std::unordered_map<int, std::string> wemNames;                 // media id -> 可读名(UTF-8)
+    std::unordered_map<int, std::string> wemNotes;                 // media id -> 括号里的注释名（瓶子声/弹刀…）
     std::unordered_map<int, std::pair<std::string, int>> wemSeqs;  // media id -> (bank, 序号=该bank DIDX第几个)
     // 循环音检测（行为判定）：4 秒内同一 media 出现 >= 4 次 → 判为循环音并静默 8 秒
     struct LoopStat { unsigned long long winStart = 0; int count = 0; unsigned long long muteUntil = 0; };
@@ -1640,8 +1641,28 @@ struct Core::Impl {
         return ::PlaySoundW(w.c_str(), nullptr, SND_FILENAME | SND_ASYNC | SND_NODEFAULT) != FALSE;
     }
 
+    // mediaids 的值形如 "wp_bow_cmn/01.ogg （瓶子声）"：提取括号里的中文注释当"名字"。
+    // （用户要求名称列只显示这种可读名，不要 bank/NN.ext 这种文件名形态）
+    static std::string ExtractNote(const std::string& val) {
+        // 全角 （） 优先（3 字节），其次半角 ()（1 字节）
+        std::size_t a = val.find("（");
+        std::size_t openLen = 3;
+        std::string closeStr = "）";
+        if (a == std::string::npos) {
+            a = val.find('(');
+            openLen = 1;
+            closeStr = ")";
+        }
+        if (a == std::string::npos) return std::string();
+        const std::size_t c = val.find(closeStr, a + openLen);
+        std::string note = (c == std::string::npos) ? val.substr(a + openLen)
+                                                    : val.substr(a + openLen, c - (a + openLen));
+        return Trim(note);
+    }
+
     void LoadWemMap() {
         wemNames.clear();
+        wemNotes.clear();
         hasWemNames = false;
         if (wemMapPath.empty()) return;
         std::ifstream f(wemMapPath, std::ios::binary);
@@ -1654,7 +1675,11 @@ struct Core::Impl {
             if (tab == std::string::npos) continue;
             const int id = std::atoi(line.substr(0, tab).c_str());
             const std::string nm = line.substr(tab + 1);
-            if (id > 0 && !nm.empty()) wemNames[id] = nm;
+            if (id > 0 && !nm.empty()) {
+                wemNames[id] = nm;
+                const std::string note = ExtractNote(nm);
+                if (!note.empty()) wemNotes[id] = note;
+            }
         }
         hasWemNames = !wemNames.empty();
     }
@@ -1921,6 +1946,10 @@ struct Core::Impl {
                 h.set("name", JVal(history[i].wemName));
                 // 名字是否来自用户命名库（true 才显示这个名字，否则前端显示 bank·第N个）
                 h.set("custom", JVal(wemUserNames.find(history[i].wemMedia) != wemUserNames.end()));
+                {
+                    const std::unordered_map<int, std::string>::const_iterator nt = wemNotes.find(history[i].wemMedia);
+                    if (nt != wemNotes.end()) h.set("note", JVal(nt->second));
+                }
                 // 序号真值（DIDX 位置），显示按 id 查表
                 const std::unordered_map<int, std::pair<std::string, int>>::const_iterator sit =
                     wemSeqs.find(history[i].wemMedia);
@@ -1996,6 +2025,10 @@ struct Core::Impl {
         d.set("wemWeapon", JVal(curWemWeapon));
         d.set("wemNameCustom", JVal(curWemMedia > 0 &&
                                     wemUserNames.find(curWemMedia) != wemUserNames.end()));
+        {
+            const std::unordered_map<int, std::string>::const_iterator nt = wemNotes.find(curWemMedia);
+            if (nt != wemNotes.end()) d.set("wemNote", JVal(nt->second));
+        }
 
         // 当前场景（DLL 写 plugins\SonarScene.txt：mapId\nquestState；GUI 1s 缓存读取）
         {
@@ -4343,6 +4376,9 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
                 o.set("name", JVal(it != im->wemNames.end() ? it->second : std::string()));
                   // 是否用户命名（true 才把 name 当真名显示，否则前端显示 bank·第N个）
                   o.set("custom", JVal(im->wemUserNames.find((int)m.id) != im->wemUserNames.end()));
+                  // 注释名（mediaids 里括号中的中文，如"瓶子声"）——界面名称列优先显示它
+                  const std::unordered_map<int, std::string>::const_iterator nt = im->wemNotes.find((int)m.id);
+                  o.set("note", JVal(nt != im->wemNotes.end() ? nt->second : std::string()));
                 // 序号真值（真值表：id -> bank/第N个）
                 const std::unordered_map<int, std::pair<std::string, int>>::const_iterator sit =
                     im->wemSeqs.find((int)m.id);

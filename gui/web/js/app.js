@@ -633,11 +633,11 @@ function wemLabel(r) {
   if (bank) return bank;
   return 'media ' + r.wemMedia;
 }
-// 显示名：用户命名库的名字优先（history 用 r.custom，live 用 r.wemNameCustom），
-// 否则用「bank · 第N个」（官方 mediaids 的 bank/NN.ogg 形态不当名字显示）
+// 显示名：用户命名 > 官方注释名（如"瓶子声"）> 捕获面板才回退到「bank · 第N个」
 function wemDisplayName(r) {
-  const isCustom = !!(r.custom || r.wemNameCustom);
-  if (isCustom) return r.name || r.wemName || wemLabel(r);
+  if (r.custom || r.wemNameCustom) return r.name || r.wemName || wemLabel(r);
+  const note = r.note || r.wemNote;
+  if (note) return note;
   return wemLabel(r);
 }
 
@@ -904,7 +904,7 @@ function renderBank() {
     const rep = BANK.reps[m.id] || '';
     tb.appendChild(h('tr', {},
       h('td', { class: 'lmt' }, String(m.seqInBank || m.seq)),
-      h('td', {}, h('span', { class: 'nm', title: m.custom ? m.name : '', text: m.custom ? m.name : (m.seqInBank ? (BANK.name + ' · 第' + m.seqInBank + '个') : '（无名字）') })),
+      h('td', {}, h('span', { class: 'nm', title: m.custom ? m.name : '', text: m.custom ? m.name : (m.note || '—') })),
       h('td', { class: 'fsm', style: 'color:var(--c-blue)' }, String(m.id)),
       h('td', { class: 'lmt' }, String(m.size)),
       h('td', { title: rep, style: 'max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' },

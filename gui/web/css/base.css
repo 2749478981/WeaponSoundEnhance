@@ -536,3 +536,10 @@ table td{padding:8px 10px}
 .banktable th{padding:6px 8px}
 .banktable td .acts{gap:5px}
 .cfoot{padding-top:2px}
+/* 音效替换：把高度真正让给 wem 列表。
+   flex 链在某些情况下没把 .banktable 撑开（实测只显示 3 行），
+   这里补一条视口兜底 + 让 .bankpage 不再自己滚动（交给表格内部滚）。 */
+.bankpage{overflow:hidden}
+.banktable{flex:1 1 auto; min-height:46vh; max-height:none; overflow:auto}
+.banktable table{width:100%}
+.banktable thead th{position:sticky; top:0; z-index:2; background:var(--table-head-bg)}
