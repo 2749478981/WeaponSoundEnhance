@@ -543,3 +543,10 @@ table td{padding:8px 10px}
 .banktable{flex:1 1 auto; min-height:46vh; max-height:none; overflow:auto}
 .banktable table{width:100%}
 .banktable thead th{position:sticky; top:0; z-index:2; background:var(--table-head-bg)}
+/* 音效替换页：隐藏品牌头与全局选项行，把高度全给 wem 列表
+   （窗口 977 高时，这两块约占 165px，正是列表"只能显示 3~4 行"的原因） */
+body.bankpage-on .brand{display:none}
+body.bankpage-on .opts{display:none}
+body.bankpage-on .app{gap:9px}
+.bankpage .paths{font-size:11px; line-height:1.55}
+.banktable{min-height:58vh}

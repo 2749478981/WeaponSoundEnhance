@@ -473,7 +473,19 @@ void ProbePage() {
         L"iconFellBack:fb,"
         L"firstIcon:(first?first.getAttribute('src'):null),"
         L"logoOk:(function(){var l=document.getElementById('logoImg');"
-        L"return l?l.naturalWidth>0:null;})()"
+        L"return l?l.naturalWidth>0:null;})(),"
+        // 音效替换页的 wem 列表实际高度（临时切过去量一下再切回来）——
+        // 布局"只显示几行"这类问题只能靠实测数字定位。
+        L"bankList:(function(){"
+        L"var mb=document.getElementById('mainBank'),me=document.getElementById('mainEntries');"
+        L"if(!mb||!me)return null;var was=mb.hidden;"
+        L"if(was){me.hidden=true;mb.hidden=false;document.body.classList.add('bankpage-on');}"
+        L"var bt=document.querySelector('.banktable');"
+        L"var r=bt?bt.getBoundingClientRect():null;"
+        L"var rows=bt?bt.querySelectorAll('tbody tr').length:0;"
+        L"var res=(r?Math.round(r.height):0)+'px/'+rows+'rows';"
+        L"if(was){me.hidden=false;mb.hidden=true;document.body.classList.remove('bankpage-on');}"
+        L"return res;})()"
         L"});})()",
         Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
             [](HRESULT, LPCWSTR json) -> HRESULT {
