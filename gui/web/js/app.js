@@ -708,12 +708,12 @@ function renderLive() {
   const se2 = $('#liveScene2'), qt2 = $('#liveQuest2');   // 音效替换页面里的同一信息
   if (se2) se2.textContent = sceneTxt;
   if (qt2) qt2.textContent = questTxt;
-  // 视图切换按钮状态
+  // 视图切换按钮状态（在 nbnk 制作页时强制显示 WEM 捕获，别被这里改回隐藏）
   const f = $('#viewFsm'), w = $('#viewWem');
   if (f && w) { f.className = 'vs' + (ST.wemView ? '' : ' on'); w.className = 'vs' + (ST.wemView ? ' on' : ''); }
   const fb = $('#viewFsmBox'), wb = $('#viewWemBox');
-  if (fb) fb.hidden = ST.wemView;
-  if (wb) wb.hidden = !ST.wemView;
+  if (fb) fb.hidden = ST.bankPage ? true : ST.wemView;
+  if (wb) wb.hidden = ST.bankPage ? false : !ST.wemView;
 
   const H = histFiltered(L.history || []);
   const derH = H.filter(r => r.kind !== 1);   // 派生

@@ -1508,22 +1508,33 @@ struct Core::Impl {
         wemSeqPath = exeDir + "WseMediaSeqs.txt";     // 真值表随 GUI 部署，优先 exe 目录
         if (!FsExists(wemSeqPath) && !cand.empty())
             wemSeqPath = cand[0] + "WseMediaSeqs.txt";
+
+        // media_id → 可读名映射表：优先 GUI 目录（随包分发，删不掉），
+        // 其次 plugins 根（老布局）。以前只在 plugins 根找，文件一被清理名字就全空了。
+        wemMapPath.clear();
+        if (FsExists(exeDir + "SonarAudio.mediaids.txt")) {
+            wemMapPath = exeDir + "SonarAudio.mediaids.txt";
+        } else {
+            for (const auto& d : cand) {
+                if (FsExists(d + "SonarAudio.mediaids.txt")) {
+                    wemMapPath = d + "SonarAudio.mediaids.txt";
+                    break;
+                }
+            }
+        }
         for (const auto& d : cand) {
             // 新名（我们自己的 DLL 写）；旧名 SonarAudio.log 兼容老版本
             if (FsExists(d + "WeaponSoundEnhance_wem.log")) {
                 wemLogPath = d + "WeaponSoundEnhance_wem.log";
-                wemMapPath = d + "SonarAudio.mediaids.txt";
                 return;
             }
             if (FsExists(d + "SonarAudio.log")) {
                 wemLogPath = d + "SonarAudio.log";
-                wemMapPath = d + "SonarAudio.mediaids.txt";
                 return;
             }
         }
         if (!cand.empty()) {   // log 还没生成（游戏没跑过）也先占位，运行时照常尝试
             wemLogPath = cand[0] + "WeaponSoundEnhance_wem.log";
-            wemMapPath = cand[0] + "SonarAudio.mediaids.txt";
         }
     }
 
