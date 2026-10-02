@@ -753,8 +753,8 @@ int gWemBurstCap  = 6;
 //   WemLoopFilter: 1 = 开（默认）
 //   WemLoopRate  : 同一 media 在 1 秒内达到这个次数即判为循环音，本秒内后续全忽略
 int gWemLoopFilter = 1;
-int gWemLoopRate   = 4;      // 4 秒窗口内达到这个次数即判为循环音
-int gWemLoopMuteMs = 8000;   // 判定为循环音后，忽略该 media 的时长（毫秒）
+int gWemLoopRate   = 6;      // 3 秒窗口内达到这个次数即判为循环音（放宽：正常动作别被误判）
+int gWemLoopMuteMs = 4000;   // 判定为循环音后，忽略该 media 的时长（毫秒）
 
 // --- 武器触发开关（每武器一个，默认全关）---
 //   WeaponEnabled=0,1,...（14 个逗号分隔的 0/1，对应武器 0..13；缺省按 0）
@@ -2727,7 +2727,7 @@ void WemEventSink(uint32_t media_id, uint32_t event_id, uint32_t playing_id,
         static std::unordered_map<uint32_t, LoopStat> s_loop;   // 仅日志线程
         LoopStat& ls = s_loop[media_id];
         if (now < ls.muteUntil) return;                          // 已判为循环音，静默期内忽略
-        if (now - ls.winStart > 4000) { ls.winStart = now; ls.count = 0; }
+        if (now - ls.winStart > 3000) { ls.winStart = now; ls.count = 0; }
         if (++ls.count >= (int)gWemLoopRate) {
             ls.muteUntil = now + (std::uint64_t)gWemLoopMuteMs;
             LogD("[wem] 判定循环音并忽略 media=%u（4s 内第 %d 次）", media_id, ls.count);

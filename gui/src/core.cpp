@@ -1834,12 +1834,12 @@ struct Core::Impl {
                     wemLoops[media] = st;
                 } else {
                     if (nowMs < lit->second.muteUntil) continue;     // 已判为循环音，静默期内不记录
-                    if (nowMs - lit->second.winStart > 4000) {
+                    if (nowMs - lit->second.winStart > 3000) {
                         lit->second.winStart = nowMs;
                         lit->second.count = 0;
                     }
-                    if (++lit->second.count >= 4) {
-                        lit->second.muteUntil = nowMs + 8000;
+                    if (++lit->second.count >= 6) {
+                        lit->second.muteUntil = nowMs + 4000;
                         continue;                                     // 判为循环音，不记录
                     }
                 }
@@ -4233,6 +4233,8 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
                                      //   永远成立 → 每 100ms 推一次 live，界面被反复重建
             im->hadLive = false;     // ★ 反过来：强制下一次轮询推一次 live，
                                      //   否则清空后若状态没变，前端一直收不到更新（像"捕获不到"）
+            // ★ 循环音判定表也要清：否则清空前累积的计数/静默期会继续压住新记录
+            im->wemLoops.clear();
             JVal d = JVal::obj();
             d.set("cleared", JVal(true));
             d.set("history", im->HistoryJson());
