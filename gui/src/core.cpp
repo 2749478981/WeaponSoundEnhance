@@ -3459,6 +3459,29 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
         }
 
         // ---------------- 游戏交互 ----------------
+        if (method == "game.reload") {
+            // ★ 重载前先把当前改动保存进 ini（点击重载 = 保存 + 生效，一步到位）
+            if (im->cfg.loaded && !im->cfg.path.empty())
+                (void)SaveConfig(im->cfg.path, im->cfg);
+            im->dirty = false;
+            // 游戏内插件轮询到这个文件就立刻重载（等价 /wse reload）
+            FsWrite(im->BaseDir() + "_wse_reload.flag", "1");
+            im->SetStatus("已保存 ini 并请求游戏重载配置（游戏内会立即生效；顺便把正在播的音效停掉）");
+            JVal d = JVal::obj();
+            d.set("flag", JVal(ToSlash(im->BaseDir() + "_wse_reload.flag")));
+            d.set("status", JVal(im->status));
+            return OkJson(d);
+        }
+
+        if (method == "game.stop") {
+            FsWrite(im->BaseDir() + "_wse_stop.flag", "1");
+            im->SetStatus("已请求停止游戏内正在播放的音效（等价 /wse stop）");
+            JVal d = JVal::obj();
+            d.set("flag", JVal(ToSlash(im->BaseDir() + "_wse_stop.flag")));
+            d.set("status", JVal(im->status));
+            return OkJson(d);
+        }
+
         if (method == "game.launch") {
             std::string gdir;
             if (!FindGameDirFromSelf(gdir)) {
@@ -3544,6 +3567,335 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
             return OkJson(d);
         }
 
+        // ---------------- 在线更新 ----------------
+        if (method == "update.check") {
+            const std::string user = p.optStr("user");
+            const bool userInitiated = !user.empty() && user != "0" && user != "false";
+            if (im->updState.load() != 1) {
+                im->updState.store(1);
+                {
+                    std::lock_guard<std::mutex> lk(im->updMx);
+                    im->updErr.clear();
+                    im->updMsg = "正在检查…";
+                }
+                // ini 里的代理/开关（首次检查前可能还没加载配置，用当前值即可）
+                const std::string proxy = im->cfg.global.updateProxy;
+                const std::string cur = kWseGuiVersion;
+                // ★ 后台线程：WinHTTP 超时最长 20 秒，在主线程查会把界面冻住。
+                //   结果放成员 + 原子量，PollEvents 里作为 {"event":"update"} 报进度。
+                Impl* imp = im;
+                std::thread([imp, proxy, cur]() {
+                    wseupd::Latest r = wseupd::FetchLatest(proxy);
+                    if (!r.ok) {
+                        std::lock_guard<std::mutex> lk(imp->updMx);
+                        imp->updErr = r.err.empty() ? std::string("检查失败") : r.err;
+                        imp->updMsg.clear();
+                        imp->updProgress.store(-1);
+                        imp->updState.store(4);
+                        return;
+                    }
+                    {
+                        std::lock_guard<std::mutex> lk(imp->updMx);
+                        imp->updTag = r.tag;
+                        imp->updUrl = r.zipUrl;
+                        imp->updNotes = r.notes;
+                        imp->updMsg.clear();
+                    }
+                    const int cmp = wseupd::CompareVer(r.tag, cur);
+                    imp->updProgress.store(-1);
+                    imp->updState.store(cmp > 0 ? 3 : 2);
+                }).detach();
+            }
+            (void)userInitiated;
+            JVal d = im->UpdateData();
+            d.set("started", JVal(im->updState.load() == 1));
+            return OkJson(d);
+        }
+
+        if (method == "update.install") {
+            if (im->updInstalling.load()) {
+                JVal d = JVal::obj();
+                d.set("started", JVal(false));
+                d.set("error", JVal(std::string("正在安装中")));
+                return OkJson(d);
+            }
+            std::string url;
+            {
+                std::lock_guard<std::mutex> lk(im->updMx);
+                url = im->updUrl;
+            }
+            if (url.empty()) return ErrJson("没有可下载的组合包地址（release 里没有 zip 资产）");
+            im->updInstalling.store(true);
+            im->updNeedRestart.store(false);
+            gUpdProgress.store(0);
+            im->updProgress.store(0);
+            {
+                std::lock_guard<std::mutex> lk(im->updMx);
+                im->updMsg = "正在下载…";
+                im->updErr.clear();
+            }
+
+            const std::string proxy = im->cfg.global.updateProxy;
+            const std::string dataDir = im->BaseDir();
+            const std::string pluginsDir = dataDir + "..\\";
+            Impl* imp = im;
+            // ★ 后台线程：下载动辄几十兆，必须在主线程之外做；
+            //   进度经 gUpdProgress（原子量）→ PollEvents 里转成 update 事件。
+            std::thread([imp, url, proxy, dataDir, pluginsDir]() {
+                std::string err;
+                std::wstring tmpZip = Utf8ToWide(dataDir + "_update_tmp.zip");
+                std::wstring wurl = wseupd::Widen(url);
+                std::wstring host, path;
+                bool https = true;
+                {
+                    std::wstring u = wurl;
+                    if (u.rfind(L"https://", 0) == 0) { u = u.substr(8); https = true; }
+                    else if (u.rfind(L"http://", 0) == 0) { u = u.substr(7); https = false; }
+                    const std::size_t sl = u.find(L'/');
+                    host = (sl == std::wstring::npos) ? u : u.substr(0, sl);
+                    path = (sl == std::wstring::npos) ? L"/" : u.substr(sl);
+                }
+                imp->updState.store(1);
+                if (!wseupd::HttpGetFile(host, path, proxy, https, tmpZip, err, &UpdProgressCb)) {
+                    std::lock_guard<std::mutex> lk(imp->updMx);
+                    imp->updMsg = "下载失败：" + err;
+                    imp->updProgress.store(-1);
+                    imp->updInstalling.store(false);
+                    imp->updState.store(4);
+                    return;
+                }
+                {
+                    std::lock_guard<std::mutex> lk(imp->updMx);
+                    imp->updMsg = "正在安装…";
+                }
+                std::string bytes;
+                if (!ReadWideFile(tmpZip, bytes)) {
+                    std::lock_guard<std::mutex> lk(imp->updMx);
+                    imp->updMsg = "读取下载文件失败";
+                    imp->updInstalling.store(false);
+                    imp->updState.store(4);
+                    ::DeleteFileW(tmpZip.c_str());
+                    return;
+                }
+                mz_zip_archive z{};
+                if (mz_zip_reader_init_mem(&z, bytes.data(), bytes.size(), 0) == MZ_FALSE) {
+                    std::lock_guard<std::mutex> lk(imp->updMx);
+                    imp->updMsg = "下载的 zip 无法解析";
+                    imp->updInstalling.store(false);
+                    imp->updState.store(4);
+                    ::DeleteFileW(tmpZip.c_str());
+                    return;
+                }
+                const std::string kPlug = "nativePC/plugins/";
+                const std::string kData = "nativePC/plugins/WeaponSoundEnhance/";
+                int done = 0, failed = 0;
+                bool needRestart = false;
+                const mz_uint num = mz_zip_reader_get_num_files(&z);
+                for (mz_uint i = 0; i < num; ++i) {
+                    mz_zip_archive_file_stat st;
+                    if (mz_zip_reader_file_stat(&z, i, &st) == MZ_FALSE) continue;
+                    std::string name = st.m_filename;
+                    if (name.empty()) continue;
+                    for (std::size_t k = 0; k < name.size(); ++k) if (name[k] == '\\') name[k] = '/';
+                    if (name[name.size() - 1] == '/') continue;   // 目录项
+
+                    std::string dst;
+                    bool isGuiExe = false;
+                    if (name.rfind(kData, 0) == 0) {
+                        std::string rel = name.substr(kData.size());
+                        if (rel == "WeaponSoundEnhance.ini") {
+                            // 包里带 ini：不直接覆盖，落到临时文件，主线程再"合并"进用户配置
+                            std::size_t l2 = 0;
+                            void* b2 = mz_zip_reader_extract_to_heap(&z, i, &l2, 0);
+                            if (b2) {
+                                if (WriteWideFile(Utf8ToWide(dataDir + "_update_incoming.ini"), b2, l2))
+                                    imp->updIniPending.store(true);
+                                mz_free(b2);
+                            }
+                            continue;
+                        }
+                        if (rel == "WeaponSoundEnhanceGUI.exe") {
+                            isGuiExe = true;
+                            rel = "WeaponSoundEnhanceGUI.new.exe";   // 自己替换自己：先落 .new
+                        }
+                        dst = dataDir + rel;
+                    } else if (name.rfind(kPlug, 0) == 0) {
+                        std::string rel = name.substr(kPlug.size());
+                        if (rel.find('/') != std::string::npos) continue;   // plugins\ 下只放 DLL
+                        dst = pluginsDir + rel;
+                    } else {
+                        continue;                                          // 其它路径忽略
+                    }
+                    std::size_t len = 0;
+                    void* buf = mz_zip_reader_extract_to_heap(&z, i, &len, 0);
+                    if (!buf) { ++failed; continue; }
+                    const std::wstring wdst = Utf8ToWide(dst);
+                    const std::size_t slash = wdst.find_last_of(L'\\');
+                    if (slash != std::wstring::npos) MakeDirs(wdst.substr(0, slash + 1));
+                    const bool ok = WriteWideFile(wdst, buf, len);
+                    mz_free(buf);
+                    if (ok) { ++done; if (isGuiExe) needRestart = true; }
+                    else ++failed;
+                }
+                mz_zip_reader_end(&z);
+                ::DeleteFileW(tmpZip.c_str());
+
+                imp->updNeedRestart.store(needRestart);
+                imp->updInstalling.store(false);
+                if (failed > 0 && done == 0) {
+                    std::lock_guard<std::mutex> lk(imp->updMx);
+                    imp->updMsg = "安装失败：文件被占用（游戏/GUI 正在运行？）。可关掉游戏后重试。";
+                    imp->updState.store(3);
+                    return;
+                }
+                {
+                    std::lock_guard<std::mutex> lk(imp->updMx);
+                    imp->updMsg = "已更新 " + std::to_string(done) + " 个文件" +
+                                  (failed ? ("（" + std::to_string(failed) + " 个失败，可能被占用）") : "") +
+                                  (needRestart ? "；点下方按钮重启 GUI 完成替换" : "；重启游戏生效");
+                }
+                imp->updProgress.store(-1);
+                imp->updState.store(2);   // 装完就等于最新了
+                if (needRestart) {
+                    // 写一个重启脚本：等 GUI 退出 → 替换 exe → 重新启动
+                    const std::string cmdPath = dataDir + "_wse_apply_update.cmd";
+                    std::string cmd =
+                        "@echo off\r\n"
+                        ":wait\r\n"
+                        "tasklist /FI \"IMAGENAME eq WeaponSoundEnhanceGUI.exe\" 2>nul | find /I \"WeaponSoundEnhanceGUI.exe\" >nul\r\n"
+                        "if not errorlevel 1 ( ping -n 2 127.0.0.1 >nul & goto wait )\r\n"
+                        "move /Y \"%~dp0WeaponSoundEnhanceGUI.new.exe\" \"%~dp0WeaponSoundEnhanceGUI.exe\" >nul\r\n"
+                        "start \"\" \"%~dp0WeaponSoundEnhanceGUI.exe\"\r\n"
+                        "del \"%~f0\"\r\n";
+                    FsWrite(cmdPath, cmd);
+                }
+            }).detach();
+
+            JVal d = JVal::obj();
+            d.set("started", JVal(true));
+            return OkJson(d);
+        }
+
+        if (method == "update.state") {
+            return OkJson(im->UpdateData());
+        }
+
+        if (method == "update.openLatest") {
+            std::string url = kReleasesPage;
+            {
+                std::lock_guard<std::mutex> lk(im->updMx);
+                if (!im->updUrl.empty()) url = kReleasesPage;   // 发布页比直链更适合人看
+            }
+            ::ShellExecuteW(OwnerOf(owner), L"open", Utf8ToWide(url).c_str(), nullptr, nullptr,
+                            SW_SHOWNORMAL);
+            JVal d = JVal::obj();
+            d.set("url", JVal(url));
+            return OkJson(d);
+        }
+
+        if (method == "update.restart") {
+            const std::string cmd = im->BaseDir() + "_wse_apply_update.cmd";
+            if (!FsExists(cmd)) {
+                JVal d = JVal::obj();
+                d.set("restarted", JVal(false));
+                d.set("error", JVal(std::string("没找到重启脚本，请手动关闭并重新打开 GUI")));
+                return OkJson(d);
+            }
+            ::ShellExecuteW(OwnerOf(owner), L"open", Utf8ToWide(cmd).c_str(), nullptr, nullptr, SW_HIDE);
+            JVal d = JVal::obj();
+            d.set("restarted", JVal(true));
+            d.set("cmd", JVal(ToSlash(cmd)));
+            return OkJson(d);
+        }
+
+        // ---------------- 界面偏好 ----------------
+        if (method == "ui.get") {
+            return OkJson(im->UiPrefsJson());
+        }
+
+        // 用系统默认浏览器打开外链（彩蛋里的 B 站链接走这里，不让 WebView 导航离开）
+        if (method == "ui.openUrl") {
+            const std::string url = Trim(p.optStr("url"));
+            if (url.empty()) return ErrJson("缺少 url");
+            const int r = (int)(std::intptr_t)::ShellExecuteW(
+                nullptr, L"open", Utf8ToWide(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            if (r <= 32) return ErrJson("打开链接失败（错误码 " + std::to_string(r) + "）");
+            JVal d = JVal::obj();
+            d.set("opened", JVal(true));
+            return OkJson(d);
+        }
+
+        if (method == "ui.set") {
+            // 只认已知的键：前端乱塞字段不该污染偏好文件
+            if (p.has("colWidths")) {
+                const JVal* v = p.find("colWidths");
+                if (v && v->isObj()) im->prefs.colWidths = *v;
+            }
+            if (p.has("sort")) {
+                const JVal* v = p.find("sort");
+                if (v && v->isObj()) im->prefs.sort = *v;
+            }
+            if (p.has("window")) {
+                const JVal* v = p.find("window");
+                if (v && v->isObj()) im->prefs.window = *v;
+            }
+            if (p.has("weaponFilter")) {
+                const int w = p.optInt("weaponFilter", -1);
+                im->prefs.weaponFilter = (w < -2 || w > 13) ? -1 : w;
+            }
+            if (p.has("histExpanded")) im->prefs.histExpanded = p.optBool("histExpanded", false);
+            if (p.has("onlyActive")) im->prefs.onlyActive = p.optBool("onlyActive", false);
+            if (p.has("wemView")) im->prefs.wemView = p.optBool("wemView", false);
+            if (p.has("theme")) {
+                const std::string th = p.optStr("theme");
+                if (!IsValidThemeId(th)) return ErrJson("未知主题: " + th);
+                im->prefs.theme = th;
+            }
+            im->SaveUiPrefs();      // 立即落盘：窗口尺寸这类偏好丢了用户会很明显地不爽
+            return OkJson(im->UiPrefsJson());
+        }
+
+        if (method == "theme.set") {
+            const std::string th = Trim(p.optStr("theme"));
+            if (!IsValidThemeId(th)) return ErrJson("未知主题: " + th);
+            im->prefs.theme = th;
+            im->SaveUiPrefs();
+            JVal d = JVal::obj();
+            d.set("theme", JVal(th));
+            d.set("themes", ThemesJson());
+            return OkJson(d);
+        }
+
+        if (method == "theme.get") {
+            JVal d = JVal::obj();
+            d.set("theme", JVal(im->prefs.theme));
+            d.set("default", JVal(std::string(kDefaultTheme)));
+            d.set("themes", ThemesJson());
+            return OkJson(d);
+        }
+
+        // ---------------- 附加：实时捕获面板要用的（前端 index.html 用到了）----------------
+        if (method == "live.get" || method == "live.retry") {
+            if (method == "live.retry") {
+                im->game.Detach();      // 强制下次 PollEvents 重新 Attach（游戏刚启动时用得上）
+                im->lastPoll = 0;
+                im->liveOk = false;
+            }
+            return OkJson(im->LiveJson());
+        }
+
+        if (method == "live.clear") {
+            im->history.clear();
+            im->curWemMedia = -1;
+            im->curWemName.clear();
+            im->curWemBank.clear();
+            im->curWemWeapon = -1;
+            im->lastWemMedia = -2;
+            JVal d = JVal::obj();
+            d.set("cleared", JVal(true));
+            d.set("history", im->HistoryJson());
+            return OkJson(d);
+        }
         if (method == "bank.pick") {
             std::vector<std::string> multi;
             const std::string p1 = OpenFileDialog(OwnerOf(owner),
