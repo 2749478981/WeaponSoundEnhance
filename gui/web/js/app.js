@@ -775,15 +775,23 @@ function renderLive() {
 
   // ---- WEM 视图 ----
   const wemBox = $('#liveWem');
-  if (L.wemMedia > 0 && (ST.weaponFilter < 0 || L.wemWeapon === ST.weaponFilter)) {
+  // ★ nbnk 制作页：勾了「捕获只显示本 bank」时，实时行也必须按 bank 过滤
+  //   （以前只有历史列表过滤 → 实时行仍显示别的 bank 的 wem，点了就报"不在当前 nbnk 里"）
+  const bankOk = !bankFilterOn() || ((L.wemBank || '') === BANK.name);
+  if (L.wemMedia > 0 && bankOk && (ST.weaponFilter < 0 || L.wemWeapon === ST.weaponFilter)) {
     wemBox.hidden = false;
     wemBox.innerHTML = '';
-    const wr = h('div', { class: 'live-row wem', title: '游戏正在播放的 WWise 音效 → 点击添加为条目' },
+    const tip = ST.bankPage
+      ? '点击播放这条 wem（来自当前导入的 nbnk）'
+      : '游戏正在播放的 WWise 音效 → 点击添加为条目';
+    const wr = h('div', { class: 'live-row wem', title: tip },
       h('b', { text: (L.wemAdded ? '✔ ' : '') + wemDisplayName(L) }),
       h('span', { class: 'dim', text: (L.wemMedia > 0 ? 'media ' + L.wemMedia : '') }),
-      L.wemAdded
-        ? h('em', { class: 'tag', text: '编辑' })
-        : h('em', { class: 'tag add', text: '＋ 添加' }));
+      ST.bankPage
+        ? h('em', { class: 'tag play', text: '▶ 播放' })
+        : (L.wemAdded
+            ? h('em', { class: 'tag', text: '编辑' })
+            : h('em', { class: 'tag add', text: '＋ 添加' })));
     wr.onclick = () => wemRowClick({ kind: 1, wemMedia: L.wemMedia, name: wemDisplayName(L), bank: L.wemBank, weapon: L.wemWeapon || -1, added: L.wemAdded, seqNum: L.wemSeqNum });
     wemBox.appendChild(wr);
   } else wemBox.hidden = true;
@@ -810,8 +818,10 @@ function renderLive() {
         h('span', { class: 'ids', text: (r.weapon >= 0 ? 'w' + r.weapon + ' · ' : '') + r.bank }),
         h('em', { class: 'tag name', title: '给这条 wem 起名字（存进名字库）', text: '命名',
           onclick: ev => { ev.stopPropagation(); openNameDialog(r.wemMedia, r.bank || ''); } }),
-        r.added ? h('em', { class: 'tag', text: '编辑' })
-                : h('em', { class: 'tag add', text: '＋ 添加' }));
+        ST.bankPage
+          ? h('em', { class: 'tag play', text: '▶ 播放' })
+          : (r.added ? h('em', { class: 'tag', text: '编辑' })
+                     : h('em', { class: 'tag add', text: '＋ 添加' })));
       el.onclick = () => wemRowClick(r);
       wh.appendChild(el);
     });
@@ -864,7 +874,10 @@ function wemRowClick(r) {
     if (!BANK.path) { toast('先在左边导入一个 nbnk', 'err'); return; }
     Backend.call('bank.play', { path: BANK.path, media: r.wemMedia })
       .then(() => toast('播放 media ' + r.wemMedia + (r.bank ? '（' + r.bank + '）' : ''), 'ok'))
-      .catch(e => toast('这条 wem 不在当前 nbnk 里：' + e.message, 'err'));
+      .catch(e => {
+        const b = r.bank ? ('它属于 ' + r.bank + '，') : '';
+        toast(b + '不在当前导入的 nbnk 里', 'err');
+      });
     return;
   }
   addWemRecord(r);

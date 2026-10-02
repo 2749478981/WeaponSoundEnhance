@@ -568,3 +568,6 @@ button.reload:active{transform:scale(.98)}
 #bankCaptureHost #wemCaptureBox{flex:1; min-height:0; display:flex; flex-direction:column; overflow:hidden}
 #bankCaptureHost #viewWemBox{flex:1; min-height:42vh; display:flex; flex-direction:column; overflow:hidden}
 #bankCaptureHost .hist{flex:1; min-height:0; overflow:auto}
+/* nbnk 制作页捕获行上的「▶ 播放」标签 */
+.hrec .tag.play, .live-row .tag.play{background:var(--accent); color:var(--on-accent);
+                                      border:var(--bw) solid var(--accent)}
