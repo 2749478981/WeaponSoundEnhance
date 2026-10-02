@@ -1748,7 +1748,7 @@ async function refreshConvertEnv() {
     const ff = r.hasFfmpeg ? 'ffmpeg ✓' : 'ffmpeg ✗（mp3/ogg 转换需要，放到 wemkit\\ffmpeg.exe）';
     const vg = r.hasVgmstream ? '试听解码 ✓' : '试听解码 ✗（缺 wemkit\\vgmstream）';
     el.textContent = '转换环境：' + wwise + '　|　' + ff + '　|　' + vg;
-    const brief =  + [char]0x24 + ('#bankEnvBrief');
+    const brief = document.querySelector('#bankEnvBrief');
     if (brief) brief.textContent = r.hasWwise ? '（Wwise ✓）' : '（未检测到 Wwise）';
     el.className = r.hasWwise ? 'note ok' : 'note warn';
   } catch (e) { el.textContent = ''; }
