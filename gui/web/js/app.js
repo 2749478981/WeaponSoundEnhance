@@ -893,7 +893,13 @@ function renderBank() {
   }
   info.textContent = `已导入：${BANK.name}.nbnk（${BANK.media.length} 条 media）\n${BANK.path}\n` +
     `已选替换：${bankRepCount()} 条 · 导出目录：plugins\\WeaponSoundEnhance\\wemmod\\（可改）`;
-  const show = BANK.media.slice(0, 300);
+  // ★ 已命名的（用户命名库里的）默认排前面，其次按 bank 内序号
+  const sorted = BANK.media.slice().sort((a, b) => {
+    const ca = a.custom ? 1 : 0, cb = b.custom ? 1 : 0;
+    if (ca !== cb) return cb - ca;
+    return (a.seqInBank || a.seq || 0) - (b.seqInBank || b.seq || 0);
+  });
+  const show = sorted.slice(0, 800);
   show.forEach(m => {
     const rep = BANK.reps[m.id] || '';
     tb.appendChild(h('tr', {},
@@ -1742,6 +1748,8 @@ async function refreshConvertEnv() {
     const ff = r.hasFfmpeg ? 'ffmpeg ✓' : 'ffmpeg ✗（mp3/ogg 转换需要，放到 wemkit\\ffmpeg.exe）';
     const vg = r.hasVgmstream ? '试听解码 ✓' : '试听解码 ✗（缺 wemkit\\vgmstream）';
     el.textContent = '转换环境：' + wwise + '　|　' + ff + '　|　' + vg;
+    const brief =  + [char]0x24 + ('#bankEnvBrief');
+    if (brief) brief.textContent = r.hasWwise ? '（Wwise ✓）' : '（未检测到 Wwise）';
     el.className = r.hasWwise ? 'note ok' : 'note warn';
   } catch (e) { el.textContent = ''; }
 }

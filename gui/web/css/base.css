@@ -522,3 +522,17 @@ table td{padding:8px 10px}
 /* 环境自检与提示条 */
 .note.ok{border-left:3px solid var(--c-green); padding-left:9px}
 .note.warn{border-left:3px solid var(--c-amber); padding-left:9px; color:var(--text)}
+/* 音效替换页面：说明折叠起来，把高度让给 wem 列表 */
+.bankhelp{border:var(--bw) solid var(--line); border-radius:8px; background:var(--panel-2); padding:0}
+.bankhelp>summary{cursor:pointer; padding:7px 11px; font-size:12px; font-weight:700;
+                  list-style:none; display:flex; align-items:center; gap:8px}
+.bankhelp>summary::before{content:"▸"; color:var(--muted); font-size:11px}
+.bankhelp[open]>summary::before{content:"▾"}
+.bankhelp .note{margin:0 11px 8px; border:none; padding:0}
+.bankpage{gap:7px; padding:11px 14px}
+.bankline{margin:4px 0}
+.banktable{flex:1 1 auto; min-height:0}
+.banktable td{padding:4px 8px}
+.banktable th{padding:6px 8px}
+.banktable td .acts{gap:5px}
+.cfoot{padding-top:2px}

@@ -173,13 +173,16 @@
     <section class="center box">
       <div class="phead">音效替换（nbnk Mod）</div>
       <div class="bankpage">
-        <p class="note">把游戏里的某个音效换成你自己的声音：<b>导入 nbnk</b> → 找到要换的那条 → <b>选音频</b>
-          （wav / mp3 / ogg / flac）→ <b>转换并导出</b> → 把生成的 nbnk 放进
-          <code>nativePC\sound\wwise\Windows\</code> 后生效（可直接用「导出到游戏目录」）。<br>
-          只写新文件到输出目录，<b>不会改动游戏原文件</b>。</p>
-        <p class="note ok"><b>生效提示（重要）</b>：武器音效的 nbnk 改完后，<b>一般只要在游戏里切换一次武器种类、再切回来</b>
-          就会重新加载，<b>不需要重启游戏</b>；如果这样没生效，再考虑重启游戏。</p>
-        <div class="note" id="bankEnv">转换环境：检查中…</div>
+        <details class="bankhelp">
+          <summary>说明 / 转换环境 <span id="bankEnvBrief" class="dim"></span></summary>
+          <p class="note">把游戏里的某个音效换成你自己的声音：<b>导入 nbnk</b> → 找到要换的那条 → <b>选音频</b>
+            （wav / mp3 / ogg / flac）→ <b>转换并导出</b> → 把生成的 nbnk 放进
+            <code>nativePC\sound\wwise\Windows\</code> 后生效（可直接用「导出到游戏目录」）。
+            只写新文件到输出目录，<b>不会改动游戏原文件</b>。</p>
+          <p class="note ok"><b>生效提示（重要）</b>：武器音效的 nbnk 改完后，<b>一般只要在游戏里切换一次武器种类、再切回来</b>
+            就会重新加载，<b>不需要重启游戏</b>；如果这样没生效，再考虑重启游戏。</p>
+          <div class="note" id="bankEnv">转换环境：检查中…</div>
+        </details>
 
         <div class="bankline">
           <span class="lbl">输出目录</span>
@@ -187,11 +190,8 @@
           <button data-act="bank.pickOutDir">更改…</button>
           <button data-act="bank.outDirToGame" title="直接设成游戏读取 nbnk 的目录，导出后立刻生效">导出到游戏目录</button>
           <button data-act="bank.openOut">打开目录</button>
-        </div>
-        <div class="bankline">
-          <label class="inline"><input type="checkbox" id="bankOnlyThis" checked>
-            捕获面板只显示这个 bank 的事件</label>
-          <span class="dim" id="bankSummary"></span>
+          <label class="inline" style="margin-left:auto"><input type="checkbox" id="bankOnlyThis" checked>
+            捕获只显示本 bank</label>
         </div>
         <div class="paths" id="bankInfo">还没有导入 nbnk。</div>
 
@@ -209,7 +209,6 @@
       <div class="phead small">当前场景</div>
       <div class="bankpage">
         <div class="conn"><span id="liveScene2">场景：未知</span><span class="dim" id="liveQuest2"></span></div>
-        <p class="note">进游戏后这里显示你所在的场景与任务状态，方便判断正在听的是哪张图的声音。</p>
       </div>
     </aside>
   </main>
