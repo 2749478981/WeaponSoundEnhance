@@ -23,11 +23,12 @@
     </div>
     <div class="brand-right">
       <div class="theme-picker" id="themePicker" title="切换界面风格"></div>
+      <button class="updbtn" data-act="win.update" id="updateBtn" title="检查是否有新版本">检查更新</button>
       <span class="ver" id="verText">v—</span>
     </div>
   </header>
 
-  <!-- ============ 工具栏 ============ -->
+  <!-- ============ 工具栏（第一排：文件 / 游戏）============ -->
   <div class="toolbar box">
     <button data-act="cfg.open">打开 ini</button>
     <button class="primary" data-act="cfg.save" title="写回 ini（Ctrl+S）">保存</button>
@@ -35,6 +36,13 @@
     <span class="sep"></span>
     <button class="reload" data-act="game.reload" title="让游戏内插件立刻重载配置（等价 /wse reload）">重载游戏配置</button>
     <span class="sep"></span>
+    <button data-act="game.stop" title="停掉游戏内正在播放的音效（等价 /wse stop）">停止音效</button>
+    <button class="amber" data-act="game.launch">怪物猎人，启动！</button>
+    <span class="grow"></span>
+  </div>
+
+  <!-- ============ 第二排：工具按钮 + 全局选项 ============ -->
+  <div class="opts box">
     <button data-act="win.fsm">FSM 查询</button>
     <button data-act="win.ids">上传ID</button>
     <button data-act="win.hot" title="游戏内快捷键绑定与聊天框指令说明">热键指令</button>
@@ -43,16 +51,9 @@
     <button data-act="combo.export">导出组合</button>
     <button data-act="combo.import">导入组合</button>
     <button data-act="sound.openDir">打开 sounds\</button>
-        <button data-act="win.bank" title="制作 nbnk：导入 → 替换音效 → 导出">nbnk制作</button>
+    <button data-act="win.bank" title="制作 nbnk：导入 → 替换音效 → 导出">nbnk制作</button>
     <span class="sep"></span>
-    <button data-act="game.stop" title="停掉游戏内正在播放的音效（等价 /wse stop）">停止音效</button>
-    <button class="amber" data-act="game.launch">怪物猎人，启动！</button>
     <span class="grow"></span>
-    <button data-act="win.update" id="updateBtn">检查更新</button>
-  </div>
-
-  <!-- ============ 全局选项 ============ -->
-  <div class="opts box">
     <label><input type="checkbox" id="gEnabled"> 总开关</label>
     <label><input type="checkbox" id="gMore" title="仅对没有勾固定(F)的旧条目生效"> 更多音效</label>
     <label class="vol">音量 <input type="range" id="gVol" min="0" max="100"><b id="gVolNum">50</b></label>

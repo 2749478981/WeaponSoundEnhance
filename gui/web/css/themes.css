@@ -9,6 +9,7 @@
    特点：信息密度最高、几乎无装饰、不发光不模糊
    =========================================================================== */
 [data-theme="pro-dark"]{
+  --reload-bg:#12301f; --reload-bg-hover:#173d28; --reload-fg:#7fdcae; --reload-bd:#1f5236;
   --bg:#0d1117; --bg-layer:none;
   --panel:#161b22; --panel-2:#1c2128;
   --line:#21262d; --line-2:#30363d;
@@ -131,6 +132,7 @@
    特点：和图标天生一对、辨识度最高
    =========================================================================== */
 [data-theme="sticker-outline"]{
+  --reload-bg:#dff5e6; --reload-fg:#123322; --reload-bd:#0f2a1c;
   --ink:#111111;
   --bg:#fdfcf8;
   --bg-layer:radial-gradient(#111111 1.1px, transparent 1.1px);
