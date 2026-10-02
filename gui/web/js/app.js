@@ -139,6 +139,8 @@ function bindLogoEgg() {
   const logo = $('#logoImg');
   if (!logo) return;
   logo.addEventListener('click', () => {
+    // 点猫猫叫一声（内嵌的 meow.wav，解压后播放；连点会先停掉上一条再播）
+    Backend.call('ui.playAsset', { name: 'meow.wav' }).catch(() => {});
     eggClicks++;
     if (!eggReady || eggClicks < eggNextAt) return;
     eggReady = false;
