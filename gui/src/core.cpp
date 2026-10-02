@@ -1250,7 +1250,13 @@ struct Core::Impl {
         std::string time;
         unsigned long long ms = 0;     // GetTickCount64 时间戳，用于"短时间同动作合并"
     };
-    std::vector<HistEntry> history;
+    // ★ 两条独立列表：派生捕获 / wem 捕获。以前共用一个 vector，
+    //   wem 事件一多就把派生记录挤出去（用户看到的"派生不见了"）。
+    std::vector<HistEntry> derHist;   // kind=0 派生（fsm/lmt）
+    std::vector<HistEntry> wemHist;   // kind=1 wem
+    int derRev = 0, wemRev = 0;       // 修订号：变了才让前端重绘（避免"没变化就不推送"卡死）
+    int derDup = 0, wemDup = 0;       // 被去重丢弃的条数（界面统计）
+    int wemLoopDrop = 0;              // 被判循环音静默丢弃的条数（界面统计）
 
     // ---- wem 捕获（读 SonarAudio.log，GUI 进程内即可，不进游戏）----
     std::string wemLogPath;                                        // plugins\SonarAudio.log
@@ -1841,7 +1847,7 @@ struct Core::Impl {
                     LoopStat st; st.winStart = nowMs; st.count = 1; st.muteUntil = 0;
                     wemLoops[media] = st;
                 } else {
-                    if (nowMs < lit->second.muteUntil) continue;     // 已判为循环音，静默期内不记录
+                    if (nowMs < lit->second.muteUntil) { ++wemLoopDrop; continue; }   // 循环音静默
                     if (nowMs - lit->second.winStart > 3000) {
                         lit->second.winStart = nowMs;
                         lit->second.count = 0;
@@ -1855,19 +1861,19 @@ struct Core::Impl {
             }
             // 去重：连续同 media，或 1.5s 窗口内同 media
             bool dup = false;
-            if (!history.empty()) {
-                const HistEntry& top = history.front();
-                if (top.kind == 1 && top.wemMedia == media) dup = true;
+            if (!wemHist.empty()) {
+                const HistEntry& top = wemHist.front();
+                if (top.wemMedia == media) dup = true;
             }
             if (!dup) {
                 const unsigned long long win = 1500;
-                for (std::size_t i = 0; i < history.size(); ++i) {
-                    const HistEntry& ph = history[i];
+                for (std::size_t i = 0; i < wemHist.size(); ++i) {
+                    const HistEntry& ph = wemHist[i];
                     if (nowMs - ph.ms >= win) break;
-                    if (ph.kind == 1 && ph.wemMedia == media) { dup = true; break; }
+                    if (ph.wemMedia == media) { dup = true; break; }
                 }
             }
-            if (dup) continue;
+            if (dup) { ++wemDup; continue; }
             std::string name;
             const std::unordered_map<int, std::string>::const_iterator it = wemNames.find(media);
             if (it != wemNames.end()) name = it->second;         // 形如 wp_bow_cmn/30.ogg
@@ -1883,9 +1889,10 @@ struct Core::Impl {
             h.weaponId = -1;
             h.ms = nowMs;
             h.time = TimeNowHms();
-            history.insert(history.begin(), h);
-            if (history.size() > 300) history.pop_back();
+            wemHist.insert(wemHist.begin(), h);
+            if (wemHist.size() > 300) wemHist.pop_back();
             ++wemOkCount;
+            ++wemRev;
             curWemMedia = media;
             curWemName = name;
             curWemBank = bank;
@@ -1908,18 +1915,15 @@ struct Core::Impl {
         //    一次动作里 fsm 可能 92→90→92 地来回跳，只看最新一条会让 92 出现两次。
         //
         // 【顺序】历史最新在头部（insert begin）：① 比 front，② 从头往后扫。
-        if (!history.empty()) {
-            const HistEntry& top = history.front();
-            if (top.kind == 0 && top.fsm == live.fsm && top.lmt == live.lmt && top.weapon == live.weapon)
-                return;
+        if (!derHist.empty()) {
+            const HistEntry& top = derHist.front();
+            if (top.fsm == live.fsm && top.lmt == live.lmt && top.weapon == live.weapon) { ++derDup; return; }
         }
         const unsigned long long win = 3000;   // 派生：3 秒内同一 fsm/lmt/weapon 只记一条
-        for (std::size_t i = 0; i < history.size(); ++i) {
-            const HistEntry& ph = history[i];
+        for (std::size_t i = 0; i < derHist.size(); ++i) {
+            const HistEntry& ph = derHist[i];
             if (nowMs - ph.ms >= win) break;
-            if (ph.kind != 0) continue;        // ★ 只和派生记录比，别被 wem 记录干扰
-            if (ph.fsm == live.fsm && ph.lmt == live.lmt && ph.weapon == live.weapon)
-                return;
+            if (ph.fsm == live.fsm && ph.lmt == live.lmt && ph.weapon == live.weapon) { ++derDup; return; }
         }
         HistEntry h;
         h.ms = nowMs;
@@ -1928,9 +1932,10 @@ struct Core::Impl {
         h.weapon = live.weapon;
         h.weaponId = live.weaponId;
         h.time = TimeNowHms();
+        derHist.insert(derHist.begin(), h);
+        if (derHist.size() > 300) derHist.pop_back();                   // 只留最近 300 条
+        ++derRev;
         // 最新记录放最前面：捕获面板从上往下就是"新 → 旧"，不用翻到底找刚做的动作
-        history.insert(history.begin(), h);
-        if (history.size() > 300) history.pop_back();                   // 只留最近 300 条
     }
 
     void PollGame() {
@@ -1957,49 +1962,277 @@ struct Core::Impl {
         RecordHistory();
     }
 
-    JVal HistoryJson() const {
-        JVal a = JVal::arr();
-        for (std::size_t i = 0; i < history.size(); ++i) {
-            JVal h = JVal::obj();
-            h.set("kind", JVal(history[i].kind));
-            if (history[i].kind == 1) {   // wem 捕获
-                h.set("wemMedia", JVal(history[i].wemMedia));
-                h.set("bank", JVal(history[i].bank));
-                h.set("name", JVal(history[i].wemName));
-                // 名字是否来自用户命名库（true 才显示这个名字，否则前端显示 bank·第N个）
-                h.set("custom", JVal(wemUserNames.find(history[i].wemMedia) != wemUserNames.end()));
-                {
-                    const std::unordered_map<int, std::string>::const_iterator nt = wemNotes.find(history[i].wemMedia);
-                    if (nt != wemNotes.end()) h.set("note", JVal(nt->second));
-                }
-                // 序号真值（DIDX 位置），显示按 id 查表
-                const std::unordered_map<int, std::pair<std::string, int>>::const_iterator sit =
-                    wemSeqs.find(history[i].wemMedia);
-                if (sit != wemSeqs.end()) {
-                    h.set("seqNum", JVal(sit->second.second));
-                    if (history[i].bank.empty()) h.set("bank", JVal(sit->second.first));
-                } else {
-                    std::string b; int n = 0;
-                    if (ParseSeqFromName(history[i].wemName, b, n)) {
-                        h.set("seqNum", JVal(n));
-                        if (history[i].bank.empty()) h.set("bank", JVal(b));
+    // ================= wem 播放：任何捕获到的 media 都能播 =================
+    //   反查顺序：① 真值表 media→bank 名 → 候选目录找 <bank>.nbnk
+    //             ② 调用方显式给的 bank 名   ③ 全量 DIDX 索引兜底（首次扫一遍，之后缓存）
+    std::vector<std::string> bankSearchDirs;
+    std::unordered_map<std::string, std::string> bankPathCache;   // bank 名 → 路径（含未命中的空串）
+    std::unordered_map<int, std::string> mediaBankIndex;          // media → bank 路径（兜底索引）
+    bool mediaBankIndexBuilt = false;
+
+    static std::string FindFileRecursive(const std::wstring& dir, const std::wstring& name, int depth) {
+        if (depth < 0) return std::string();
+        WIN32_FIND_DATAW fd{};
+        HANDLE h = ::FindFirstFileW((dir + L"\\*").c_str(), &fd);
+        if (h == INVALID_HANDLE_VALUE) return std::string();
+        std::string hit;
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                if (fd.cFileName[0] == L'.') continue;
+                hit = FindFileRecursive(dir + L"\\" + fd.cFileName, name, depth - 1);
+                if (!hit.empty()) break;
+            } else if (::_wcsicmp(fd.cFileName, name.c_str()) == 0) {
+                hit = Utf8FromWide(dir + L"\\" + fd.cFileName);
+                break;
+            }
+        } while (::FindNextFileW(h, &fd));
+        ::FindClose(h);
+        return hit;
+    }
+
+    static void CollectNbnk(const std::wstring& dir, std::vector<std::wstring>& out, int depth) {
+        if (depth < 0) return;
+        WIN32_FIND_DATAW fd{};
+        HANDLE h = ::FindFirstFileW((dir + L"\\*").c_str(), &fd);
+        if (h == INVALID_HANDLE_VALUE) return;
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                if (fd.cFileName[0] == L'.') continue;
+                CollectNbnk(dir + L"\\" + fd.cFileName, out, depth - 1);
+            } else {
+                const std::wstring n = fd.cFileName;
+                if (n.size() > 5 && ::_wcsicmp(n.c_str() + n.size() - 5, L".nbnk") == 0)
+                    out.push_back(dir + L"\\" + n);
+            }
+        } while (::FindNextFileW(h, &fd));
+        ::FindClose(h);
+    }
+
+    // 只读 DIDX（读到 DATA 就停），用于快速建立 media→bank 索引
+    static bool ScanBankDIDX(const std::wstring& path, std::vector<uint32_t>& ids) {
+        HANDLE h = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                 nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h == INVALID_HANDLE_VALUE) return false;
+        char hdr[8] = {};
+        DWORD got = 0;
+        bool ok = false;
+        while (::ReadFile(h, hdr, 8, &got, nullptr) && got == 8) {
+            const uint32_t len = *(const uint32_t*)(hdr + 4);
+            if (std::memcmp(hdr, "DIDX", 4) == 0) {
+                if (len >= 12 && len <= (64u << 20)) {
+                    std::vector<char> buf(len);
+                    if (::ReadFile(h, buf.data(), len, &got, nullptr) && got == len) {
+                        const uint32_t n = len / 12;
+                        for (uint32_t i = 0; i < n; ++i)
+                            ids.push_back(*(const uint32_t*)(buf.data() + (std::size_t)i * 12));
+                        ok = true;
                     }
                 }
-                h.set("weapon", JVal(history[i].weapon));
-                h.set("weaponId", JVal(history[i].weaponId));
-                h.set("time", JVal(history[i].time));
-                h.set("ageMs", JVal((long long)(::GetTickCount64() - history[i].ms)));
-                h.set("added", JVal(IsWemAdded(history[i].wemMedia)));
-            } else {                      // 派生捕获（fsm/lmt）
-                h.set("fsm", JVal(history[i].fsm));
-                h.set("lmt", JVal(history[i].lmt));
-                h.set("weapon", JVal(history[i].weapon));
-                h.set("weaponId", JVal(history[i].weaponId));
-                h.set("time", JVal(history[i].time));
-                h.set("ageMs", JVal((long long)(::GetTickCount64() - history[i].ms)));
-                h.set("name", JVal(ResolveName(history[i].weapon, history[i].fsm, history[i].lmt)));
-                h.set("added", JVal(IsCapturedAdded(history[i].weapon, history[i].fsm, history[i].lmt)));
+                break;
             }
+            if (len == 0) break;
+            if (::SetFilePointer(h, (LONG)len, nullptr, FILE_CURRENT) == INVALID_SET_FILE_POINTER) break;
+        }
+        ::CloseHandle(h);
+        return ok;
+    }
+
+    void BuildBankSearchDirs() {
+        if (!bankSearchDirs.empty()) return;
+        struct Adder {
+            std::vector<std::string>* v;
+            void operator()(const std::string& raw) const {
+                std::string d = raw;
+                while (!d.empty() && (d[d.size() - 1] == '\\' || d[d.size() - 1] == '/')) d.erase(d.size() - 1);
+                if (d.empty() || !FsExists(d)) return;
+                for (std::size_t i = 0; i < v->size(); ++i) if ((*v)[i] == d) return;
+                v->push_back(d);
+            }
+        } add;
+        add.v = &bankSearchDirs;
+        const std::size_t pl = gameIniPath.find("nativePC\\plugins\\");
+        if (pl != std::string::npos) {
+            const std::string game = gameIniPath.substr(0, pl);
+            add(game + "nativePC\\sound\\wwise\\Windows");
+            add(game + "nativePC\\sound\\wwise\\Windows\\Japanese");
+        }
+        add(exeDir + "..\\..\\sound\\wwise\\Windows");
+        add(exeDir + "..\\sound\\wwise\\Windows");
+        add(cfg.global.bankOutDir);
+        // 插件 ini 的 BankRoot（分号分隔；插件扫 bank 用的就是这份目录表）
+        {
+            std::string ini;
+            if (FsRead(exeDir + "..\\WeaponSoundEnhance.wem.ini", ini)) {
+                std::size_t p0 = 0;
+                while (p0 <= ini.size()) {
+                    std::size_t e = ini.find('\n', p0);
+                    if (e == std::string::npos) e = ini.size();
+                    const std::string line = Trim(ini.substr(p0, e - p0));
+                    p0 = e + 1;
+                    if (line.size() > 9 && _strnicmp(line.c_str(), "BankRoot=", 9) == 0) {
+                        const std::string v = line.substr(9);
+                        std::size_t q = 0;
+                        while (q <= v.size()) {
+                            std::size_t s = v.find(';', q);
+                            if (s == std::string::npos) s = v.size();
+                            add(Trim(v.substr(q, s - q)));
+                            q = s + 1;
+                        }
+                    }
+                    if (e == ini.size()) break;
+                }
+            }
+        }
+    }
+
+    std::string FindBankByName(const std::string& bank) {
+        if (bank.empty()) return std::string();
+        const std::unordered_map<std::string, std::string>::const_iterator ci = bankPathCache.find(bank);
+        if (ci != bankPathCache.end()) return ci->second;
+        BuildBankSearchDirs();
+        const std::wstring want = Utf8ToWide(bank + ".nbnk");
+        std::string found;
+        for (std::size_t i = 0; i < bankSearchDirs.size() && found.empty(); ++i) {
+            const std::string direct = bankSearchDirs[i] + "\\" + bank + ".nbnk";
+            if (FsExists(direct)) { found = direct; break; }
+            found = FindFileRecursive(Utf8ToWide(bankSearchDirs[i]), want, 4);
+        }
+        bankPathCache[bank] = found;
+        return found;
+    }
+
+    void BuildMediaBankIndex() {
+        if (mediaBankIndexBuilt) return;
+        mediaBankIndexBuilt = true;
+        BuildBankSearchDirs();
+        std::vector<std::wstring> files;
+        for (std::size_t i = 0; i < bankSearchDirs.size(); ++i)
+            CollectNbnk(Utf8ToWide(bankSearchDirs[i]), files, 4);
+        for (std::size_t i = 0; i < files.size(); ++i) {
+            std::vector<uint32_t> ids;
+            if (!ScanBankDIDX(files[i], ids)) continue;
+            const std::string p = Utf8FromWide(files[i]);
+            for (std::size_t k = 0; k < ids.size(); ++k) {
+                const int id = (int)ids[k];
+                if (mediaBankIndex.find(id) == mediaBankIndex.end()) mediaBankIndex[id] = p;
+            }
+        }
+    }
+
+    // wem 字节 → vgmstream 解码到内存 → PlaySound（GUI 内播放，不调外部播放器）
+    bool PlayWemBytes(const std::vector<uint8_t>& wem, long long media, std::string& err) {
+        std::wstring cli = Utf8ToWide(exeDir) + L"wemkit\\vgmstream\\vgmstream-cli.exe";
+        if (::GetFileAttributesW(cli.c_str()) == INVALID_FILE_ATTRIBUTES)
+            cli = Utf8ToWide(exeDir) + L"tools\\vgmstream\\vgmstream-cli.exe";
+        if (::GetFileAttributesW(cli.c_str()) == INVALID_FILE_ATTRIBUTES) {
+            err = "缺少 wemkit\\vgmstream\\vgmstream-cli.exe（随包分发的 wem 解码器）";
+            return false;
+        }
+        const std::wstring tmpDir = Utf8ToWide(exeDir) + L"wemkit\\tmp";
+        ::CreateDirectoryW(tmpDir.c_str(), nullptr);
+        wchar_t num[32] = {};
+        ::swprintf_s(num, L"%lld", media);
+        const std::wstring wemFile = tmpDir + L"\\play_" + num + L".wem";
+        {
+            HANDLE h = ::CreateFileW(wemFile.c_str(), GENERIC_WRITE, 0, nullptr,
+                                     CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (h == INVALID_HANDLE_VALUE) { err = "无法写临时 wem"; return false; }
+            DWORD wr0 = 0;
+            ::WriteFile(h, wem.data(), (DWORD)wem.size(), &wr0, nullptr);
+            ::CloseHandle(h);
+        }
+        SECURITY_ATTRIBUTES sa{};
+        sa.nLength = sizeof(sa);
+        sa.bInheritHandle = TRUE;
+        HANDLE rd = nullptr, wr = nullptr;
+        if (!::CreatePipe(&rd, &wr, &sa, 1 << 20)) { err = "创建管道失败"; return false; }
+        ::SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+        STARTUPINFOW si{};
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+        si.hStdOutput = wr;
+        si.hStdError = wr;
+        PROCESS_INFORMATION pi{};
+        std::wstring cmd = L"\"" + cli + L"\" -p \"" + wemFile + L"\"";
+        std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+        buf.push_back(0);
+        const BOOL ok = ::CreateProcessW(nullptr, buf.data(), nullptr, nullptr, TRUE,
+                                         CREATE_NO_WINDOW, nullptr, tmpDir.c_str(), &si, &pi);
+        ::CloseHandle(wr);
+        std::vector<unsigned char> wav;
+        if (ok) {
+            ::CloseHandle(pi.hThread);
+            unsigned char chunk[65536];
+            DWORD got = 0;
+            while (::ReadFile(rd, chunk, sizeof(chunk), &got, nullptr) && got > 0)
+                wav.insert(wav.end(), chunk, chunk + got);
+            ::WaitForSingleObject(pi.hProcess, 15000);
+            ::CloseHandle(pi.hProcess);
+        }
+        ::CloseHandle(rd);
+        if (wav.size() < 44) { err = "wem 解码失败（vgmstream 没有输出 wav）"; return false; }
+        ::PlaySoundW(nullptr, nullptr, 0);
+        playBuf.swap(wav);
+        if (!::PlaySoundW((LPCWSTR)playBuf.data(), nullptr, SND_MEMORY | SND_ASYNC | SND_NODEFAULT)) {
+            err = "PlaySound 失败";
+            return false;
+        }
+        return true;
+    }
+
+    // 派生捕获列表（独立）
+    JVal DerJson() const {
+        JVal a = JVal::arr();
+        for (std::size_t i = 0; i < derHist.size(); ++i) {
+            const HistEntry& e = derHist[i];
+            JVal h = JVal::obj();
+            h.set("kind", JVal(0));
+            h.set("fsm", JVal(e.fsm));
+            h.set("lmt", JVal(e.lmt));
+            h.set("weapon", JVal(e.weapon));
+            h.set("weaponId", JVal(e.weaponId));
+            h.set("time", JVal(e.time));
+            h.set("ageMs", JVal((long long)(::GetTickCount64() - e.ms)));
+            h.set("name", JVal(ResolveName(e.weapon, e.fsm, e.lmt)));
+            h.set("added", JVal(IsCapturedAdded(e.weapon, e.fsm, e.lmt)));
+            a.push(h);
+        }
+        return a;
+    }
+
+    // wem 捕获列表（独立）
+    JVal WemJson() const {
+        JVal a = JVal::arr();
+        for (std::size_t i = 0; i < wemHist.size(); ++i) {
+            const HistEntry& e = wemHist[i];
+            JVal h = JVal::obj();
+            h.set("kind", JVal(1));
+            h.set("wemMedia", JVal(e.wemMedia));
+            h.set("bank", JVal(e.bank));
+            h.set("name", JVal(e.wemName));
+            h.set("custom", JVal(wemUserNames.find(e.wemMedia) != wemUserNames.end()));
+            {
+                const std::unordered_map<int, std::string>::const_iterator nt = wemNotes.find(e.wemMedia);
+                if (nt != wemNotes.end()) h.set("note", JVal(nt->second));
+            }
+            const std::unordered_map<int, std::pair<std::string, int>>::const_iterator sit =
+                wemSeqs.find(e.wemMedia);
+            if (sit != wemSeqs.end()) {
+                h.set("seqNum", JVal(sit->second.second));
+                if (e.bank.empty()) h.set("bank", JVal(sit->second.first));
+            } else {
+                std::string b; int n = 0;
+                if (ParseSeqFromName(e.wemName, b, n)) {
+                    h.set("seqNum", JVal(n));
+                    if (e.bank.empty()) h.set("bank", JVal(b));
+                }
+            }
+            h.set("weapon", JVal(e.weapon));
+            h.set("weaponId", JVal(e.weaponId));
+            h.set("time", JVal(e.time));
+            h.set("ageMs", JVal((long long)(::GetTickCount64() - e.ms)));
+            h.set("added", JVal(IsWemAdded(e.wemMedia)));
             a.push(h);
         }
         return a;
@@ -2047,13 +2280,15 @@ struct Core::Impl {
         d.set("wemName", JVal(curWemName.empty() ? std::string() : curWemName));
         d.set("wemBank", JVal(curWemBank.empty() ? std::string() : curWemBank));
         d.set("wemWeapon", JVal(curWemWeapon));
-        {   // 当前历史里派生/wem 各有多少（界面统计 + 排查"清空后看不到派生"）
-            int dn = 0, wn = 0;
-            for (std::size_t i = 0; i < history.size(); ++i)
-                (history[i].kind == 1 ? wn : dn)++;
-            d.set("histDer", JVal(dn));
-            d.set("histWem", JVal(wn));
-        }
+        d.set("der", DerJson());
+        d.set("wem", WemJson());
+        d.set("derRev", JVal(derRev));
+        d.set("wemRev", JVal(wemRev));
+        d.set("derCount", JVal((int)derHist.size()));
+        d.set("wemCount", JVal((int)wemHist.size()));
+        d.set("derDup", JVal(derDup));
+        d.set("wemDup", JVal(wemDup));
+        d.set("wemLoopDrop", JVal(wemLoopDrop));
         d.set("wemOk", JVal(wemOkCount));
         d.set("wemZero", JVal(wemZeroCount));
         d.set("wemNameCustom", JVal(curWemMedia > 0 &&
@@ -2102,7 +2337,6 @@ struct Core::Impl {
             }
         }
         d.set("wemAdded", JVal(curWemMedia > 0 && IsWemAdded(curWemMedia)));
-        d.set("history", HistoryJson());
         return d;
     }
 
@@ -3461,8 +3695,8 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
         if (method == "fsm.exportMeasured") {
             // 汇总"实测到的动作 ID"：实时捕获历史 + 当前配置条目（按 weapon/fsm/lmt 去重）
             std::vector<FsmDbEntry> ids;
-            for (std::size_t i = 0; i < im->history.size(); ++i) {
-                const Impl::HistEntry& h = im->history[i];
+            for (std::size_t i = 0; i < im->derHist.size(); ++i) {
+                const Impl::HistEntry& h = im->derHist[i];
                 if (h.fsm <= 0 && h.lmt <= 0) continue;             // 跳过自由态(0/-1)
                 bool dup = false;
                 for (std::size_t k = 0; k < ids.size(); ++k)
@@ -3603,8 +3837,8 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
 
         if (method == "fsm.captured") {
             JVal arr = JVal::arr();
-            for (std::size_t i = 0; i < im->history.size(); ++i) {
-                const Impl::HistEntry& h = im->history[i];
+            for (std::size_t i = 0; i < im->derHist.size(); ++i) {
+                const Impl::HistEntry& h = im->derHist[i];
                 if (h.fsm <= 0 && h.lmt <= 0) continue;
                 JVal o = JVal::obj();
                 o.set("weapon", JVal(h.weapon));
@@ -3895,6 +4129,49 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
             d.set("played", JVal(played != FALSE));
             d.set("bytes", JVal((int)im->playBuf.size()));
             d.set("media", JVal(media));
+            return OkJson(d);
+        }
+
+        // 播放任意捕获到的 wem：真值表 → bank 名 → 候选目录找文件；找不到就全量 DIDX 索引兜底
+        if (method == "wem.play") {
+            const long long media = p.find("media") ? p.find("media")->asInt(0) : 0;
+            if (media <= 0) return ErrJson("缺少 media");
+            const std::string wantBank = Trim(p.optStr("bank"));
+            std::string bankPath = Trim(p.optStr("bankPath"));
+            std::string foundBy;
+            if (bankPath.empty()) {
+                const std::unordered_map<int, std::pair<std::string, int>>::const_iterator sit =
+                    im->wemSeqs.find((int)media);
+                if (sit != im->wemSeqs.end()) {
+                    bankPath = im->FindBankByName(sit->second.first);
+                    if (!bankPath.empty()) foundBy = sit->second.first;
+                }
+            }
+            if (bankPath.empty() && !wantBank.empty()) {
+                bankPath = im->FindBankByName(wantBank);
+                if (!bankPath.empty()) foundBy = wantBank;
+            }
+            if (bankPath.empty()) {
+                im->BuildMediaBankIndex();   // 首次会扫一遍候选目录（之后走缓存）
+                const std::unordered_map<int, std::string>::const_iterator mit =
+                    im->mediaBankIndex.find((int)media);
+                if (mit != im->mediaBankIndex.end()) { bankPath = mit->second; foundBy = "DIDX 索引"; }
+            }
+            if (bankPath.empty())
+                return ErrJson("找不到包含这条 media 的 nbnk 文件（已搜：游戏 sound 目录 / 输出目录 / BankRoot）");
+            bankmod::BankFile bf;
+            std::string err;
+            if (!bankmod::LoadBank(Utf8ToWide(bankPath), bf, err)) return ErrJson(err);
+            std::vector<uint8_t> wem;
+            if (!bankmod::ExtractWem(bf, (uint32_t)media, wem))
+                return ErrJson("这条 media 不在 " + bf.name + " 里（索引可能过期，重开 GUI 再试）");
+            if (!im->PlayWemBytes(wem, media, err)) return ErrJson(err);
+            JVal d = JVal::obj();
+            d.set("played", JVal(true));
+            d.set("media", JVal(media));
+            d.set("bank", JVal(bf.name));
+            d.set("path", JVal(ToSlash(bankPath)));
+            d.set("foundBy", JVal(foundBy));
             return OkJson(d);
         }
 
@@ -4247,15 +4524,13 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
         if (method == "live.clear") {
             // kind="wem"：只清 wem 捕获（nbnk 制作页的清空按钮），派生历史保留；
             // 其它（默认）：全部清空。
-            const bool wemOnly = (p.optStr("kind") == "wem");
-            if (wemOnly) {
-                // 就地删除 kind==1 的记录（不引入 Impl 内部类型名）
-                for (std::size_t i = im->history.size(); i-- > 0; )
-                    if (im->history[i].kind == 1)
-                        im->history.erase(im->history.begin() + (std::ptrdiff_t)i);
-            } else {
-                im->history.clear();
-            }
+            const std::string scope = p.optStr("scope").empty()
+                ? (p.optStr("kind") == "wem" ? std::string("wem") : std::string("all"))
+                : p.optStr("scope");
+            const bool doWem = (scope == "wem" || scope == "all");
+            const bool doDer = (scope == "derived" || scope == "all");
+            if (doDer) { im->derHist.clear(); ++im->derRev; }
+            if (doWem) { im->wemHist.clear(); ++im->wemRev; }
             im->curWemMedia = -1;
             im->curWemName.clear();
             im->curWemBank.clear();
@@ -4280,8 +4555,9 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
             im->wemLastPoll = 0;
             JVal d = JVal::obj();
             d.set("cleared", JVal(true));
-            d.set("kind", JVal(wemOnly ? std::string("wem") : std::string("all")));
-            d.set("history", im->HistoryJson());
+            d.set("scope", JVal(scope));
+            d.set("der", im->DerJson());
+            d.set("wem", im->WemJson());
             return OkJson(d);
         }
         // ---- 用户自定义 wem 名字（保存到 WseWemNames_user.txt，下次自动读取）----

@@ -679,185 +679,25 @@ function histFiltered(H) {
 }
 
 function setWemView(v) {
-  if (ST.wemView === v) return;
-  ST.wemView = v;
-  const f = $('#viewFsm'), w = $('#viewWem');
-  if (f && w) { f.className = 'vs' + (v ? '' : ' on'); w.className = 'vs' + (v ? ' on' : ''); }
-  const fb = $('#viewFsmBox'), wb = $('#viewWemBox');
-  if (fb) fb.hidden = v;
-  if (wb) wb.hidden = !v;
+  // 捕获面板的视图切换由 capture.js 自己管（两个页面各有切换按钮）
+  ST.wemView = !!v;
+  if (typeof Capture !== 'undefined') Capture.view = v ? 'wem' : 'derived';
   // 中栏条目列表的同样式切换按钮
   const lf = $('#viewListFsm'), lw = $('#viewListWem');
-  if (lf && lw) { lf.className = 'vs' + (v ? '' : ' on'); lw.className = 'vs' + (v ? ' on' : ''); }
-  renderLive();
+  if (lf && lw) { lf.className = 'vs' + (v ? '' : ' on'); lw.className = 'vs' + (v ? ' on' : '' ); }
   renderTable();
-  Backend.call('ui.set', { wemView: v }).catch(() => {});
 }
-
 function wireWemView() {
-  const f = $('#viewFsm'), w = $('#viewWem');
-  if (f && w) { f.onclick = () => setWemView(false); w.onclick = () => setWemView(true); }
+  // 捕获面板的派生/WEM 切换由 capture.js 自己渲染并绑定；这里只绑中栏条目列表的切换
   const lf = $('#viewListFsm'), lw = $('#viewListWem');
   if (lf && lw) { lf.onclick = () => setWemView(false); lw.onclick = () => setWemView(true); }
 }
 
 function renderLive() {
-  const L = ST.live;
-  $('#liveDot').className = 'dot' + (L.attached ? '' : ' off');
-  $('#liveText').textContent = L.attached
-    ? `已连接${L.pid ? ' (PID ' + L.pid + ')' : ''}${L.inScene ? ' · 已进场景' : ' · 未进场景'}`
-    : '未连接';
-  $('#liveNote').textContent = L.attached ? '' :
-    '未找到 MonsterHunterWorld.exe（游戏没开，或还没进任务）。';
-  // ★ 当前场景（地图 id / 任务状态）
-  const sceneTxt = sceneLabel(L.mapId);
-  const peace = L.mapId > 0 && isPeaceZone(L.mapId);
-  const questTxt = (L.questState == null || L.questState < 0 ? '' : (L.questState === 2 ? '任务中' : '非任务')) +
-    (peace ? ' · 和平区' : (L.mapId > 0 ? ' · 狩猎场' : ''));
-  const se = $('#liveScene');
-  if (se) { se.textContent = sceneTxt; se.className = peace ? 'dim' : ''; }
-  const qt = $('#liveQuest');
-  if (qt) qt.textContent = questTxt;
-  const se2 = $('#liveScene2'), qt2 = $('#liveQuest2');   // 音效替换页面里的同一信息
-  if (se2) se2.textContent = sceneTxt;
-  if (qt2) qt2.textContent = questTxt;
-  // 视图切换按钮状态（面板现在两个页面都有，统一按 ST.wemView 走）
-  const f = $('#viewFsm'), w = $('#viewWem');
-  if (f && w) { f.className = 'vs' + (ST.wemView ? '' : ' on'); w.className = 'vs' + (ST.wemView ? ' on' : ''); }
-  const fb = $('#viewFsmBox'), wb = $('#viewWemBox');
-  if (fb) fb.hidden = ST.wemView;
-  if (wb) wb.hidden = !ST.wemView;
-
-  const H = histFiltered(L.history || []);
-  const derH = H.filter(r => r.kind !== 1);   // 派生
-  const wemH = H.filter(r => r.kind === 1);   // wem
-
-  // ---- 派生视图 ----
-  const now = $('#liveNow');
-  const lastAct = derH.find(r => r.fsm > 0);
-  if (L.attached && lastAct) {
-    now.hidden = false;
-    now.innerHTML = '';
-    const row = h('div', { class: 'live-row', title: '点击编辑或添加这条动作' },
-      h('b', { text: lastAct.name || ('fsm ' + lastAct.fsm) }),
-      h('span', { text: `w${lastAct.weapon} · lmt ${lastAct.lmt}` }),
-      lastAct.added
-        ? h('em', { class: 'tag', text: '编辑' })
-        : h('em', { class: 'tag add', text: '＋ 添加' }));
-    row.onclick = () => captureToEntry(lastAct);
-    now.appendChild(row);
-  } else now.hidden = true;
-
-  const hist = $('#liveHist');
-  hist.innerHTML = '';
-  if (!derH.length) {
-    hist.appendChild(h('div', { class: 'note' },
-      ST.weaponFilter >= 0
-        ? `当前武器还没有派生捕获记录：进游戏做派生动作后回来查看`
-        : '还没有派生捕获记录：进游戏做派生动作后回来查看'));
-  } else {
-    hist.appendChild(h('div', { class: 'note', style: 'margin-bottom:6px' },
-      `派生捕获（${derH.length} 条，点击可直接加入条目）`));
-    const show = ST.histExpanded ? derH : derH.slice(0, 8);
-    show.forEach(r => {
-      const el = h('div', {
-        class: 'hrec' + (r.added ? ' added' : ''),
-        title: (r.added ? '该动作已配了条目 → 点击编辑\n' : '点击把这个动作加入条目\n') +
-               (r.name || ('fsm ' + r.fsm)) + `\n武器 ${r.weapon} · fsm ${r.fsm} · lmt ${r.lmt}`,
-      },
-        h('b', { text: r.time || '' }),
-        h('span', { class: 'n', text: (r.name || ('fsm ' + r.fsm)) }),
-        h('span', { class: 'ids', text: `w${r.weapon} ${r.fsm}/${r.lmt}` }),
-        r.added ? h('em', { class: 'tag', text: '编辑' })
-                : h('em', { class: 'tag add', text: '＋ 添加' }));
-      el.onclick = () => captureToEntry(r);
-      hist.appendChild(el);
-    });
-    if (!ST.histExpanded && derH.length > 8) {
-      const b = h('div', { class: 'hrec more', text: `展开更早的 ${derH.length - 8} 条 ▼` });
-      b.onclick = () => { ST.histExpanded = true; renderLive();
-                          Backend.call('ui.set', { histExpanded: true }).catch(() => {}); };
-      hist.appendChild(b);
-    } else if (ST.histExpanded && derH.length > 8) {
-      const b = h('div', { class: 'hrec more', text: '收起历史 ▲' });
-      b.onclick = () => { ST.histExpanded = false; renderLive();
-                          Backend.call('ui.set', { histExpanded: false }).catch(() => {}); };
-      hist.appendChild(b);
-    }
-  }
-
-  // 识别统计：让用户看到"事件确实到了，只是有些反查不到 media id"
-  {
-    const st = $('#wemStat');
-    if (st) {
-      const ok = L.wemOk || 0, z = L.wemZero || 0;
-      if (ok + z > 0) {
-        st.hidden = false;
-        const dn = L.histDer || 0, wn = L.histWem || 0;
-        st.textContent = `本次运行：识别 ${ok} 条 · 跳过 ${z} 条（未收录的 bank）　当前列表：派生 ${dn} 条 · wem ${wn} 条`;
-      } else st.hidden = true;
-    }
-  }
-
-  // ---- WEM 视图 ----
-  const wemBox = $('#liveWem');
-  // ★ nbnk 制作页：勾了「捕获只显示本 bank」时，实时行也必须按 bank 过滤
-  //   （以前只有历史列表过滤 → 实时行仍显示别的 bank 的 wem，点了就报"不在当前 nbnk 里"）
-  const bankOk = !bankFilterOn() || ((L.wemBank || '') === BANK.name);
-  if (L.wemMedia > 0 && bankOk && (ST.weaponFilter < 0 || L.wemWeapon === ST.weaponFilter)) {
-    wemBox.hidden = false;
-    wemBox.innerHTML = '';
-    const tip = ST.bankPage
-      ? '点击播放这条 wem（来自当前导入的 nbnk）'
-      : '游戏正在播放的 WWise 音效 → 点击添加为条目';
-    const wr = h('div', { class: 'live-row wem', title: tip },
-      h('b', { text: (L.wemAdded ? '✔ ' : '') + wemDisplayName(L) }),
-      h('span', { class: 'dim', text: (L.wemMedia > 0 ? 'media ' + L.wemMedia : '') }),
-      ST.bankPage
-        ? (wemInBank(L) ? h('em', { class: 'tag play', text: '▶ 播放' })
-                       : h('em', { class: 'tag dimtag', text: '不在本 nbnk' }))
-        : (L.wemAdded
-            ? h('em', { class: 'tag', text: '编辑' })
-            : h('em', { class: 'tag add', text: '＋ 添加' })));
-    wr.onclick = () => wemRowClick({ kind: 1, wemMedia: L.wemMedia, name: wemDisplayName(L), bank: L.wemBank, weapon: L.wemWeapon || -1, added: L.wemAdded, seqNum: L.wemSeqNum });
-    wemBox.appendChild(wr);
-  } else wemBox.hidden = true;
-
-  const wh = $('#liveHistWem');
-  wh.innerHTML = '';
-  if (!wemH.length) {
-    wh.appendChild(h('div', { class: 'note' },
-      ST.weaponFilter >= 0
-        ? '当前武器还没有 wem 捕获记录：进游戏做装瓶/射箭等动作后回来查看'
-        : '还没有 wem 捕获记录：进游戏做装瓶/射箭等动作后回来查看'));
-  } else {
-    wh.appendChild(h('div', { class: 'note', style: 'margin-bottom:6px' },
-      `WEM 捕获（${wemH.length} 条，点击可直接加入条目，触发方式 = media id）`));
-    const show = ST.histExpanded ? wemH : wemH.slice(0, 8);
-    show.forEach(r => {
-      const el = h('div', {
-        class: 'hrec wem' + (r.added ? ' added' : ''),
-        title: (r.added ? '该音效已配了条目 → 点击编辑\n' : '点击把这个 wem 音效加入条目\n') +
-               wemDisplayName(r) + (r.wemMedia ? ('\nmedia ' + r.wemMedia) : ''),
-      },
-        h('b', { text: r.time || '' }),
-        h('span', { class: 'n', text: wemDisplayName(r) }),
-        h('span', { class: 'ids', text: (r.weapon >= 0 ? 'w' + r.weapon + ' · ' : '') + r.bank }),
-        h('em', { class: 'tag name', title: '给这条 wem 起名字（存进名字库）', text: '命名',
-          onclick: ev => { ev.stopPropagation(); openNameDialog(r.wemMedia, r.bank || ''); } }),
-        ST.bankPage
-          ? (wemInBank(r) ? h('em', { class: 'tag play', text: '▶ 播放' })
-                         : h('em', { class: 'tag dimtag', text: '不在本 nbnk' }))
-          : (r.added ? h('em', { class: 'tag', text: '编辑' })
-                     : h('em', { class: 'tag add', text: '＋ 添加' })));
-      el.onclick = () => wemRowClick(r);
-      wh.appendChild(el);
-    });
-  }
+  // ★ 捕获面板已模块化：渲染交给 js/capture.js（两条独立列表、两个宿主、显式过滤、逐行可播）
+  if (typeof Capture !== 'undefined') Capture.render();
 }
-
-/* 点击一条捕获记录：已有条目就打开编辑；没有就预填好 fsm/lmt/武器/名字新建。
-   名字取自 core 解析的动作名（ResolveName），没有时用 "fsm N" 兜底。 */
+/* 派生捕获 → 添加/编辑条目（按 fsm/lmt 触发） */
 async function captureToEntry(r) {
   const fsm = r.fsm;
   if (fsm == null || fsm < 0) { toast('这条记录没有 fsm，无法添加', 'err'); return; }
@@ -865,7 +705,6 @@ async function captureToEntry(r) {
   const lmt = (r.lmt != null && r.lmt > 0) ? r.lmt : -1;
 
   // 已有条目：只有在**当前组合**里有才算"已有"（跟 core 的 added 判断一致）。
-  // 其它组合配过不碍事——当前组合没有这个派生，就提供"添加"。
   const curCombo = w >= 0 ? (ST.active[w] || '') : '';
   const hit = ST.entries.findIndex(e =>
     e.weaponType === w && e.fsmId === fsm &&
@@ -895,8 +734,6 @@ async function captureToEntry(r) {
   } catch (e) { toast('添加失败：' + e.message, 'err'); }
 }
 
-/* wem 捕获 → 添加/编辑条目（触发方式 = media id，与 fsm/lmt 二选一） */
-// 这条捕获的 wem 是否在当前导入的 nbnk 里（决定能不能直接播放）
 function wemInBank(r) {
   if (!BANK.path || !BANK.media || !BANK.media.length) return false;
   for (let i = 0; i < BANK.media.length; i++) if (BANK.media[i].id === r.wemMedia) return true;
@@ -1700,6 +1537,11 @@ const ACTIONS = {
   'upd.restart': async () => { await Backend.call('update.restart', {}); },
   'upd.open':    async () => { await Backend.call('update.openLatest', {}); },
 
+  // 清空：scope = all | derived | wem（capture.js 里的每个列表各有自己的清空按钮）
+  'live.clearAll': async () => {
+    try { await Backend.call('live.clear', { scope: 'all' }); } catch (e) { toast('清空失败：' + e.message, 'err'); }
+    toast('已清空全部捕获', 'ok');
+  },
   'live.clear': async () => {
     // 只清前端没用：实时事件一推，core 里的旧历史又会全量发回来。
     // 必须让 core 一起清。
@@ -1842,11 +1684,7 @@ function showBankPage(on) {
   if (f) f.hidden = !!on;
   ST.bankPage = !!on;
   document.body.classList.toggle('bankpage-on', !!on);
-
-  // 捕获面板整体（含"派生捕获 / WEM 音效"切换）搬过去，两个页面都能看两种捕获
-  const cap = $('#captureBody');
-  const host = on ? $('#bankCaptureHost') : $('#mainCaptureHost');
-  if (cap && host) { host.appendChild(cap); renderLive(); }
+  renderLive();   // 两个页面各有一份捕获面板（capture.js 渲染），切页只需重绘
 }
 
 ACTIONS['bank.return'] = () => { showBankPage(false); };
@@ -2003,11 +1841,6 @@ async function refresh() {
     }
     if (typeof s.ui.wemView === 'boolean') {
       ST.wemView = s.ui.wemView;
-      const f = $('#viewFsm'), w = $('#viewWem');
-      if (f && w) { f.className = 'vs' + (s.ui.wemView ? '' : ' on'); w.className = 'vs' + (s.ui.wemView ? ' on' : ''); }
-      const fb = $('#viewFsmBox'), wb = $('#viewWemBox');
-      if (fb) fb.hidden = s.ui.wemView;
-      if (wb) wb.hidden = !s.ui.wemView;
       const lf = $('#viewListFsm'), lw = $('#viewListWem');
       if (lf && lw) { lf.className = 'vs' + (s.ui.wemView ? '' : ' on'); lw.className = 'vs' + (s.ui.wemView ? ' on' : ''); }
     }
@@ -2186,6 +2019,7 @@ Backend.onEvent(ev => {
   const tBoot = Date.now();
   try {
     await refresh();
+    renderLive();   // 首屏必须渲染一次捕获面板：live 推送只在"有变化"时来，不能指望它
     uiReady();
     if (forcedTheme) applyTheme(forcedTheme);
     buildFsmWeaponSelect();
@@ -2200,5 +2034,40 @@ Backend.onEvent(ev => {
     toast('初始化失败：' + e.message, 'err');
   }
 })();
+
+/* ===========================================================================
+   导出给独立模块（js/capture.js）用的最小 API。
+   app.js 整体包在 IIFE 里，$ / $$ / h / ST / Backend 都不是全局 —— 必须显式导出，
+   否则外部模块里会出现 "$$ is not defined" 这类错误（踩过一次）。
+   ★ 防御式写法：逐个 typeof 检查，任何一个缺失都不至于让整个导出抛错。
+   =========================================================================== */
+window.SonarAPI = (function () {
+  const api = {};
+  function put(name, val) { if (typeof val !== 'undefined') api[name] = val; }
+  try {
+    put('$', $); put('$$', $$); put('h', h);
+    put('ST', ST); put('Backend', Backend); put('toast', toast);
+    put('ACTIONS', ACTIONS);
+    put('wemDisplayName', wemDisplayName);
+    put('captureToEntry', captureToEntry);
+    put('addWemRecord', addWemRecord);
+    put('openNameDialog', openNameDialog);
+    put('sceneLabel', sceneLabel);
+    put('isPeaceZone', isPeaceZone);
+    put('renderTable', renderTable);
+    put('renderWeapons', renderWeapons);
+    put('weaponName', weaponName);
+    Object.defineProperty(api, 'BANK', { get: function () { return BANK; }, enumerable: true });
+  } catch (e) {
+    api.__error = String(e);
+  }
+  api.__missing = ['$', '$$', 'h', 'ST', 'Backend', 'toast', 'ACTIONS', 'wemDisplayName',
+    'captureToEntry', 'addWemRecord', 'openNameDialog', 'sceneLabel', 'isPeaceZone',
+    'renderTable', 'renderWeapons'].filter(function (k) { return typeof api[k] === 'undefined'; });
+  return api;
+})();
+
+// 兜底：若首屏渲染早于本模块导出完成，这里补渲染一次（不依赖 live 推送）
+setTimeout(function () { try { if (typeof Capture !== 'undefined') Capture.render(); } catch (e) {} }, 60);
 
 })();

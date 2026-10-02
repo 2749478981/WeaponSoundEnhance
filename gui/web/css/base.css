@@ -574,3 +574,29 @@ button.reload:active{transform:scale(.98)}
 /* nbnk 页里"这条 wem 不在当前 nbnk"的灰标签 */
 .hrec .tag.dimtag, .live-row .tag.dimtag{background:transparent; color:var(--dim);
                                          border:var(--bw) dashed var(--line-2); cursor:help}
+/* ===========================================================================
+   捕获模块（js/capture.js）：两个页面各一份宿主，显式过滤、逐行可播
+   =========================================================================== */
+.capHost{flex:1; min-height:0; display:flex; flex-direction:column; gap:7px;
+         overflow:auto; padding:2px 1px}
+.capfilter{display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:11.5px}
+.capchip{display:inline-flex; align-items:center; gap:5px; padding:2px 7px; border-radius:999px;
+         background:var(--chip-bg); color:var(--chip-fg, var(--text));
+         border:var(--bw) solid var(--line-2); font-size:11px}
+.capchip .x{cursor:pointer; opacity:.65; font-weight:700}
+.capchip .x:hover{opacity:1; color:var(--c-red, #e5484d)}
+.warnchip{padding:2px 7px; border-radius:999px; background:rgba(255,159,10,.18);
+          color:var(--c-amber); font-size:11px}
+.capbtn{padding:3px 9px; font-size:11.5px; border-radius:6px; cursor:pointer;
+        border:var(--bw) solid var(--line-2); background:var(--panel); color:var(--text)}
+.capbtn:hover{background:var(--panel-2)}
+.capbtn.primary{background:var(--accent); color:var(--on-accent); border-color:var(--accent)}
+.caplist-head{display:flex; align-items:center; gap:8px; font-size:11.5px;
+              font-weight:700; color:var(--muted); margin-top:3px}
+.capacts{display:flex; gap:5px; margin-left:auto; flex:none}
+.capstat{font-size:11px; color:var(--muted); padding-top:4px;
+         border-top:1px dashed var(--line); margin-top:2px}
+.hrec.playing{outline:1.5px solid var(--accent); outline-offset:-1px}
+.capHost .hrec{display:flex; align-items:center; gap:7px; min-width:0}
+.capHost .hrec .n{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.capHost .live-row{display:flex; align-items:center; gap:8px}

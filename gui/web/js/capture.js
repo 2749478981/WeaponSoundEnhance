@@ -1,0 +1,276 @@
+/* ===========================================================================
+   Sonar 捕获模块（独立模块，2026 重做）
+
+   为什么是独立文件：捕获面板以前散在 app.js 里，还靠"搬 DOM"在两个页面之间
+   移动，出了问题（清空/过滤/视图）极难定位。现在：
+
+   1) 两条**独立**列表：派生捕获 / WEM 捕获 —— core 各给一份数据 + 修订号，
+      互不挤占、各自上限、各自清空。
+   2) 渲染到**多个宿主**（主页面 / nbnk 制作页各一份静态容器），**不再搬 DOM**。
+   3) 过滤条件**显式可见**：显示当前武器/bank 过滤 + "已隐藏 N 条"，可一键清除。
+   4) 每个列表**自己的清空按钮**（派生归派生、wem 归 wem），语义不再混淆。
+   5) 每一行 wem 都能**直接播放**：core 的 wem.play 会自动反查 media 属于哪个
+      nbnk 文件（真值表 → 候选目录 → DIDX 索引兜底），不要求它属于当前导入的 bank。
+
+   app.js 整体在 IIFE 里，所以这里一律通过 window.SonarAPI 取它的工具函数。
+   =========================================================================== */
+const Capture = (() => {
+  const API = () => window.SonarAPI || null;
+
+  const S = {
+    view: 'derived',        // 'derived' | 'wem'
+    expanded: false,
+    lastDerRev: -1,
+    lastWemRev: -1,
+    playingMedia: 0,
+  };
+
+  function live() { const a = API(); return (a && a.ST && a.ST.live) || {}; }
+  function el(tag, attrs, ...kids) { const a = API(); return a ? a.h(tag, attrs, ...kids) : null; }
+  function $(s) { const a = API(); return a ? a.$(s) : null; }
+  function $$(s) { const a = API(); return a ? a.$$(s) : []; }
+  function toast(msg, kind) { const a = API(); if (a) a.toast(msg, kind); }
+  function call(m, p) { const a = API(); return a ? a.Backend.call(m, p) : Promise.reject(new Error('后端不可用')); }
+  function bank() { const a = API(); return (a && a.BANK) || {}; }
+
+  // ---- 过滤（显式、可清除）----
+  function weaponFilterOn() {
+    const a = API();
+    return !!(a && a.ST && typeof a.ST.weaponFilter === 'number' && a.ST.weaponFilter >= 0);
+  }
+  function bankFilterOn() {
+    const cb = $('#bankOnlyThis');
+    return !!(bank().path && cb && cb.checked);
+  }
+  function filterList(rows) {
+    const a = API();
+    let out = rows || [];
+    if (weaponFilterOn()) out = out.filter(r => r.weapon === a.ST.weaponFilter);
+    if (bankFilterOn()) out = out.filter(r => (r.bank || '') === bank().name);
+    return out;
+  }
+  function clearWeaponFilter() {
+    const a = API();
+    if (!a) return;
+    a.ST.weaponFilter = -1;
+    a.renderWeapons(); a.renderTable();
+    call('ui.set', { weaponFilter: -1 }).catch(() => {});
+    render();
+  }
+  function clearBankFilter() {
+    const cb = $('#bankOnlyThis');
+    if (cb) cb.checked = false;
+    call('ui.set', { bankOnly: false }).catch(() => {});
+    render();
+  }
+
+  // ---- 播放（core 自动反查 bank 文件）----
+  async function playWem(r, ev) {
+    if (ev && ev.stopPropagation) ev.stopPropagation();
+    if (!r || !r.wemMedia) return;
+    try {
+      const res = await call('wem.play', { media: r.wemMedia, bank: r.bank || '' });
+      S.playingMedia = r.wemMedia;
+      toast(`播放 media ${r.wemMedia}（来自 ${res.bank || 'nbnk'}）`, 'ok');
+      render();
+    } catch (e) {
+      toast('播放失败：' + (e.message || e), 'err');
+    }
+  }
+
+  function clearScope(scope) {
+    call('live.clear', { scope })
+      .then(() => toast(scope === 'wem' ? '已清空 WEM 捕获（派生保留）' : '已清空派生捕获（wem 保留）', 'ok'))
+      .catch(e => toast('清空失败：' + (e.message || e), 'err'));
+  }
+
+  // ---- 小组件 ----
+  function chip(text, onClear, title) {
+    return el('span', { class: 'capchip', title: title || '' },
+      el('span', { text }),
+      el('b', { class: 'x', text: '✕', onclick: e => { e.stopPropagation(); onClear(); } }));
+  }
+  function btn(text, onclick, title, cls) {
+    return el('button', { class: 'capbtn' + (cls ? ' ' + cls : ''), title: title || '', text,
+      onclick: e => { e.stopPropagation(); onclick(e); } });
+  }
+  function row(attrs, ...kids) {
+    // h() 只接 (tag, attrs, ...children)，事件放在 attrs 里
+    return el('div', attrs, ...kids.filter(Boolean));
+  }
+
+  function derRow(r) {
+    const a = API();
+    return row({ class: 'hrec' + (r.added ? ' added' : ''), title: '点击把这个动作加入条目',
+                 onclick: () => a.captureToEntry(r) },
+      el('b', { text: r.time || '' }),
+      el('span', { class: 'n', text: r.name || ('fsm ' + r.fsm) }),
+      el('span', { class: 'ids', text: `w${r.weapon} ${r.fsm}/${r.lmt}` }),
+      el('span', { class: 'capacts' },
+        r.added ? btn('编辑', () => a.captureToEntry(r), '该动作已配了条目 → 编辑')
+                : btn('＋ 添加', () => a.captureToEntry(r), '把这个动作加入条目', 'primary')));
+  }
+
+  function wemRow(r, page) {
+    const a = API();
+    const nm = a.wemDisplayName(r);
+    const playing = S.playingMedia === r.wemMedia;
+    const meta = `media ${r.wemMedia}` + (r.bank ? ' · ' + r.bank : '') +
+      (r.seqNum ? ` · 第${r.seqNum}个` : '');
+    return row({ class: 'hrec wem' + (r.added ? ' added' : '') + (playing ? ' playing' : ''),
+                 title: '播放：' + nm + '（core 会自动找它所属的 nbnk）',
+                 onclick: () => { if (page === 'bank') playWem(r); else a.addWemRecord(r); } },
+      el('b', { text: r.time || '' }),
+      el('span', { class: 'n', text: nm }),
+      el('span', { class: 'ids', text: meta }),
+      el('span', { class: 'capacts' },
+        btn(playing ? '▶ 播放中' : '▶ 播放', () => playWem(r), '在 GUI 内播放这条 wem', 'primary'),
+        btn('命名', () => a.openNameDialog(r.wemMedia, nm), '给这条 wem 起名字（存进名字库）'),
+        page === 'bank' ? null
+          : (r.added ? btn('编辑', () => a.addWemRecord(r)) : btn('＋ 添加', () => a.addWemRecord(r)))));
+  }
+
+  // ---- 一个宿主面板 ----
+  function renderHost(host) {
+    const a = API();
+    if (!a) { host.textContent = '界面模块未就绪（SonarAPI 缺失）'; return; }
+    const page = host.dataset.page || 'main';
+    const L = live();
+    host.innerHTML = '';
+
+    // 连接状态
+    const conn = el('div', { class: 'conn' },
+      el('span', { class: 'dot' + (L.attached ? ' ok' : '') }),
+      el('span', { text: L.attached
+        ? ('已连接' + (L.pid ? ` (PID ${L.pid})` : '') + (L.inScene ? ' · 已进场景' : ' · 未进场景'))
+        : (L.error || '未连接') }));
+    host.appendChild(conn);
+
+    // 场景
+    const scene = a.sceneLabel(L.mapId);
+    if (scene) {
+      const peace = (L.mapId > 0 && a.isPeaceZone(L.mapId)) ? ' · 和平区' : '';
+      host.appendChild(el('div', { class: 'conn' },
+        el('span', { text: '场景：' + scene + (L.mapId > 0 ? `（地图 ${L.mapId}）` : '') }),
+        el('span', { class: 'dim', text: (L.questState === 2 ? '任务中' : (L.questState >= 0 ? '非任务' : '')) + peace })));
+    }
+
+    // 视图切换
+    host.appendChild(el('div', { class: 'viewswitch' },
+      el('button', { class: 'vs' + (S.view === 'derived' ? ' on' : ''), text: '派生捕获',
+        onclick: () => { S.view = 'derived'; render(); } }),
+      el('button', { class: 'vs' + (S.view === 'wem' ? ' on' : ''), text: 'WEM 音效',
+        onclick: () => { S.view = 'wem'; render(); } })));
+
+    // 过滤提示（显式 + 一键清除 + 隐藏条数）
+    const allDer = L.der || [], allWem = L.wem || [];
+    const der = filterList(allDer), wem = filterList(allWem);
+    const hidden = (allDer.length - der.length) + (allWem.length - wem.length);
+    if (weaponFilterOn() || bankFilterOn() || hidden > 0) {
+      const bar = el('div', { class: 'capfilter' }, el('span', { class: 'dim', text: '过滤：' }));
+      if (weaponFilterOn()) bar.appendChild(chip('武器 w' + a.ST.weaponFilter, clearWeaponFilter, '点击清除武器过滤'));
+      if (bankFilterOn()) bar.appendChild(chip('bank ' + (bank().name || ''), clearBankFilter, '点击清除 bank 过滤'));
+      if (hidden > 0) bar.appendChild(el('span', { class: 'warnchip', text: `已隐藏 ${hidden} 条` }));
+      host.appendChild(bar);
+    }
+
+    // ---- 派生列表 ----
+    if (S.view === 'derived') {
+      if (L.inScene && L.fsm >= 0) {
+        host.appendChild(row({ class: 'live-row', title: '当前动作 → 点击加入条目',
+                               onclick: () => a.captureToEntry(L) },
+          el('b', { text: (L.added ? '✔ ' : '') + (L.name || ('fsm ' + L.fsm)) }),
+          el('span', { class: 'dim', text: `w${L.weapon} ${L.fsm}/${L.lmt}` }),
+          el('span', { class: 'capacts' },
+            L.added ? btn('编辑', () => a.captureToEntry(L))
+                    : btn('＋ 添加', () => a.captureToEntry(L), '', 'primary'))));
+      }
+      host.appendChild(el('div', { class: 'caplist-head' },
+        el('span', { text: `派生捕获（${der.length}${der.length !== allDer.length ? '/' + allDer.length : ''} 条）` }),
+        el('span', { class: 'grow' }),
+        der.length ? btn('清空', () => clearScope('derived'), '只清空派生捕获，wem 保留') : null));
+
+      const box = el('div', { class: 'hist' });
+      if (!der.length) {
+        box.appendChild(el('div', { class: 'note', text: allDer.length
+          ? `派生记录有 ${allDer.length} 条，但被过滤条件隐藏了（点上面的 ✕ 清除过滤）`
+          : (weaponFilterOn() ? '当前武器还没有派生记录：进游戏做动作后回来看'
+                              : '还没有派生记录：进游戏做动作后回来看') }));
+      } else {
+        const show = S.expanded ? der : der.slice(0, 20);
+        show.forEach(r => box.appendChild(derRow(r)));
+        if (der.length > 20) {
+          box.appendChild(row({ class: 'hrec more',
+            text: S.expanded ? '收起历史 ▲' : `展开更早的 ${der.length - 20} 条 ▼`,
+            onclick: () => { S.expanded = !S.expanded; render(); } }));
+        }
+      }
+      host.appendChild(box);
+    }
+
+    // ---- WEM 列表 ----
+    if (S.view === 'wem') {
+      if (L.wemMedia > 0) {
+        const nm = a.wemDisplayName({ wemMedia: L.wemMedia, name: L.wemName, note: L.wemNote,
+                                      custom: L.wemNameCustom, bank: L.wemBank, seqNum: L.wemSeqNum });
+        host.appendChild(row({ class: 'live-row wem', title: '游戏正在播放的 wem' },
+          el('b', { text: nm }),
+          el('span', { class: 'dim', text: 'media ' + L.wemMedia + (L.wemBank ? ' · ' + L.wemBank : '') }),
+          el('span', { class: 'capacts' },
+            btn('▶ 播放', () => playWem({ wemMedia: L.wemMedia, bank: L.wemBank }), '在 GUI 内播放', 'primary'),
+            btn('命名', () => a.openNameDialog(L.wemMedia, L.wemName || '')),
+            page === 'bank' ? null : btn('＋ 添加', () => a.addWemRecord({
+              kind: 1, wemMedia: L.wemMedia, name: L.wemName, bank: L.wemBank,
+              weapon: L.wemWeapon || -1, added: L.wemAdded, seqNum: L.wemSeqNum })))));
+      }
+      host.appendChild(el('div', { class: 'caplist-head' },
+        el('span', { text: `WEM 捕获（${wem.length}${wem.length !== allWem.length ? '/' + allWem.length : ''} 条）` }),
+        el('span', { class: 'grow' }),
+        wem.length ? btn('清空', () => clearScope('wem'), '只清空 WEM 捕获（含日志文件），派生保留') : null));
+
+      const box = el('div', { class: 'hist' });
+      if (!wem.length) {
+        box.appendChild(el('div', { class: 'note', text: allWem.length
+          ? `wem 记录有 ${allWem.length} 条，但被过滤条件隐藏了（点上面的 ✕ 清除过滤）`
+          : '还没有 wem 记录：进游戏做动作后回来看（点行可直接播放）' }));
+      } else {
+        const show = S.expanded ? wem : wem.slice(0, 20);
+        show.forEach(r => box.appendChild(wemRow(r, page)));
+        if (wem.length > 20) {
+          box.appendChild(row({ class: 'hrec more',
+            text: S.expanded ? '收起历史 ▲' : `展开更早的 ${wem.length - 20} 条 ▼`,
+            onclick: () => { S.expanded = !S.expanded; render(); } }));
+        }
+      }
+      host.appendChild(box);
+    }
+
+    // 统计（一行说清：事件到了多少、识别多少、被丢多少）
+    const ok = L.wemOk || 0, zero = L.wemZero || 0, dup = L.wemDup || 0, loop = L.wemLoopDrop || 0;
+    if (ok + zero + dup + loop > 0) {
+      host.appendChild(el('div', { class: 'capstat',
+        text: `识别 ${ok} · 未识别 ${zero} · 重复丢弃 ${dup} · 循环音静默 ${loop}` }));
+    }
+  }
+
+  function render() {
+    const hosts = $$('.capHost');
+    hosts.forEach(h => { try { renderHost(h); } catch (e) { h.textContent = '捕获渲染出错：' + e.message; } });
+    const L = live();
+    S.lastDerRev = L.derRev;
+    S.lastWemRev = L.wemRev;
+  }
+
+  // 收到 live 推送：修订号没变就不重绘（省 CPU、避免闪）
+  function onPush(d) {
+    if (!d) return;
+    if (d.derRev === S.lastDerRev && d.wemRev === S.lastWemRev) return;
+    render();
+  }
+
+  return {
+    render, onPush, playWem, clearScope,
+    get view() { return S.view; },
+    set view(v) { S.view = v; render(); },
+  };
+})();
