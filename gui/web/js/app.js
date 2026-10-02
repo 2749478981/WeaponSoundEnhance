@@ -780,7 +780,8 @@ function renderLive() {
       const ok = L.wemOk || 0, z = L.wemZero || 0;
       if (ok + z > 0) {
         st.hidden = false;
-        st.textContent = `本次运行：识别 ${ok} 条 · 跳过 ${z} 条（未收录的 bank，拿不到 media id）`;
+        const dn = L.histDer || 0, wn = L.histWem || 0;
+        st.textContent = `本次运行：识别 ${ok} 条 · 跳过 ${z} 条（未收录的 bank）　当前列表：派生 ${dn} 条 · wem ${wn} 条`;
       } else st.hidden = true;
     }
   }

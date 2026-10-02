@@ -1860,7 +1860,7 @@ struct Core::Impl {
                 if (top.kind == 1 && top.wemMedia == media) dup = true;
             }
             if (!dup) {
-                const unsigned long long win = 700;
+                const unsigned long long win = 1500;
                 for (std::size_t i = 0; i < history.size(); ++i) {
                     const HistEntry& ph = history[i];
                     if (nowMs - ph.ms >= win) break;
@@ -1884,7 +1884,7 @@ struct Core::Impl {
             h.ms = nowMs;
             h.time = TimeNowHms();
             history.insert(history.begin(), h);
-            if (history.size() > 128) history.pop_back();
+            if (history.size() > 300) history.pop_back();
             ++wemOkCount;
             curWemMedia = media;
             curWemName = name;
@@ -1913,7 +1913,7 @@ struct Core::Impl {
             if (top.fsm == live.fsm && top.lmt == live.lmt && top.weapon == live.weapon)
                 return;
         }
-        const unsigned long long win = 700;
+        const unsigned long long win = 1500;
         for (std::size_t i = 0; i < history.size(); ++i) {
             const HistEntry& ph = history[i];
             if (nowMs - ph.ms >= win) break;
@@ -1929,7 +1929,7 @@ struct Core::Impl {
         h.time = TimeNowHms();
         // 最新记录放最前面：捕获面板从上往下就是"新 → 旧"，不用翻到底找刚做的动作
         history.insert(history.begin(), h);
-        if (history.size() > 128) history.pop_back();                   // 只留最近 128 条
+        if (history.size() > 300) history.pop_back();                   // 只留最近 300 条
     }
 
     void PollGame() {
@@ -2044,6 +2044,13 @@ struct Core::Impl {
         d.set("wemName", JVal(curWemName.empty() ? std::string() : curWemName));
         d.set("wemBank", JVal(curWemBank.empty() ? std::string() : curWemBank));
         d.set("wemWeapon", JVal(curWemWeapon));
+        {   // 当前历史里派生/wem 各有多少（界面统计 + 排查"清空后看不到派生"）
+            int dn = 0, wn = 0;
+            for (std::size_t i = 0; i < history.size(); ++i)
+                (history[i].kind == 1 ? wn : dn)++;
+            d.set("histDer", JVal(dn));
+            d.set("histWem", JVal(wn));
+        }
         d.set("wemOk", JVal(wemOkCount));
         d.set("wemZero", JVal(wemZeroCount));
         d.set("wemNameCustom", JVal(curWemMedia > 0 &&
