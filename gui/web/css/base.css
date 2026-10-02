@@ -600,3 +600,17 @@ button.reload:active{transform:scale(.98)}
 .capHost .hrec{display:flex; align-items:center; gap:7px; min-width:0}
 .capHost .hrec .n{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
 .capHost .live-row{display:flex; align-items:center; gap:8px}
+/* wem 捕获行：两行显示（第一行名称，第二行信息 + 按钮），不再需要横向拖动 */
+.capHost .hrec.two{flex-direction:column; align-items:stretch; gap:2px; padding:5px 7px}
+.capHost .hrec.two .l1{display:flex; align-items:center; gap:7px; min-width:0}
+.capHost .hrec.two .l1 b{flex:none; font-size:11px; color:var(--muted)}
+.capHost .hrec.two .l1 .n{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.capHost .hrec.two .l2{display:flex; align-items:center; gap:7px; min-width:0; flex-wrap:wrap}
+.capHost .hrec.two .l2 .ids{flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis;
+                            white-space:nowrap; font-size:11px; color:var(--muted)}
+.capHost .hrec.two .l2 .capacts{margin-left:auto; flex:none}
+/* 按钮更紧凑，三个按钮在窄面板里也能放下 */
+.capHost .capbtn{padding:2px 8px; font-size:11px}
+.capHost .hrec .capacts{gap:4px}
+/* 派生行也收一点，避免长名称把按钮挤出去 */
+.capHost .hrec .n{min-width:0}

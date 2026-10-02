@@ -117,17 +117,20 @@ const Capture = (() => {
     const playing = S.playingMedia === r.wemMedia;
     const meta = `media ${r.wemMedia}` + (r.bank ? ' · ' + r.bank : '') +
       (r.seqNum ? ` · 第${r.seqNum}个` : '');
-    return row({ class: 'hrec wem' + (r.added ? ' added' : '') + (playing ? ' playing' : ''),
-                 title: '播放：' + nm + '（core 会自动找它所属的 nbnk）',
-                 onclick: () => { if (page === 'bank') playWem(r); else a.addWemRecord(r); } },
-      el('b', { text: r.time || '' }),
-      el('span', { class: 'n', text: nm }),
-      el('span', { class: 'ids', text: meta }),
-      el('span', { class: 'capacts' },
-        btn(playing ? '▶ 播放中' : '▶ 播放', () => playWem(r), '在 GUI 内播放这条 wem', 'primary'),
-        btn('命名', () => a.openNameDialog(r.wemMedia, nm), '给这条 wem 起名字（存进名字库）'),
-        page === 'bank' ? null
-          : (r.added ? btn('编辑', () => a.addWemRecord(r)) : btn('＋ 添加', () => a.addWemRecord(r)))));
+    // ★ 两行显示：第一行时间+名称，第二行 media 信息 + 按钮。
+    //   以前一行塞 3 个按钮 + 长文本，必须横向拖动才能点到按钮。
+    return el('div', { class: 'hrec wem two' + (r.added ? ' added' : '') + (playing ? ' playing' : ''),
+                       title: '播放：' + nm + '（core 会自动找它所属的 nbnk）' },
+      el('div', { class: 'l1', onclick: () => { if (page === 'bank') playWem(r); else a.addWemRecord(r); } },
+        el('b', { text: r.time || '' }),
+        el('span', { class: 'n', text: nm })),
+      el('div', { class: 'l2' },
+        el('span', { class: 'ids', text: meta }),
+        el('span', { class: 'capacts' },
+          btn(playing ? '▶ 播放中' : '▶ 播放', () => playWem(r), '在 GUI 内播放这条 wem', 'primary'),
+          btn('命名', () => a.openNameDialog(r.wemMedia, nm), '给这条 wem 起名字（存进名字库）'),
+          page === 'bank' ? null
+            : (r.added ? btn('编辑', () => a.addWemRecord(r)) : btn('＋ 添加', () => a.addWemRecord(r))))));
   }
 
   // ---- 一个宿主面板 ----
