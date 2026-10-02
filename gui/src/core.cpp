@@ -3952,6 +3952,50 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
             return OkJson(d);
         }
 
+        // ---------------- wem 场景过滤（仅任务中触发 / 地图白名单）----------------
+        if (method == "wem.scene.get") {
+            std::string txt;
+            if (im->cfg.loaded && !im->cfg.path.empty()) FsRead(im->cfg.path, txt);
+            auto iniVal = [&](const std::string& key, const std::string& def) -> std::string {
+                const std::size_t p = txt.find(key + "=");
+                if (p == std::string::npos) return def;
+                const std::size_t e0 = txt.find_first_of("\r\n", p);
+                return txt.substr(p + key.size() + 1,
+                                  (e0 == std::string::npos ? txt.size() : e0) - (p + key.size() + 1));
+            };
+            JVal d = JVal::obj();
+            d.set("onlyQuest", JVal(iniVal("WemOnlyInQuest", "0") == "1"));
+            d.set("mapWhite", JVal(iniVal("WemMapWhite", "")));
+            d.set("mapBlack", JVal(iniVal("WemMapBlack", "")));
+            return OkJson(d);
+        }
+
+        if (method == "wem.scene.save") {
+            const bool onlyQuest = p.optBool("onlyQuest", false);
+            const std::string mapWhite = Trim(p.optStr("mapWhite"));
+            const std::string mapBlack = Trim(p.optStr("mapBlack"));
+            if (im->cfg.loaded && !im->cfg.path.empty()) {
+                std::string txt;
+                FsRead(im->cfg.path, txt);
+                auto setKey = [&](const std::string& key, const std::string& val) {
+                    const std::size_t kp = txt.find(key + "=");
+                    if (kp != std::string::npos) {
+                        const std::size_t e0 = txt.find_first_of("\r\n", kp);
+                        txt.replace(kp, (e0 == std::string::npos ? txt.size() : e0) - kp, key + "=" + val);
+                    } else txt += "\r\n" + key + "=" + val;
+                };
+                setKey("WemOnlyInQuest", onlyQuest ? "1" : "0");
+                setKey("WemMapWhite", mapWhite);
+                setKey("WemMapBlack", mapBlack);
+                FsWrite(im->cfg.path, txt);
+            }
+            FsWrite(im->BaseDir() + "_wse_reload.flag", "1");
+            im->SetStatus("场景过滤已保存并请求游戏重载。当前地图 id 看游戏日志 state 行 map=xxx");
+            JVal d = JVal::obj();
+            d.set("status", JVal(im->status));
+            return OkJson(d);
+        }
+
         if (method == "bank.pick") {
             std::vector<std::string> multi;
             const std::string p1 = OpenFileDialog(OwnerOf(owner),

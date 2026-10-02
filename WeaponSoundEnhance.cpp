@@ -195,6 +195,15 @@ std::int32_t   gWeaponId = -1;
 std::int32_t   gGauge = -1;              // long-sword spirit gauge level 0..3, -1 unknown
 std::uintptr_t gEntity = 0;              // 玩家实体指针（Refresh 时更新；layer 探针用）
 
+// 场景 / 任务（详见 MHW_Memory_Map_Skill.md §3）
+//   地图 Id : *(int32*)(*(entity+0x7D20) + 0xB88)   ← 变化 = 换场景（实体指针切场景不变）
+//   任务状态: *(int32*)(*(0x14500ED30) + 0x54)      ← ==2 表示任务进行中（集会所里对象非 0，看状态）
+std::int32_t   gMapId = -1;
+std::int32_t   gQuestState = -1;
+std::uint32_t  gMapPtrOff = 0x7D20;      // entity -> 地图数据指针
+std::uint32_t  gMapIdOff   = 0xB88;      // 地图数据 -> 地图 Id
+std::uint32_t  gQuestStateOff = 0x54;    // 任务对象 -> 任务状态
+
 std::uint32_t gGaugePtrOff = 0x76B0;     // LS spirit object: *(entity + off)
 std::uint32_t gGaugeValOff = 0x2370;     // gauge level value: *(obj + off)
 
@@ -255,6 +264,7 @@ void Refresh()
 {
     gLmt = -1; gFsm = -1; gWeapon = -1; gWeaponId = -1; gGauge = -1;
     gFsmTarget = -1; gCharge = -1; gQuestDmg = -1;
+    gMapId = -1; gQuestState = -1;
 
     {
         std::uintptr_t quest = 0;
@@ -271,6 +281,15 @@ void Refresh()
 
     gEntity = entity;   // 暴露给 layer 探针（定位装瓶/平射所在的 layer 字段）
     gFsm       = mem::ReadI32(entity + 0x6278, -1);
+    // 场景 / 任务（MHW_Memory_Map_Skill.md §3）
+    std::uintptr_t mapPtr = 0;
+    gMapId = -1;
+    if (mem::ReadVal(entity + gMapPtrOff, mapPtr) && mapPtr)
+        gMapId = mem::ReadI32(mapPtr + gMapIdOff, -1);
+    std::uintptr_t questObj = 0;
+    gQuestState = -1;
+    if (mem::ReadVal(gQuestRoot, questObj) && questObj)
+        gQuestState = mem::ReadI32(questObj + gQuestStateOff, -1);
     gFsmTarget = mem::ReadI32(entity + gFsmTargetOff, -1);
 
     std::uintptr_t act = 0;
@@ -741,6 +760,26 @@ int gWemLoopMuteMs = 8000;   // 判定为循环音后，忽略该 media 的时�
 //   WeaponEnabled=0,1,...（14 个逗号分隔的 0/1，对应武器 0..13；缺省按 0）
 //   某个武器没开 → 该武器的条目（含通用条目按当前持握武器判定）一律不触发。
 bool gWeaponEnabled[14] = {};
+
+// --- wem 场景过滤（MHW_Memory_Map_Skill.md §3，已实测文档）---
+//   WemOnlyInQuest : 1 = 仅任务进行中(QuestState==2)才触发 wem（压掉集会/换区/菜单误触发）
+//   WemMapWhite    : 逗号分隔地图 id；填了则只在这些地图触发（进图后在派生流看 mapId 填）
+//   WemMapBlack    : 逗号分隔地图 id；这些地图不触发（白名单优先）
+int gWemOnlyInQuest = 0;
+std::vector<int> gWemMapWhite, gWemMapBlack;
+
+static bool WemScenePermitted() {
+    if (gWemOnlyInQuest && player::gQuestState != 2)
+        return false;
+    if (!gWemMapWhite.empty()) {
+        for (int m : gWemMapWhite) if (m == player::gMapId) return true;
+        return false;
+    }
+    if (!gWemMapBlack.empty()) {
+        for (int m : gWemMapBlack) if (m == player::gMapId) return false;
+    }
+    return true;
+}
 // 判断"当前应不应该触发该武器的音效"：weaponType<0（通用）按当前武器走
 static inline bool WeaponPermitted(int weaponType, int curWeapon) {
     const int w = (weaponType >= 0) ? weaponType : curWeapon;
@@ -1840,6 +1879,17 @@ void LoadConfig()
                     for (int i = 0; i < 14; ++i)
                         gWeaponEnabled[i] = (i < (int)toks.size() && std::atoi(toks[i].c_str()) != 0);
                 }
+                else if (key == "WemOnlyInQuest") gWemOnlyInQuest = std::atoi(val.c_str()) != 0;
+                else if (key == "WemMapWhite") {
+                    gWemMapWhite.clear();
+                    std::vector<std::string> toks; SplitList(val, toks);
+                    for (const auto& t : toks) gWemMapWhite.push_back(std::atoi(t.c_str()));
+                }
+                else if (key == "WemMapBlack") {
+                    gWemMapBlack.clear();
+                    std::vector<std::string> toks; SplitList(val, toks);
+                    for (const auto& t : toks) gWemMapBlack.push_back(std::atoi(t.c_str()));
+                }
                 else if (key == "WemIgnoreMedia") {
                     gWemIgnoreMedia.clear();
                     std::vector<std::string> toks;
@@ -2640,6 +2690,9 @@ void WemEventSink(uint32_t media_id, uint32_t event_id, uint32_t playing_id,
     // 1.2) 点名忽略名单（ini WemIgnoreMedia=...）：持续音/环境音直接跳过
     if (!gWemIgnoreMedia.empty() && WemIsIgnored((long long)media_id)) return;
 
+    // 1.3) 场景过滤（仅任务中 / 地图白名单 / 地图黑名单）—— 压掉集会、换区、菜单的误触发
+    if (!WemScenePermitted()) return;
+
     const std::uint64_t now = ::GetTickCount64();
 
     // 1.5) 场景/装备稳定窗口：进图/换区/切装完成后的一小段时间内，游戏会
@@ -2986,8 +3039,9 @@ DWORD WINAPI WorkerProc(LPVOID)
 
         const std::uint64_t nowMs = ::GetTickCount64();
         if (firstState || (nowMs - lastHeartbeat >= 4000)) {
-            LogD("state: weapon=%d fsm=%d lmt=%d gauge=%d vol=%d en=%d more=%d",
-                 weapon, fsm, lmt, gauge, gVolumePct, gEnabled, gMoreSounds);
+            LogD("state: weapon=%d fsm=%d lmt=%d gauge=%d vol=%d en=%d more=%d map=%d quest=%d",
+                 weapon, fsm, lmt, gauge, gVolumePct, gEnabled, gMoreSounds,
+                 player::gMapId, player::gQuestState);
             lastHeartbeat = nowMs;
             firstState = false;
         }

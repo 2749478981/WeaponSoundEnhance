@@ -1541,6 +1541,21 @@ const ACTIONS = {
 ACTIONS['win.bank'] = () => {
   openModal('#mBank');
   renderBank();
+  // 载入场景过滤当前值
+  Backend.call('wem.scene.get', {}).then(r => {
+    $('#wemOnlyQuest').checked = !!r.onlyQuest;
+    $('#wemMapWhite').value = r.mapWhite || '';
+  }).catch(() => {});
+};
+
+ACTIONS['wem.scene.save'] = async () => {
+  try {
+    await Backend.call('wem.scene.save', {
+      onlyQuest: $('#wemOnlyQuest').checked,
+      mapWhite: $('#wemMapWhite').value.trim(),
+    });
+    toast('场景过滤已保存（游戏内已请求重载）', 'ok');
+  } catch (e) { toast('保存失败：' + e.message, 'err'); }
 };
 
 ACTIONS['bank.pick'] = async () => {
