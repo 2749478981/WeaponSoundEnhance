@@ -571,3 +571,6 @@ button.reload:active{transform:scale(.98)}
 /* nbnk 制作页捕获行上的「▶ 播放」标签 */
 .hrec .tag.play, .live-row .tag.play{background:var(--accent); color:var(--on-accent);
                                       border:var(--bw) solid var(--accent)}
+/* nbnk 页里"这条 wem 不在当前 nbnk"的灰标签 */
+.hrec .tag.dimtag, .live-row .tag.dimtag{background:transparent; color:var(--dim);
+                                         border:var(--bw) dashed var(--line-2); cursor:help}

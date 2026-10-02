@@ -3800,7 +3800,18 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
             std::string err;
             if (!bankmod::LoadBank(Utf8ToWide(path), bf, err)) return ErrJson(err);
             std::vector<uint8_t> wem;
-            if (!bankmod::ExtractWem(bf, (uint32_t)media, wem)) return ErrJson("这条 media 没有内嵌 wem");
+            if (!bankmod::ExtractWem(bf, (uint32_t)media, wem)) {
+                // 这条 media 不在当前导入的 nbnk 里 —— 用真值表查出它真正属于哪个 bank
+                // （日志里的 bank= 是"事件所属 bank"，不代表 media 的归属，别拿它当依据）
+                const std::unordered_map<int, std::pair<std::string, int>>::const_iterator sit =
+                    im->wemSeqs.find((int)media);
+                std::string msg = "当前 nbnk（" + bf.name + "）里没有这条 media";
+                if (sit != im->wemSeqs.end())
+                    msg += "；它属于 " + sit->second.first + " 第 " + std::to_string(sit->second.second) + " 个";
+                else
+                    msg += "，也不在已收录的 nbnk 表里";
+                return ErrJson(msg);
+            }
 
             // vgmstream-cli.exe 随包分发（wemkit\vgmstream\）；开发目录兜底 tools\vgmstream
             std::wstring cli = Utf8ToWide(im->exeDir) + L"wemkit\\vgmstream\\vgmstream-cli.exe";

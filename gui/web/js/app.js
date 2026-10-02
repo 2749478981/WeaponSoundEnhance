@@ -788,7 +788,8 @@ function renderLive() {
       h('b', { text: (L.wemAdded ? '✔ ' : '') + wemDisplayName(L) }),
       h('span', { class: 'dim', text: (L.wemMedia > 0 ? 'media ' + L.wemMedia : '') }),
       ST.bankPage
-        ? h('em', { class: 'tag play', text: '▶ 播放' })
+        ? (wemInBank(L) ? h('em', { class: 'tag play', text: '▶ 播放' })
+                       : h('em', { class: 'tag dimtag', text: '不在本 nbnk' }))
         : (L.wemAdded
             ? h('em', { class: 'tag', text: '编辑' })
             : h('em', { class: 'tag add', text: '＋ 添加' })));
@@ -819,7 +820,8 @@ function renderLive() {
         h('em', { class: 'tag name', title: '给这条 wem 起名字（存进名字库）', text: '命名',
           onclick: ev => { ev.stopPropagation(); openNameDialog(r.wemMedia, r.bank || ''); } }),
         ST.bankPage
-          ? h('em', { class: 'tag play', text: '▶ 播放' })
+          ? (wemInBank(r) ? h('em', { class: 'tag play', text: '▶ 播放' })
+                         : h('em', { class: 'tag dimtag', text: '不在本 nbnk' }))
           : (r.added ? h('em', { class: 'tag', text: '编辑' })
                      : h('em', { class: 'tag add', text: '＋ 添加' })));
       el.onclick = () => wemRowClick(r);
@@ -868,16 +870,19 @@ async function captureToEntry(r) {
 }
 
 /* wem 捕获 → 添加/编辑条目（触发方式 = media id，与 fsm/lmt 二选一） */
+// 这条捕获的 wem 是否在当前导入的 nbnk 里（决定能不能直接播放）
+function wemInBank(r) {
+  if (!BANK.path || !BANK.media || !BANK.media.length) return false;
+  for (let i = 0; i < BANK.media.length; i++) if (BANK.media[i].id === r.wemMedia) return true;
+  return false;
+}
 // 捕获行点击：条目页 = 加入条目；nbnk 制作页 = 播放这个 nbnk 里对应的 wem
 function wemRowClick(r) {
   if (ST.bankPage) {
     if (!BANK.path) { toast('先在左边导入一个 nbnk', 'err'); return; }
     Backend.call('bank.play', { path: BANK.path, media: r.wemMedia })
       .then(() => toast('播放 media ' + r.wemMedia + (r.bank ? '（' + r.bank + '）' : ''), 'ok'))
-      .catch(e => {
-        const b = r.bank ? ('它属于 ' + r.bank + '，') : '';
-        toast(b + '不在当前导入的 nbnk 里', 'err');
-      });
+      .catch(e => toast(e.message || '播放失败', 'err'));
     return;
   }
   addWemRecord(r);
