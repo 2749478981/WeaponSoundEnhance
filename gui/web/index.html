@@ -283,6 +283,7 @@
         <button data-act="bank.pick">导入 nbnk…</button>
         <button data-act="bank.export" id="bankExportBtn">转换并导出 nbnk</button>
         <button data-act="bank.clear">清空替换列表</button>
+        <button data-act="win.nameLib" title="管理你手动命名的 wem（保存到 WseWemNames_user.txt）">名字库…</button>
       </div>
       <div class="bankline">
         <span class="lbl">输出目录</span>
@@ -321,6 +322,30 @@
         <button data-act="name.clear">删除自定义名</button>
         <button class="primary" data-act="name.save">保存名字</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 名字库管理 ================= -->
+<div class="modal" id="mNameLib">
+  <div class="mbox box">
+    <div class="mhead"><span class="t">wem 名字库</span><button data-act="m.close">关闭</button></div>
+    <div class="mbody">
+      <p class="note">你手动命名的 wem（<code>WseWemNames_user.txt</code>）。这里的名字优先于官方映射，
+        下次打开 GUI 与重新导入 nbnk 时自动读取；删掉条目即回退官方名字。</p>
+      <div class="bankline">
+        <span class="lbl">库文件</span>
+        <span class="dim" id="nameLibFile">plugins\WeaponSoundEnhance\WseWemNames_user.txt</span>
+        <button data-act="wem.name.openDir">打开所在目录</button>
+        <input id="nameLibSearch" class="mini-in" placeholder="搜索名字 / media id…">
+      </div>
+      <div class="tablewrap small">
+        <table>
+          <thead><tr><th>media id</th><th>名字</th><th class="right">操作</th></tr></thead>
+          <tbody id="nameLibBody"></tbody>
+        </table>
+      </div>
+      <div class="cfoot" id="nameLibFoot"></div>
     </div>
   </div>
 </div>

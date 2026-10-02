@@ -4085,6 +4085,16 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
             return OkJson(d);
         }
 
+        if (method == "wem.name.openDir") {
+            // 打开用户名字库所在目录（插件数据目录）
+            const std::wstring dir = Utf8ToWide(im->BaseDir());
+            ::CreateDirectoryW(dir.c_str(), nullptr);
+            ::ShellExecuteW(OwnerOf(owner), L"open", dir.c_str(), nullptr, nullptr, SW_SHOW);
+            JVal d = JVal::obj();
+            d.set("dir", JVal(ToSlash(im->BaseDir())));
+            return OkJson(d);
+        }
+
         if (method == "wem.name.list") {
             JVal arr = JVal::arr();
             std::vector<std::pair<int, std::string> > v(im->wemUserNames.begin(), im->wemUserNames.end());

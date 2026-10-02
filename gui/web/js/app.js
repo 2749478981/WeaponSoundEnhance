@@ -769,6 +769,8 @@ function renderLive() {
         h('b', { text: r.time || '' }),
         h('span', { class: 'n', text: wemLabel(r) }),
         h('span', { class: 'ids', text: (r.weapon >= 0 ? 'w' + r.weapon + ' · ' : '') + r.bank }),
+        h('em', { class: 'tag name', title: '给这条 wem 起名字（存进名字库）', text: '命名',
+          onclick: ev => { ev.stopPropagation(); openNameDialog(r.wemMedia, r.bank || ''); } }),
         r.added ? h('em', { class: 'tag', text: '编辑' })
                 : h('em', { class: 'tag add', text: '＋ 添加' }));
       el.onclick = () => addWemRecord(r);
@@ -1607,18 +1609,74 @@ ACTIONS['name.save'] = async () => {
     const r = await Backend.call('wem.name.set', { media: nameDialogMedia, name: $('#nameInput').value.trim() });
     if (r.name) toast('已命名为：' + r.name, 'ok');
     else toast('已删除自定义名（回退官方名字）', 'ok');
-    closeModals();
+    // 只关命名框（从名字库进来时别把库一起关掉）
+    $('#mName').classList.remove('open');
+    syncModalOpenClass();
     renderBank();
+    if ($('#mNameLib') && $('#mNameLib').classList.contains('open')) refreshNameLib();
   } catch (e) { toast('保存失败：' + e.message, 'err'); }
 };
 ACTIONS['name.clear'] = async () => {
   try {
     await Backend.call('wem.name.set', { media: nameDialogMedia, name: '' });
     toast('已删除自定义名（回退官方名字）', 'ok');
-    closeModals();
+    $('#mName').classList.remove('open');
+    syncModalOpenClass();
     renderBank();
+    if ($('#mNameLib') && $('#mNameLib').classList.contains('open')) refreshNameLib();
   } catch (e) { toast('删除失败：' + e.message, 'err'); }
 };
+
+ACTIONS['wem.name.openDir'] = async () => {
+  try { await Backend.call('wem.name.openDir', {}); } catch (e) { toast('打不开：' + e.message, 'err'); }
+};
+
+/* ---- 名字库管理（列出 / 搜索 / 删除）---- */
+let nameLibItems = [];
+async function openNameLib() {
+  openModal('#mNameLib');
+  const s = $('#nameLibSearch');
+  if (s && !s.dataset.bound) { s.dataset.bound = '1'; s.oninput = () => renderNameLib(); }
+  await refreshNameLib();
+}
+async function refreshNameLib() {
+  try {
+    const r = await Backend.call('wem.name.list', {});
+    nameLibItems = r.items || [];
+    if (r.file) $('#nameLibFile').textContent = r.file;
+  } catch (e) { nameLibItems = []; }
+  renderNameLib();
+}
+function renderNameLib() {
+  const tb = $('#nameLibBody');
+  if (!tb) return;
+  tb.innerHTML = '';
+  const q = ($('#nameLibSearch') ? $('#nameLibSearch').value : '').trim().toLowerCase();
+  const items = nameLibItems.filter(it =>
+    !q || String(it.media).indexOf(q) >= 0 || (it.name || '').toLowerCase().indexOf(q) >= 0);
+  items.forEach(it => {
+    tb.appendChild(h('tr', {},
+      h('td', { class: 'fsm', style: 'color:var(--c-blue)' }, String(it.media)),
+      h('td', {}, it.name),
+      h('td', {}, h('div', { class: 'acts' },
+        h('button', { onclick: () => openNameDialog(it.media, it.name) }, '改名'),
+        h('button', { class: 'del', onclick: async () => {
+          try {
+            await Backend.call('wem.name.set', { media: it.media, name: '' });
+            toast('已删除：' + it.name, 'ok');
+            await refreshNameLib();
+            renderBank();
+          } catch (e) { toast('删除失败：' + e.message, 'err'); }
+        } }, '删除')))));
+  });
+  const f = $('#nameLibFoot');
+  if (f) f.textContent = `共 ${nameLibItems.length} 条自定义命名` +
+    (q ? `（筛选出 ${items.length} 条）` : '');
+}
+ACTIONS['nameLib.search'] = () => renderNameLib();
+
+ACTIONS['win.nameLib'] = () => { openNameLib(); };
+
 
 /* ---- 音效替换（nbnk Mod）：必须在 const ACTIONS 之后注册，否则 TDZ 报错 ---- */
 ACTIONS['win.bank'] = () => {

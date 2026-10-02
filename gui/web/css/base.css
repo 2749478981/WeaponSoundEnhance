@@ -490,3 +490,7 @@ table td{padding:8px 10px}
 .capture, .center, .rail{padding:0}
 /* 表格滚动区给一点内边距，避免内容贴边 */
 .tablewrap{padding:0 2px}
+/* 捕获历史行上的「命名」标签：可点、与「＋添加」区分开 */
+.hrec .tag.name{background:var(--chip-bg); color:var(--chip-fg, var(--text)); cursor:pointer;
+                border:var(--bw) solid var(--line-2)}
+.hrec .tag.name:hover{background:var(--accent); color:var(--on-accent); border-color:var(--accent)}
