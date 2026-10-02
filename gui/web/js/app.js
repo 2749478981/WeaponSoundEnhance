@@ -2011,6 +2011,12 @@ Backend.onEvent(ev => {
   });
 
   wireToolbar();
+  // Esc：在音效替换页面按 Esc 返回条目列表（有弹窗打开时先不处理，交给弹窗）
+  window.addEventListener('keydown', ev => {
+    if (ev.key !== 'Escape') return;
+    if (document.querySelector('.modal.open')) return;
+    if (ST.bankPage) showBankPage(false);
+  });
   wireGlobal();
   wireWemView();            // 派生 / WEM 捕获视图切换
   bindLogoEgg();            // 左上角图标彩蛋

@@ -152,15 +152,20 @@
 
   <!-- ============ 音效替换（正式页面，不是弹窗） ============ -->
   <main id="mainBank" hidden>
+    <div class="banktop">
+      <button class="backbtn" data-act="bank.return" title="返回条目列表（也可以按 Esc）">← 返回条目列表</button>
+      <span class="banktitle">音效替换（nbnk Mod）</span>
+      <span class="dim">导入 nbnk → 选音频替换 → 导出 → 放进 nativePC\sound\wwise\Windows\</span>
+    </div>
+
     <aside class="rail box">
-      <div class="phead">音效替换</div>
+      <div class="phead">操作</div>
       <div class="rail-scroll">
         <div class="navlist">
           <button class="nav on" data-act="bank.pick">导入 nbnk…</button>
           <button class="nav" data-act="bank.export" id="bankExportBtn2">转换并导出</button>
           <button class="nav" data-act="bank.clear">清空替换列表</button>
           <button class="nav" data-act="win.nameLib">名字库…</button>
-          <button class="nav" data-act="bank.return">返回条目列表</button>
         </div>
       </div>
     </aside>
