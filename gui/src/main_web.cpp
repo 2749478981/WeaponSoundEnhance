@@ -483,7 +483,13 @@ void ProbePage() {
         L"var bt=document.querySelector('.banktable');"
         L"var r=bt?bt.getBoundingClientRect():null;"
         L"var rows=bt?bt.querySelectorAll('tbody tr').length:0;"
-        L"var res=(r?Math.round(r.height):0)+'px/'+rows+'rows';"
+        // 顺便验证「nbnk 制作」页右栏的 WEM 捕获面板：手动模拟搬动 DOM 再量
+        L"var cap=document.getElementById('wemCaptureBox'),host=document.getElementById('bankCaptureHost');"
+        L"var capInfo='none';"
+        L"if(host&&cap){host.appendChild(cap);var vb=document.getElementById('viewWemBox');"
+        L"if(vb)vb.hidden=false;capInfo=host.children.length+'kids/'+(vb?Math.round(vb.getBoundingClientRect().height):0)+'px';"
+        L"var mh=document.getElementById('mainCaptureHost');if(mh)mh.appendChild(cap);}"
+        L"var res=(r?Math.round(r.height):0)+'px/'+rows+'rows cap='+capInfo;"
         L"if(was){me.hidden=false;mb.hidden=true;document.body.classList.remove('bankpage-on');}"
         L"return res;})()"
         L"});})()",

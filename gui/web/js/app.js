@@ -1761,6 +1761,7 @@ ACTIONS['win.nameLib'] = () => { openNameLib(); };
 
 /* ---- 音效替换（nbnk Mod）：必须在 const ACTIONS 之后注册，否则 TDZ 报错 ---- */
 // ★ 音效替换是一个正式页面（不是弹窗）：切 mainEntries/footer ↔ mainBank
+//   顺便把 WEM 捕获面板整个节点搬过去（nbnk 制作时要一边看 media 列表一边看游戏在播什么）
 function showBankPage(on) {
   const a = $('#mainEntries'), b = $('#mainBank'), f = $('.status');
   if (a) a.hidden = !!on;
@@ -1768,6 +1769,21 @@ function showBankPage(on) {
   if (f) f.hidden = !!on;
   ST.bankPage = !!on;
   document.body.classList.toggle('bankpage-on', !!on);
+
+  const cap = $('#wemCaptureBox');
+  const host = on ? $('#bankCaptureHost') : $('#mainCaptureHost');
+  if (cap && host) {
+    host.appendChild(cap);          // DOM 移动：自动从原位置摘下来
+    const box = $('#viewWemBox');
+    if (box) box.hidden = false;    // nbnk 页直接显示 WEM 捕获；回条目页交回视图切换控制
+    if (!on) {
+      const fsm = ST.wemView ? false : true;
+      if (box) box.hidden = !ST.wemView;
+      const fb = $('#viewFsmBox');
+      if (fb) fb.hidden = !!ST.wemView;
+    }
+    renderLive();
+  }
 }
 
 ACTIONS['bank.return'] = () => { showBankPage(false); };
