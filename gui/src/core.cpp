@@ -2142,7 +2142,13 @@ struct Core::Impl {
             const std::string p = Utf8FromWide(files[i]);
             for (std::size_t k = 0; k < ids.size(); ++k) {
                 const int id = (int)ids[k];
-                if (mediaBankIndex.find(id) == mediaBankIndex.end()) mediaBankIndex[id] = p;
+                const std::unordered_map<int, std::string>::iterator it = mediaBankIndex.find(id);
+                if (it == mediaBankIndex.end()) { mediaBankIndex[id] = p; continue; }
+                // 优先保留游戏 nativePC 里的那份（游戏真正加载的），避免播出解包原版/
+                // mod 前版本的音效（用户报过"播放的是无关音效"）
+                const bool oldNative = it->second.find("nativePC") != std::string::npos;
+                const bool newNative = p.find("nativePC") != std::string::npos;
+                if (!oldNative && newNative) it->second = p;
             }
         }
     }
@@ -4160,47 +4166,92 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
             return OkJson(d);
         }
 
-        // 播放任意捕获到的 wem：真值表 → bank 名 → 候选目录找文件；找不到就全量 DIDX 索引兜底
+        // 播放任意捕获到的 wem。
+        //   候选 bank 顺序（每个都必须用 DIDX 校验"这条 media 真的在里面"）：
+        //     ① 调用方给的 bankPath ② 调用方给的 bank 名（捕获行带的是 DLL 日志里
+        //     事件真正播放的 bank）③ 真值表 media→bank 名 ④ 全量 DIDX 索引（优先 nativePC）
+        //   为什么要校验：同一条 media id 可能出现在多个 bank/版本里（本地化语音、
+        //   nativePC 的 mod 版本），不校验就会播出"另一个版本"的音效（用户报过）。
         if (method == "wem.play") {
             const long long media = p.find("media") ? p.find("media")->asInt(0) : 0;
             if (media <= 0) return ErrJson("缺少 media");
             const std::string wantBank = Trim(p.optStr("bank"));
-            std::string bankPath = Trim(p.optStr("bankPath"));
-            std::string foundBy;
-            if (bankPath.empty()) {
+            const std::string explicitPath = Trim(p.optStr("bankPath"));
+
+            std::vector<std::string> cands;
+            std::vector<std::string> candNames;
+            auto pushCand = [&](const std::string& path, const std::string& name) {
+                if (path.empty()) return;
+                for (std::size_t i = 0; i < cands.size(); ++i) if (cands[i] == path) return;
+                cands.push_back(path);
+                candNames.push_back(name);
+            };
+            if (!explicitPath.empty()) pushCand(explicitPath, "指定文件");
+            if (!wantBank.empty()) pushCand(im->FindBankByName(wantBank), wantBank);
+            {
                 const std::unordered_map<int, std::pair<std::string, int>>::const_iterator sit =
                     im->wemSeqs.find((int)media);
-                if (sit != im->wemSeqs.end()) {
-                    bankPath = im->FindBankByName(sit->second.first);
-                    if (!bankPath.empty()) foundBy = sit->second.first;
+                if (sit != im->wemSeqs.end())
+                    pushCand(im->FindBankByName(sit->second.first), sit->second.first + "（真值表）");
+            }
+
+            std::string tried;
+            auto tryPlay = [&](const std::string& path, const std::string& label,
+                               std::string& playedBank, std::string& err) -> bool {
+                bankmod::BankFile bf;
+                if (!bankmod::LoadBank(Utf8ToWide(path), bf, err)) return false;
+                bool has = false;
+                for (std::size_t i = 0; i < bf.media.size(); ++i)
+                    if ((long long)bf.media[i].id == media) { has = true; break; }
+                if (!has) {
+                    err = bf.name + " 里没有这条 media";
+                    if (!tried.empty()) tried += "；";
+                    tried += label + "(" + bf.name + ")";
+                    return false;
                 }
+                std::vector<uint8_t> wem;
+                if (!bankmod::ExtractWem(bf, (uint32_t)media, wem)) { err = "抽取 wem 失败"; return false; }
+                if (!im->PlayWemBytes(wem, media, err)) return false;
+                playedBank = bf.name;
+                return true;
+            };
+
+            std::string playedBank, lastErr;
+            for (std::size_t i = 0; i < cands.size(); ++i) {
+                std::string err;
+                if (tryPlay(cands[i], candNames[i], playedBank, err)) {
+                    JVal d = JVal::obj();
+                    d.set("played", JVal(true));
+                    d.set("media", JVal(media));
+                    d.set("bank", JVal(playedBank));
+                    d.set("path", JVal(ToSlash(cands[i])));
+                    d.set("foundBy", JVal(candNames[i]));
+                    return OkJson(d);
+                }
+                lastErr = err;
             }
-            if (bankPath.empty() && !wantBank.empty()) {
-                bankPath = im->FindBankByName(wantBank);
-                if (!bankPath.empty()) foundBy = wantBank;
+
+            // ④ 兜底：全量 DIDX 索引（已按 nativePC 优先）
+            im->BuildMediaBankIndex();
+            const std::unordered_map<int, std::string>::const_iterator mit = im->mediaBankIndex.find((int)media);
+            if (mit != im->mediaBankIndex.end()) {
+                std::string err;
+                if (tryPlay(mit->second, "DIDX 索引", playedBank, err)) {
+                    JVal d = JVal::obj();
+                    d.set("played", JVal(true));
+                    d.set("media", JVal(media));
+                    d.set("bank", JVal(playedBank));
+                    d.set("path", JVal(ToSlash(mit->second)));
+                    d.set("foundBy", JVal(std::string("DIDX 索引")));
+                    return OkJson(d);
+                }
+                lastErr = err;
             }
-            if (bankPath.empty()) {
-                im->BuildMediaBankIndex();   // 首次会扫一遍候选目录（之后走缓存）
-                const std::unordered_map<int, std::string>::const_iterator mit =
-                    im->mediaBankIndex.find((int)media);
-                if (mit != im->mediaBankIndex.end()) { bankPath = mit->second; foundBy = "DIDX 索引"; }
-            }
-            if (bankPath.empty())
-                return ErrJson("找不到包含这条 media 的 nbnk 文件（已搜：游戏 sound 目录 / 输出目录 / BankRoot）");
-            bankmod::BankFile bf;
-            std::string err;
-            if (!bankmod::LoadBank(Utf8ToWide(bankPath), bf, err)) return ErrJson(err);
-            std::vector<uint8_t> wem;
-            if (!bankmod::ExtractWem(bf, (uint32_t)media, wem))
-                return ErrJson("这条 media 不在 " + bf.name + " 里（索引可能过期，重开 GUI 再试）");
-            if (!im->PlayWemBytes(wem, media, err)) return ErrJson(err);
-            JVal d = JVal::obj();
-            d.set("played", JVal(true));
-            d.set("media", JVal(media));
-            d.set("bank", JVal(bf.name));
-            d.set("path", JVal(ToSlash(bankPath)));
-            d.set("foundBy", JVal(foundBy));
-            return OkJson(d);
+
+            std::string msg = "找不到包含这条 media 的 nbnk 文件";
+            if (!tried.empty()) msg += "（试过：" + tried + "）";
+            if (!lastErr.empty()) msg += "：" + lastErr;
+            return ErrJson(msg);
         }
 
         if (method == "bank.stopPlay") {
