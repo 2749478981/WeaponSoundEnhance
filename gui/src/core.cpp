@@ -1267,6 +1267,8 @@ struct Core::Impl {
     // 循环音检测（行为判定）：4 秒内同一 media 出现 >= 4 次 → 判为循环音并静默 8 秒
     struct LoopStat { unsigned long long winStart = 0; int count = 0; unsigned long long muteUntil = 0; };
     std::unordered_map<int, LoopStat> wemLoops;
+    int wemOkCount = 0;      // 识别成功（media>0）的事件数（界面统计）
+    int wemZeroCount = 0;    // 反查不到 bank（media=0）被跳过的事件数（界面统计）
     std::vector<unsigned char> playBuf;   // GUI 内试听：解码后的 wav（播放期间必须保活）
     std::ifstream wemStream;
     unsigned long long wemLastPoll = 0;
@@ -1814,7 +1816,13 @@ struct Core::Impl {
         wemLastPoll = nowMs;
         if (wemLogPath.empty()) return;
         if (wemStream.is_open() && wemStream.eof()) wemStream.clear();
-        if (!wemStream.is_open()) wemStream.open(wemLogPath, std::ios::binary);
+        if (!wemStream.is_open()) {
+            wemStream.open(wemLogPath, std::ios::binary);
+            // ★ 打开后直接跳到文件末尾：不回放历史。
+            //   以前从头读 → 启动瞬间灌进整份日志（"一开始就有很多历史"），
+            //   还会把循环音判定表填满，导致真实事件被静默（"捕获不到"）。
+            if (wemStream.is_open()) wemStream.seekg(0, std::ios::end);
+        }
         if (!wemStream.is_open()) return;
         std::string line;
         while (std::getline(wemStream, line)) {
@@ -1822,7 +1830,7 @@ struct Core::Impl {
             int media = 0;
             std::string bank, path, logName;
             if (!ParseWemLine(line, media, bank, path, &logName)) continue;
-            if (media <= 0) continue;
+            if (media <= 0) { ++wemZeroCount; continue; }   // 反查不到 bank 的事件（界面会显示统计）
             // 循环音过滤：有些 wem 是持久循环音（例 wp_bow_cmn/10 = 182089195，
             // 约每秒一次、持续整场），不是动作事件，会把捕获历史刷屏。
             // 判据用行为（wem 数据里没有 loop 标志）：4 秒内出现 >= 4 次 → 判为循环音，
@@ -1877,6 +1885,7 @@ struct Core::Impl {
             h.time = TimeNowHms();
             history.insert(history.begin(), h);
             if (history.size() > 128) history.pop_back();
+            ++wemOkCount;
             curWemMedia = media;
             curWemName = name;
             curWemBank = bank;
@@ -2035,6 +2044,8 @@ struct Core::Impl {
         d.set("wemName", JVal(curWemName.empty() ? std::string() : curWemName));
         d.set("wemBank", JVal(curWemBank.empty() ? std::string() : curWemBank));
         d.set("wemWeapon", JVal(curWemWeapon));
+        d.set("wemOk", JVal(wemOkCount));
+        d.set("wemZero", JVal(wemZeroCount));
         d.set("wemNameCustom", JVal(curWemMedia > 0 &&
                                     wemUserNames.find(curWemMedia) != wemUserNames.end()));
         {
@@ -4235,6 +4246,18 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
                                      //   否则清空后若状态没变，前端一直收不到更新（像"捕获不到"）
             // ★ 循环音判定表也要清：否则清空前累积的计数/静默期会继续压住新记录
             im->wemLoops.clear();
+            im->wemOkCount = 0;
+            im->wemZeroCount = 0;
+            // ★ 用户要的"清空"= 把 wem 日志也清掉（DLL 每次都是 OPEN_ALWAYS+APPEND 写，
+            //   可以安全清空；下次写入会自动重建内容）。
+            if (!im->wemLogPath.empty()) {
+                HANDLE h = ::CreateFileW(Utf8ToWide(im->wemLogPath).c_str(), GENERIC_WRITE,
+                                         FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                         TRUNCATE_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                if (h != INVALID_HANDLE_VALUE) ::CloseHandle(h);
+            }
+            im->wemStream.close();   // 关流：下次自动重开并跳到末尾
+            im->wemLastPoll = 0;
             JVal d = JVal::obj();
             d.set("cleared", JVal(true));
             d.set("history", im->HistoryJson());

@@ -773,6 +773,18 @@ function renderLive() {
     }
   }
 
+  // 识别统计：让用户看到"事件确实到了，只是有些反查不到 media id"
+  {
+    const st = $('#wemStat');
+    if (st) {
+      const ok = L.wemOk || 0, z = L.wemZero || 0;
+      if (ok + z > 0) {
+        st.hidden = false;
+        st.textContent = `本次运行：识别 ${ok} 条 · 跳过 ${z} 条（未收录的 bank，拿不到 media id）`;
+      } else st.hidden = true;
+    }
+  }
+
   // ---- WEM 视图 ----
   const wemBox = $('#liveWem');
   // ★ nbnk 制作页：勾了「捕获只显示本 bank」时，实时行也必须按 bank 过滤
