@@ -2037,6 +2037,8 @@ struct Core::Impl {
         return ok;
     }
 
+    // 候选目录：与插件（SonarAudio）扫描 bank 的那份列表保持一致，
+    // 否则会出现"插件能反查到、GUI 却找不到文件"的尴尬。
     void BuildBankSearchDirs() {
         if (!bankSearchDirs.empty()) return;
         struct Adder {
@@ -2050,16 +2052,8 @@ struct Core::Impl {
             }
         } add;
         add.v = &bankSearchDirs;
-        const std::size_t pl = gameIniPath.find("nativePC\\plugins\\");
-        if (pl != std::string::npos) {
-            const std::string game = gameIniPath.substr(0, pl);
-            add(game + "nativePC\\sound\\wwise\\Windows");
-            add(game + "nativePC\\sound\\wwise\\Windows\\Japanese");
-        }
-        add(exeDir + "..\\..\\sound\\wwise\\Windows");
-        add(exeDir + "..\\sound\\wwise\\Windows");
-        add(cfg.global.bankOutDir);
-        // 插件 ini 的 BankRoot（分号分隔；插件扫 bank 用的就是这份目录表）
+
+        // (0) 插件 ini 的 BankRoot（分号分隔，优先级最高）
         {
             std::string ini;
             if (FsRead(exeDir + "..\\WeaponSoundEnhance.wem.ini", ini)) {
@@ -2083,6 +2077,40 @@ struct Core::Impl {
                 }
             }
         }
+
+        // 游戏根：GUI 在 <游戏>\nativePC\plugins\WeaponSoundEnhance\ → 往上 3 级
+        std::string game;
+        {
+            std::string d = exeDir;
+            while (!d.empty() && (d[d.size() - 1] == '\\' || d[d.size() - 1] == '/')) d.erase(d.size() - 1);
+            for (int i = 0; i < 3; ++i) {
+                const std::size_t s = d.find_last_of("\\/");
+                if (s == std::string::npos) { d.clear(); break; }
+                d = d.substr(0, s);
+            }
+            game = d;
+        }
+
+        // (1) 插件目录（有人把 bank 直接放 plugins 下）
+        add(exeDir);
+        add(exeDir + "..");
+        // (2)(3)(4) 游戏 nativePC / 游戏根 / 解包出来的 wwise 目录
+        if (!game.empty()) {
+            add(game + "\\nativePC");
+            add(game + "\\nativePC\\sound\\wwise\\Windows");
+            add(game + "\\nativePC\\sound\\wwise\\Windows\\Japanese");
+            add(game);
+            add(game + "\\chunk\\sound\\wwise\\Windows");
+            add(game + "\\mhwmod解包\\chunk\\sound\\wwise\\Windows");
+        }
+        // (5) 本机常见解包位置（不存在会自动跳过，与插件侧一致）
+        add("D:\\下载\\音效源文件（含笔记）");
+        add("D:\\mhwmod解包\\chunk\\sound\\wwise\\Windows");
+        add("D:\\mhwmod解包\\chunkG8\\sound\\wwise\\Windows");
+        add("D:\\mhwmod解包\\sound\\wwise\\Windows");
+        add("D:\\mhwmod解包\\stamp");
+        // (6) 用户设定的 nbnk 导出目录
+        add(cfg.global.bankOutDir);
     }
 
     std::string FindBankByName(const std::string& bank) {
