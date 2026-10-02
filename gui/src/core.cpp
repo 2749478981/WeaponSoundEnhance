@@ -4242,7 +4242,17 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
         }
 
         if (method == "live.clear") {
-            im->history.clear();
+            // kind="wem"：只清 wem 捕获（nbnk 制作页的清空按钮），派生历史保留；
+            // 其它（默认）：全部清空。
+            const bool wemOnly = (p.optStr("kind") == "wem");
+            if (wemOnly) {
+                // 就地删除 kind==1 的记录（不引入 Impl 内部类型名）
+                for (std::size_t i = im->history.size(); i-- > 0; )
+                    if (im->history[i].kind == 1)
+                        im->history.erase(im->history.begin() + (std::ptrdiff_t)i);
+            } else {
+                im->history.clear();
+            }
             im->curWemMedia = -1;
             im->curWemName.clear();
             im->curWemBank.clear();
@@ -4267,6 +4277,7 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
             im->wemLastPoll = 0;
             JVal d = JVal::obj();
             d.set("cleared", JVal(true));
+            d.set("kind", JVal(wemOnly ? std::string("wem") : std::string("all")));
             d.set("history", im->HistoryJson());
             return OkJson(d);
         }

@@ -1700,6 +1700,17 @@ const ACTIONS = {
     renderLive();
     toast('已清空 wem 捕获记录（等游戏里新的 wem 事件）', 'ok');
   },
+  'live.clearWem': async () => {
+    // nbnk 制作页的清空：只清 wem 捕获 + 清空日志文件，派生历史保留
+    try { await Backend.call('live.clear', { kind: 'wem' }); } catch (e) { toast('清空失败：' + e.message, 'err'); }
+    ST.live.history = (ST.live.history || []).filter(h => h.kind !== 1);
+    ST.live.wemMedia = -1;
+    ST.live.wemName = '';
+    ST.live.wemBank = '';
+    ST.live.wemSeqNum = 0;
+    renderLive();
+    toast('已清空 wem 捕获（派生历史保留）', 'ok');
+  },
   'live.retry': () => { Backend.call('live.retry', {}).catch(() => {}); toast('已请求重新连接'); },
 
   'ed.close':  () => { $('#editor').classList.remove('open'); ED.open = false; },
