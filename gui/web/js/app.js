@@ -784,7 +784,7 @@ function renderLive() {
       L.wemAdded
         ? h('em', { class: 'tag', text: '编辑' })
         : h('em', { class: 'tag add', text: '＋ 添加' }));
-    wr.onclick = () => addWemRecord({ kind: 1, wemMedia: L.wemMedia, name: wemDisplayName(L), bank: L.wemBank, weapon: L.wemWeapon || -1, added: L.wemAdded, seqNum: L.wemSeqNum });
+    wr.onclick = () => wemRowClick({ kind: 1, wemMedia: L.wemMedia, name: wemDisplayName(L), bank: L.wemBank, weapon: L.wemWeapon || -1, added: L.wemAdded, seqNum: L.wemSeqNum });
     wemBox.appendChild(wr);
   } else wemBox.hidden = true;
 
@@ -812,7 +812,7 @@ function renderLive() {
           onclick: ev => { ev.stopPropagation(); openNameDialog(r.wemMedia, r.bank || ''); } }),
         r.added ? h('em', { class: 'tag', text: '编辑' })
                 : h('em', { class: 'tag add', text: '＋ 添加' }));
-      el.onclick = () => addWemRecord(r);
+      el.onclick = () => wemRowClick(r);
       wh.appendChild(el);
     });
   }
@@ -858,6 +858,18 @@ async function captureToEntry(r) {
 }
 
 /* wem 捕获 → 添加/编辑条目（触发方式 = media id，与 fsm/lmt 二选一） */
+// 捕获行点击：条目页 = 加入条目；nbnk 制作页 = 播放这个 nbnk 里对应的 wem
+function wemRowClick(r) {
+  if (ST.bankPage) {
+    if (!BANK.path) { toast('先在左边导入一个 nbnk', 'err'); return; }
+    Backend.call('bank.play', { path: BANK.path, media: r.wemMedia })
+      .then(() => toast('播放 media ' + r.wemMedia + (r.bank ? '（' + r.bank + '）' : ''), 'ok'))
+      .catch(e => toast('这条 wem 不在当前 nbnk 里：' + e.message, 'err'));
+    return;
+  }
+  addWemRecord(r);
+}
+
 async function addWemRecord(r) {
   const media = r.wemMedia;
   if (media == null || media <= 0) { toast('这条记录没有 media id，无法添加', 'err'); return; }

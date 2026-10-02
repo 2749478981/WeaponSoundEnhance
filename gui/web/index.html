@@ -212,7 +212,11 @@
     </section>
 
     <aside class="capture box">
-      <div class="phead small">WEM 捕获 / 当前场景</div>
+      <div class="phead small" style="display:flex;align-items:center;gap:8px">
+        <span>WEM 捕获 / 当前场景</span><span class="grow"></span>
+        <button data-act="live.clear" title="清空捕获历史">清空</button>
+        <button data-act="live.retry" title="重新连接游戏进程">重连</button>
+      </div>
       <div class="cbody">
         <div class="conn"><span id="liveScene2">场景：未知</span><span class="dim" id="liveQuest2"></span></div>
         <!-- WEM 捕获面板会从条目页移动到这里（同一份 DOM） -->
