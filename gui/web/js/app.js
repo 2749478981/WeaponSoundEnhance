@@ -582,6 +582,17 @@ async function askDelete(indices) {
 /* ===========================================================================
    右栏：实时捕获
    =========================================================================== */
+// 地图 id → 名字（MHW/冰原常见图；未知显示 #id）
+const MAP_NAMES = {
+  51: '古代树森林', 52: '大蚁冢荒地', 53: '陆珊瑚台地', 54: '瘴气之谷',
+  55: '龙结晶之地', 56: '永霜冻土', 80: '聚魔之地',
+  201: '月辰据点', 202: '星辰据点', 203: '集会所',
+};
+function sceneLabel(mapId) {
+  if (!mapId || mapId <= 0) return '场景：未知';
+  return '场景：' + (MAP_NAMES[mapId] || ('#' + mapId)) + '（地图 ' + mapId + '）';
+}
+
 function wemLabel(r) {
   // 标识 = 归属 nbnk · 第N个（表驱动：seqNum 来自 core 的 DIDX 真值表）
   const bank = r.bank || r.wemBank || '';
@@ -631,6 +642,12 @@ function renderLive() {
     : '未连接';
   $('#liveNote').textContent = L.attached ? '' :
     '未找到 MonsterHunterWorld.exe（游戏没开，或还没进任务）。';
+  // ★ 当前场景（地图 id / 任务状态）
+  const se = $('#liveScene');
+  if (se) se.textContent = sceneLabel(L.mapId);
+  const qt = $('#liveQuest');
+  if (qt) qt.textContent = L.questState == null || L.questState < 0 ? ''
+    : (L.questState === 2 ? '任务中' : '非任务');
   // 视图切换按钮状态
   const f = $('#viewFsm'), w = $('#viewWem');
   if (f && w) { f.className = 'vs' + (ST.wemView ? '' : ' on'); w.className = 'vs' + (ST.wemView ? ' on' : ''); }

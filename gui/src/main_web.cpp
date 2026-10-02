@@ -324,6 +324,9 @@ void OnMessage(const std::string& text) {
         result = "{\"ok\":false,\"error\":\"unknown exception in core\"}";
     }
     Reply(env.id, result);
+      // 诊断：后端失败时留日志（排查"操作失败"类提示用）
+      if (result.find("\"ok\":false") != std::string::npos)
+          LogLine("backend err: %s | %s", env.method.c_str(), result.c_str());
 }
 
 // ---------------------------------------------------------------------------

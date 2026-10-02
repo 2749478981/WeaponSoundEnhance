@@ -522,6 +522,10 @@ std::wstring LongPathW(const std::string& utf8) {
     return FsLongPath(utf8);
 }
 
+// 当前场景（DLL 写 plugins\SonarScene.txt：mapId\nquestState；GUI 1s 缓存读取）
+static int g_sceneMapId = -1;
+static int g_sceneQuestState = -1;
+
 std::string ExeDir() {
     // 用动态缓冲：GetModuleFileNameW 在路径超 MAX_PATH 时返回 0，旧版固定
     // MAX_PATH 缓冲在长路径安装位置上会拿到空字符串，整个数据目录就废了。
@@ -1864,6 +1868,31 @@ struct Core::Impl {
         d.set("wemName", JVal(curWemName.empty() ? std::string() : curWemName));
         d.set("wemBank", JVal(curWemBank.empty() ? std::string() : curWemBank));
         d.set("wemWeapon", JVal(curWemWeapon));
+
+        // 当前场景（DLL 写 plugins\SonarScene.txt：mapId\nquestState；GUI 1s 缓存读取）
+        {
+            static unsigned long long s_scenePoll = 0;
+            static std::string s_mapFileDir;   // plugins 根目录（wemLogPath 的父目录）
+            unsigned long long nowMs2 = ::GetTickCount64();
+            if (nowMs2 - s_scenePoll >= 1000 || !s_scenePoll) {
+                s_scenePoll = nowMs2;
+                if (s_mapFileDir.empty() && !wemLogPath.empty()) {
+                    const std::size_t sp = wemLogPath.find_last_of("\\/");
+                    if (sp != std::string::npos) s_mapFileDir = wemLogPath.substr(0, sp + 1);
+                }
+                if (!s_mapFileDir.empty()) {
+                    std::string t;
+                    if (FsRead(s_mapFileDir + "SonarScene.txt", t)) {
+                        const std::size_t nl = t.find('\n');
+                        g_sceneMapId = std::atoi(t.substr(0, nl).c_str());
+                        g_sceneQuestState = (nl == std::string::npos) ? -1
+                            : std::atoi(t.substr(nl + 1).c_str());
+                    } else { g_sceneMapId = -1; g_sceneQuestState = -1; }
+                }
+            }
+            d.set("mapId", JVal(g_sceneMapId));
+            d.set("questState", JVal(g_sceneQuestState));
+        }
         {
             const std::unordered_map<int, std::pair<std::string, int>>::const_iterator sit =
                 wemSeqs.find(curWemMedia);

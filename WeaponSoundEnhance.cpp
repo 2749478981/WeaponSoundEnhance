@@ -3037,6 +3037,22 @@ DWORD WINAPI WorkerProc(LPVOID)
         HandleGuiRequests();   // GUI 按钮写的标记文件 → 立即重载 / 停止音效
         DumpLayerProbe();      // layer 探针（ini LayerProbe=1 时）：wem 事件后 dump 实体差异
 
+        // 场景小文件（GUI 捕获面板显示当前场景）：地图或任务状态变化时写
+        {
+            static int s_lastMap = -999, s_lastQuest = -999;
+            if (player::gMapId != s_lastMap || player::gQuestState != s_lastQuest) {
+                s_lastMap = player::gMapId;
+                s_lastQuest = player::gQuestState;
+                char buf[64] = {};
+                _snprintf_s(buf, _TRUNCATE, "%d\n%d", player::gMapId, player::gQuestState);
+                FILE* f = nullptr;
+                if (_wfopen_s(&f, (gModuleDir + L"SonarScene.txt").c_str(), L"wb") == 0 && f) {
+                    fwrite(buf, 1, strlen(buf), f);
+                    fclose(f);
+                }
+            }
+        }
+
         const std::uint64_t nowMs = ::GetTickCount64();
         if (firstState || (nowMs - lastHeartbeat >= 4000)) {
             LogD("state: weapon=%d fsm=%d lmt=%d gauge=%d vol=%d en=%d more=%d map=%d quest=%d",
