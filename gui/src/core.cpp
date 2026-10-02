@@ -1852,7 +1852,7 @@ struct Core::Impl {
                 if (top.kind == 1 && top.wemMedia == media) dup = true;
             }
             if (!dup) {
-                const unsigned long long win = 1500;
+                const unsigned long long win = 700;
                 for (std::size_t i = 0; i < history.size(); ++i) {
                     const HistEntry& ph = history[i];
                     if (nowMs - ph.ms >= win) break;
@@ -1876,7 +1876,7 @@ struct Core::Impl {
             h.ms = nowMs;
             h.time = TimeNowHms();
             history.insert(history.begin(), h);
-            if (history.size() > 64) history.pop_back();
+            if (history.size() > 128) history.pop_back();
             curWemMedia = media;
             curWemName = name;
             curWemBank = bank;
@@ -1904,7 +1904,7 @@ struct Core::Impl {
             if (top.fsm == live.fsm && top.lmt == live.lmt && top.weapon == live.weapon)
                 return;
         }
-        const unsigned long long win = 1500;
+        const unsigned long long win = 700;
         for (std::size_t i = 0; i < history.size(); ++i) {
             const HistEntry& ph = history[i];
             if (nowMs - ph.ms >= win) break;
@@ -1920,7 +1920,7 @@ struct Core::Impl {
         h.time = TimeNowHms();
         // 最新记录放最前面：捕获面板从上往下就是"新 → 旧"，不用翻到底找刚做的动作
         history.insert(history.begin(), h);
-        if (history.size() > 64) history.pop_back();                    // 只留最近 64 条
+        if (history.size() > 128) history.pop_back();                   // 只留最近 128 条
     }
 
     void PollGame() {
@@ -4231,7 +4231,8 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
             im->curWemWeapon = -1;
             im->lastWemMedia = -1;   // ★ 必须和 curWemMedia 一致：设成 -2 会让"有变化"
                                      //   永远成立 → 每 100ms 推一次 live，界面被反复重建
-            im->hadLive = true;
+            im->hadLive = false;     // ★ 反过来：强制下一次轮询推一次 live，
+                                     //   否则清空后若状态没变，前端一直收不到更新（像"捕获不到"）
             JVal d = JVal::obj();
             d.set("cleared", JVal(true));
             d.set("history", im->HistoryJson());
