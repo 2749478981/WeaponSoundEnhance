@@ -1464,7 +1464,8 @@ struct Core::Impl {
         if (prefs.weaponFilter < -2 || prefs.weaponFilter > 13) prefs.weaponFilter = -1;
         prefs.histExpanded = v.optBool("histExpanded", false);
         prefs.onlyActive = v.optBool("onlyActive", false);
-        prefs.wemView = v.optBool("wemView", false);
+        prefs.wemView = false;   // ★ 不持久化：每次启动都回到「派生捕获」视图
+                                 //   （以前记住 WEM 视图，导致用户以为派生捕获"不见了"）
         prefs.playerPath = v.optStr("playerPath");
     }
 
