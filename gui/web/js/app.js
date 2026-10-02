@@ -1674,7 +1674,13 @@ const ACTIONS = {
     // 必须让 core 一起清。
     try { await Backend.call('live.clear', {}); } catch (e) { toast('清空失败：' + e.message, 'err'); }
     ST.live.history = [];
+    // 顺手清掉"正在播放"的残留，否则清空后还挂着上一条
+    ST.live.wemMedia = -1;
+    ST.live.wemName = '';
+    ST.live.wemBank = '';
+    ST.live.wemSeqNum = 0;
     renderLive();
+    toast('已清空 wem 捕获记录（等游戏里新的 wem 事件）', 'ok');
   },
   'live.retry': () => { Backend.call('live.retry', {}).catch(() => {}); toast('已请求重新连接'); },
 

@@ -4218,7 +4218,9 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
             im->curWemName.clear();
             im->curWemBank.clear();
             im->curWemWeapon = -1;
-            im->lastWemMedia = -2;
+            im->lastWemMedia = -1;   // ★ 必须和 curWemMedia 一致：设成 -2 会让"有变化"
+                                     //   永远成立 → 每 100ms 推一次 live，界面被反复重建
+            im->hadLive = true;
             JVal d = JVal::obj();
             d.set("cleared", JVal(true));
             d.set("history", im->HistoryJson());
