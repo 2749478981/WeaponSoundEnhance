@@ -270,6 +270,10 @@ bool LoadConfig(const std::string& path, Config& cfg) {
         else if (key == "UpdateProxy") cfg.global.updateProxy = val;
                 else if (key == "ChatCommands") cfg.global.chatCommands = std::atoi(val.c_str());
                 else if (key == "Hotkeys") cfg.global.hotkeysEnabled = std::atoi(val.c_str());
+                else if (key == "WeaponEnabled") cfg.global.weaponEnabled = val;
+                else if (key == "WemOnlyInQuest") cfg.global.wemOnlyInQuest = std::atoi(val.c_str());
+                else if (key == "WemMapWhite") cfg.global.wemMapWhite = val;
+                else if (key == "WemMapBlack") cfg.global.wemMapBlack = val;
             } else if (section == "Hotkeys") {
                 if (key == "ModifierKey") cfg.hotkeys.modifierKey = std::atoi(val.c_str());
                 else if (key == "ReloadKey") cfg.hotkeys.reloadKey = std::atoi(val.c_str());
@@ -514,7 +518,12 @@ bool SaveConfig(const std::string& path, const Config& cfg) {
     if (cfg.global.updateCheck != 1) o += "UpdateCheck=" + std::to_string(cfg.global.updateCheck) + "\r\n";
     if (!cfg.global.updateProxy.empty()) o += "UpdateProxy=" + cfg.global.updateProxy + "\r\n";
     o += "ChatCommands=" + std::to_string(cfg.global.chatCommands) + "\r\n";
-    o += "Hotkeys=" + std::to_string(cfg.global.hotkeysEnabled) + "\r\n\r\n";
+    o += "Hotkeys=" + std::to_string(cfg.global.hotkeysEnabled) + "\r\n";
+    // 武器触发开关 / wem 场景过滤（一定要随保存输出，否则一保存就丢）
+    if (!cfg.global.weaponEnabled.empty()) o += "WeaponEnabled=" + cfg.global.weaponEnabled + "\r\n";
+    if (cfg.global.wemOnlyInQuest != 0)     o += "WemOnlyInQuest=" + std::to_string(cfg.global.wemOnlyInQuest) + "\r\n";
+    if (!cfg.global.wemMapWhite.empty())    o += "WemMapWhite=" + cfg.global.wemMapWhite + "\r\n";
+    if (!cfg.global.wemMapBlack.empty())    o += "WemMapBlack=" + cfg.global.wemMapBlack + "\r\n\r\n";
 
     o += "[Hotkeys]\r\n";
     o += "ModifierKey=" + std::to_string(cfg.hotkeys.modifierKey) + "\r\n";

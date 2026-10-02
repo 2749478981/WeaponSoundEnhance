@@ -82,6 +82,11 @@ struct GlobalSettings {
     std::string updateProxy;    // 走代理查更新时填，如 http://127.0.0.1:7897
     int chatCommands = 1;
     int hotkeysEnabled = 1;     // 启用热键（插件侧 Hotkeys=1）
+    // ---- 武器触发开关 / wem 场景过滤（★ 放这里才会被 SaveConfig 保留）----
+    std::string weaponEnabled;  // "0,1,0,..." 14 位（武器 0..13）
+    int     wemOnlyInQuest = 0; // 仅任务中触发 wem
+    std::string wemMapWhite;    // 地图 id 白名单（逗号分隔；空 = 不限）
+    std::string wemMapBlack;    // 地图 id 黑名单
 };
 
 struct Hotkeys {
