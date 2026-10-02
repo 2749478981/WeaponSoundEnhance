@@ -1256,6 +1256,10 @@ struct Core::Impl {
     std::string wemLogPath;                                        // plugins\SonarAudio.log
     std::string wemMapPath;                                        // plugins\SonarAudio.mediaids.txt
     std::string wemSeqPath;                                        // exeDir\WseMediaSeqs.txt（media_id→bank,序号 真值表）
+    // 用户自定义 wem 名字库（不随包覆盖）：plugins\WeaponSoundEnhance\WseWemNames_user.txt
+    //   格式：media_id <TAB> 名字；优先级高于随包的官方映射
+    std::string wemUserNamePath;
+    std::unordered_map<int, std::string> wemUserNames;
     std::unordered_map<int, std::string> wemNames;                 // media id -> 可读名(UTF-8)
     std::unordered_map<int, std::pair<std::string, int>> wemSeqs;  // media id -> (bank, 序号=该bank DIDX第几个)
     // 循环音检测（行为判定）：4 秒内同一 media 出现 >= 4 次 → 判为循环音并静默 8 秒
@@ -1344,6 +1348,9 @@ struct Core::Impl {
         InitWemWatch();     // 定位 SonarAudio.log / mediaids.txt / 序号真值表
         LoadWemMap();
         LoadWemSeqs();
+        // 用户自定义名字库（优先级高于官方映射）
+        wemUserNamePath = BaseDir() + "WseWemNames_user.txt";
+        LoadWemUserNames();
     }
 
     ~Impl() { game.Detach(); }
@@ -1515,6 +1522,46 @@ struct Core::Impl {
             wemLogPath = cand[0] + "WeaponSoundEnhance_wem.log";
             wemMapPath = cand[0] + "SonarAudio.mediaids.txt";
         }
+    }
+
+    // 用户自定义 wem 名字库：读入并覆盖官方映射（用户优先）
+    void LoadWemUserNames() {
+        wemUserNames.clear();
+        if (wemUserNamePath.empty()) return;
+        std::ifstream f(wemUserNamePath, std::ios::binary);
+        if (!f) return;
+        std::string line;
+        while (std::getline(f, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.empty() || line[0] == '#') continue;
+            const std::size_t t = line.find('\t');
+            if (t == std::string::npos) continue;
+            const int id = std::atoi(line.substr(0, t).c_str());
+            const std::string nm = Trim(line.substr(t + 1));
+            if (id > 0 && !nm.empty()) {
+                wemUserNames[id] = nm;
+                wemNames[id] = nm;          // ★ 用户库优先于官方映射
+            }
+        }
+        if (!wemUserNames.empty()) hasWemNames = true;
+    }
+
+    bool SaveWemUserNames(std::string& err) {
+        if (wemUserNamePath.empty()) { err = "用户名字库路径未知"; return false; }
+        std::string out = "# Sonar 用户自定义 wem 名字库（media_id <TAB> 名字）\r\n";
+        out += "# 由 GUI 维护；导入 nbnk / 重启 GUI 时自动读取。删掉本文件即恢复官方名字。\r\n";
+        std::vector<std::pair<int, std::string> > v(wemUserNames.begin(), wemUserNames.end());
+        std::sort(v.begin(), v.end());
+        for (std::size_t i = 0; i < v.size(); ++i)
+            out += std::to_string(v[i].first) + "\t" + v[i].second + "\r\n";
+        if (!FsWrite(wemUserNamePath, out)) { err = "无法写入用户名字库"; return false; }
+        return true;
+    }
+
+    // 删除/修改后重建映射：官方库 + 用户库
+    void ReloadWemNames() {
+        LoadWemMap();
+        LoadWemUserNames();
     }
 
     void LoadWemMap() {
@@ -4009,6 +4056,51 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
             d.set("history", im->HistoryJson());
             return OkJson(d);
         }
+        // ---- 用户自定义 wem 名字（保存到 WseWemNames_user.txt，下次自动读取）----
+        if (method == "wem.name.get") {
+            const long long media = p.find("media") ? p.find("media")->asInt(0) : 0;
+            JVal d = JVal::obj();
+            d.set("media", JVal(media));
+            const std::unordered_map<int, std::string>::const_iterator it = im->wemNames.find((int)media);
+            d.set("name", JVal(it != im->wemNames.end() ? it->second : std::string()));
+            d.set("custom", JVal(im->wemUserNames.find((int)media) != im->wemUserNames.end()));
+            return OkJson(d);
+        }
+
+        if (method == "wem.name.set") {
+            const long long media = p.find("media") ? p.find("media")->asInt(0) : 0;
+            const std::string name = Trim(p.optStr("name"));
+            if (media <= 0) return ErrJson("缺少 media");
+            if (name.empty()) im->wemUserNames.erase((int)media);   // 空 = 删除自定义名
+            else               im->wemUserNames[(int)media] = name;
+            std::string err;
+            if (!im->SaveWemUserNames(err)) return ErrJson(err);
+            im->ReloadWemNames();                                   // 重建（删掉后回退到官方名）
+            JVal d = JVal::obj();
+            const std::unordered_map<int, std::string>::const_iterator it = im->wemNames.find((int)media);
+            d.set("name", JVal(it != im->wemNames.end() ? it->second : std::string()));
+            d.set("custom", JVal(im->wemUserNames.find((int)media) != im->wemUserNames.end()));
+            d.set("file", JVal(ToSlash(im->wemUserNamePath)));
+            d.set("count", JVal((int)im->wemUserNames.size()));
+            return OkJson(d);
+        }
+
+        if (method == "wem.name.list") {
+            JVal arr = JVal::arr();
+            std::vector<std::pair<int, std::string> > v(im->wemUserNames.begin(), im->wemUserNames.end());
+            std::sort(v.begin(), v.end());
+            for (std::size_t i = 0; i < v.size(); ++i) {
+                JVal o = JVal::obj();
+                o.set("media", JVal(v[i].first));
+                o.set("name", JVal(v[i].second));
+                arr.push(o);
+            }
+            JVal d = JVal::obj();
+            d.set("items", arr);
+            d.set("file", JVal(ToSlash(im->wemUserNamePath)));
+            return OkJson(d);
+        }
+
         // ---- nbnk 导出的输出目录 ----
         if (method == "bank.outDir") {
             std::string dir = im->cfg.global.bankOutDir;

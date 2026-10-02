@@ -872,7 +872,7 @@ function renderBank() {
     const rep = BANK.reps[m.id] || '';
     tb.appendChild(h('tr', {},
       h('td', { class: 'lmt' }, String(m.seqInBank || m.seq)),
-      h('td', {}, h('span', { class: 'nm', title: m.name || '', text: m.name || '（无映射名）' })),
+      h('td', {}, h('span', { class: 'nm', title: m.name || '', text: m.name || '（无名字）' })),
       h('td', { class: 'fsm', style: 'color:var(--c-blue)' }, String(m.id)),
       h('td', { class: 'lmt' }, String(m.size)),
       h('td', { title: rep, style: 'max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' },
@@ -895,6 +895,7 @@ function renderBank() {
             if (!r.played) toast('替换音播放失败', 'err');
           } catch (e) { toast('替换音播放失败：' + e.message, 'err'); }
         } }, '听替换音') : null,
+        h('button', { title: '给这条 wem 起个名字（保存进用户名字库，下次自动读取）', onclick: () => openNameDialog(m.id, m.name) }, '命名'),
         h('button', { onclick: async () => {
           const r = await Backend.call('audio.pickMulti', {});
           if (r.cancelled || !r.files || !r.files.length) return;
@@ -1583,6 +1584,40 @@ const ACTIONS = {
     ED.draft.conds.push({ expr: 'dmg>0', atEnd: false, pool: [] });
     fillConds();
   },
+};
+
+/* ---- 给 wem 命名（用户库：WseWemNames_user.txt，下次自动读取）---- */
+let nameDialogMedia = 0;
+async function openNameDialog(media, fallbackName) {
+  nameDialogMedia = media;
+  $('#nameMedia').textContent = String(media);
+  $('#nameCurrent').textContent = fallbackName || '（无）';
+  $('#nameInput').value = '';
+  openModal('#mName');
+  try {
+    const r = await Backend.call('wem.name.get', { media });
+    $('#nameCurrent').textContent = r.name || '（无）';
+    $('#nameInput').value = r.custom ? r.name : '';
+    $('#nameLibPath').textContent = 'WseWemNames_user.txt（plugins\\WeaponSoundEnhance\\）';
+  } catch (e) { /* 读不到就按空处理 */ }
+  setTimeout(() => { const el = $('#nameInput'); if (el) el.focus(); }, 50);
+}
+ACTIONS['name.save'] = async () => {
+  try {
+    const r = await Backend.call('wem.name.set', { media: nameDialogMedia, name: $('#nameInput').value.trim() });
+    if (r.name) toast('已命名为：' + r.name, 'ok');
+    else toast('已删除自定义名（回退官方名字）', 'ok');
+    closeModals();
+    renderBank();
+  } catch (e) { toast('保存失败：' + e.message, 'err'); }
+};
+ACTIONS['name.clear'] = async () => {
+  try {
+    await Backend.call('wem.name.set', { media: nameDialogMedia, name: '' });
+    toast('已删除自定义名（回退官方名字）', 'ok');
+    closeModals();
+    renderBank();
+  } catch (e) { toast('删除失败：' + e.message, 'err'); }
 };
 
 /* ---- 音效替换（nbnk Mod）：必须在 const ACTIONS 之后注册，否则 TDZ 报错 ---- */

@@ -307,6 +307,24 @@
   </div>
 </div>
 
+<!-- ================= 给 wem 命名（用户库） ================= -->
+<div class="modal" id="mName">
+  <div class="mbox narrow box">
+    <div class="mhead"><span class="t">给这个 wem 命名</span><button data-act="m.close">关闭</button></div>
+    <div class="mbody">
+      <div class="bankline"><span class="lbl">media id</span><b id="nameMedia">-</b></div>
+      <div class="bankline"><span class="lbl">当前名字</span><span id="nameCurrent" class="dim">（无）</span></div>
+      <div class="bankline"><span class="lbl">新名字</span><input id="nameInput" class="mini-in grow" placeholder="例如：装瓶 / 拔瓶 / 弓平射"></div>
+      <p class="note">名字会保存到 <code id="nameLibPath">WseWemNames_user.txt</code>，下次打开 GUI、或重新导入 nbnk 时自动读取。
+        留空并保存 = 删除自定义名（回退官方名字）。</p>
+      <div class="btnrow right">
+        <button data-act="name.clear">删除自定义名</button>
+        <button class="primary" data-act="name.save">保存名字</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ================= 共享 ID 库 ================= -->
 <div class="modal" id="mIds">
   <div class="mbox box">
