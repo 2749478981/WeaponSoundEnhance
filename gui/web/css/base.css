@@ -550,3 +550,8 @@ body.bankpage-on .opts{display:none}
 body.bankpage-on .app{gap:9px}
 .bankpage .paths{font-size:11px; line-height:1.55}
 .banktable{min-height:58vh}
+/* 重载按钮：绿色，和「保存(蓝)」「启动(橙)」区分开 */
+button.reload{background:var(--c-green); color:#08301f; border-color:var(--c-green); font-weight:800}
+button.reload:hover{filter:brightness(1.08)}
+button.reload:active{transform:scale(.98)}
+[data-theme="pro-dark"] button.reload{color:#04231a}

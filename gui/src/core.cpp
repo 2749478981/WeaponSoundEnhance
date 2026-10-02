@@ -3142,6 +3142,49 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
             return OkJson(d);
         }
 
+        // 把一个组合的条目整体复制到另一个组合（可跨武器；replace=true 先清空目标）
+        if (method == "combo.copyEntries") {
+            const int fw = p.optInt("fromWeapon", -1);
+            const int tw = p.optInt("toWeapon", -1);
+            const std::string fc = p.optStr("fromCombo");
+            const std::string tc = p.optStr("toCombo");
+            const bool replace = p.optBool("replace", false);
+            if (fw < 0 || fw > 13 || tw < 0 || tw > 13) return ErrJson("武器越界");
+            if (fw == tw && fc == tc) return ErrJson("源组合和目标组合是同一个");
+            std::vector<SoundEntry> src;
+            for (std::size_t i = 0; i < im->cfg.entries.size(); ++i)
+                if (im->cfg.entries[i].weaponType == fw && im->cfg.entries[i].combo == fc)
+                    src.push_back(im->cfg.entries[i]);
+            if (src.empty()) return ErrJson("源组合里没有条目可复制");
+            if (replace) {
+                std::vector<SoundEntry> keep;
+                for (std::size_t i = 0; i < im->cfg.entries.size(); ++i)
+                    if (!(im->cfg.entries[i].weaponType == tw && im->cfg.entries[i].combo == tc))
+                        keep.push_back(im->cfg.entries[i]);
+                im->cfg.entries.swap(keep);
+            }
+            for (std::size_t i = 0; i < src.size(); ++i) {
+                SoundEntry c = src[i];
+                c.weaponType = tw;
+                c.combo = tc;
+                im->cfg.entries.push_back(c);
+            }
+            if (!tc.empty()) {   // 目标组合登记，避免"按条目推导"漏掉
+                std::vector<std::string>& lst = im->cfg.comboList[tw];
+                bool inList = false;
+                for (std::size_t i = 0; i < lst.size(); ++i) if (lst[i] == tc) { inList = true; break; }
+                if (!inList) lst.push_back(tc);
+            }
+            im->dirty = true;
+            im->SetStatus("已复制 " + std::to_string(src.size()) + " 条条目到目标组合");
+            if (im->cfg.loaded && !im->cfg.path.empty())
+                (void)SaveConfig(im->cfg.path, im->cfg);
+            JVal d = JVal::obj();
+            d.set("copied", JVal((int)src.size()));
+            d.set("status", JVal(im->status));
+            return OkJson(d);
+        }
+
         if (method == "combo.rename") {
             const int w = p.optInt("weapon", -1);
             const std::string from = p.optStr("from");

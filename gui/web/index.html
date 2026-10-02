@@ -33,7 +33,7 @@
     <button class="primary" data-act="cfg.save" title="写回 ini（Ctrl+S）">保存</button>
     <button data-act="cfg.saveAs">另存为</button>
     <span class="sep"></span>
-    <button data-act="game.reload" title="让游戏内插件立刻重载配置（等价 /wse reload）">重载游戏配置</button>
+    <button class="reload" data-act="game.reload" title="让游戏内插件立刻重载配置（等价 /wse reload）">重载游戏配置</button>
     <span class="sep"></span>
     <button data-act="win.fsm">FSM 查询</button>
     <button data-act="win.ids">上传ID</button>
@@ -43,7 +43,7 @@
     <button data-act="combo.export">导出组合</button>
     <button data-act="combo.import">导入组合</button>
     <button data-act="sound.openDir">打开 sounds\</button>
-        <button data-act="win.bank" title="把游戏音效换成你自己的（实验性）：导入 nbnk → 替换 → 导出">音效替换</button>
+        <button data-act="win.bank" title="制作 nbnk：导入 → 替换音效 → 导出">nbnk制作</button>
     <span class="sep"></span>
     <button data-act="game.stop" title="停掉游戏内正在播放的音效（等价 /wse stop）">停止音效</button>
     <button class="amber" data-act="game.launch">怪物猎人，启动！</button>
@@ -74,6 +74,7 @@
           <button data-act="combo.del">删除</button>
           <button data-act="combo.up" title="上移">↑</button>
           <button data-act="combo.down" title="下移">↓</button>
+          <button data-act="combo.copyTo" title="把这个组合的条目复制到另一个组合（可跨武器）">复制到…</button>
         </div>
         <div class="combo-new">
           <input type="text" id="comboNewName" placeholder="新组合名（复制当前组合的条目）">
@@ -150,16 +151,16 @@
     </aside>
   </main>
 
-  <!-- ============ 音效替换（正式页面，不是弹窗） ============ -->
+  <!-- ============ nbnk 制作（正式页面） ============ -->
   <main id="mainBank" hidden>
     <div class="banktop">
       <button class="backbtn" data-act="bank.return" title="返回条目列表（也可以按 Esc）">← 返回条目列表</button>
-      <span class="banktitle">音效替换（nbnk Mod）</span>
+      <span class="banktitle">nbnk 制作</span>
       <span class="dim">导入 nbnk → 选音频替换 → 导出 → 放进 nativePC\sound\wwise\Windows\</span>
     </div>
 
     <aside class="rail box">
-      <div class="phead">操作</div>
+      <div class="phead">nbnk 操作</div>
       <div class="rail-scroll">
         <div class="navlist">
           <button class="nav on" data-act="bank.pick">导入 nbnk…</button>
@@ -171,7 +172,7 @@
     </aside>
 
     <section class="center box">
-      <div class="phead">音效替换（nbnk Mod）</div>
+      <div class="phead">nbnk 制作</div>
       <div class="bankpage">
         <details class="bankhelp">
           <summary>说明 / 转换环境 <span id="bankEnvBrief" class="dim"></span></summary>
@@ -348,6 +349,22 @@
         <button data-act="name.clear">删除自定义名</button>
         <button class="primary" data-act="name.save">保存名字</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 复制组合条目 ================= -->
+<div class="modal" id="mCopyCombo">
+  <div class="mbox narrow box">
+    <div class="mhead"><span class="t">复制组合条目</span><button data-act="m.close">关闭</button></div>
+    <div class="mbody">
+      <div class="bankline"><span class="lbl">来源</span><span id="copyFrom" class="dim"></span></div>
+      <div class="bankline"><span class="lbl">目标武器</span><select id="copyWeapon"></select></div>
+      <div class="bankline"><span class="lbl">目标组合</span><select id="copyCombo"></select></div>
+      <div class="bankline"><label class="inline"><input type="checkbox" id="copyReplace">
+        先清空目标组合里现有的条目</label></div>
+      <p class="note">复制的是条目（触发条件 + 音效），目标组合原本的条目默认保留、追加在后面。</p>
+      <div class="btnrow right"><button class="primary" data-act="combo.copyDo">开始复制</button></div>
     </div>
   </div>
 </div>

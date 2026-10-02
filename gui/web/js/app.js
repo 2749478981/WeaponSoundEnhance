@@ -313,6 +313,19 @@ function renderThemePicker() {
 /* ===========================================================================
    左栏：武器 + 组合
    =========================================================================== */
+// 复制组合对话框：目标武器变化时重填组合下拉
+async function fillCopyCombos() {
+  const sel = $('#copyCombo');
+  if (!sel) return;
+  const tw = parseInt($('#copyWeapon').value, 10);
+  sel.innerHTML = '';
+  sel.appendChild(h('option', { value: '', text: '默认' }));
+  try {
+    const r = await Backend.call('combo.list', { weapon: tw });
+    (r.combos || []).forEach(c => { if (c) sel.appendChild(h('option', { value: c, text: c })); });
+  } catch (e) { /* 忽略：至少能选默认 */ }
+}
+
 function renderWeapons() {
   const box = $('#weaponList');
   box.innerHTML = '';
@@ -1525,6 +1538,36 @@ const ACTIONS = {
     await loadCombos(); renderComboPanel(); await refresh();
     setOnlyActive(true);   // 新组合是空的，默认只看它（不显示别的组合的"未激活"条目）
     toast('已新增空白组合：' + name + '（记得保存）', 'ok');
+  },
+  'combo.copyTo': async () => {
+    const w = ST.weaponFilter;
+    if (w < 0) { toast('先在左栏选一把武器，再复制组合', 'err'); return; }
+    const from = ST.active[w] || '';
+    ST.copySrc = { w, from };
+    $('#copyFrom').textContent = weaponName(w) + ' · ' + (from || '默认');
+    const ws = $('#copyWeapon');
+    ws.innerHTML = '';
+    (ST.weapons || []).forEach(x => ws.appendChild(h('option', { value: String(x.id), text: x.name })));
+    ws.value = String(w);
+    ws.onchange = () => fillCopyCombos();
+    $('#copyReplace').checked = false;
+    openModal('#mCopyCombo');
+    await fillCopyCombos();
+  },
+  'combo.copyDo': async () => {
+    const src = ST.copySrc || {};
+    if (src.w == null) { toast('先选来源组合', 'err'); return; }
+    const tw = parseInt($('#copyWeapon').value, 10);
+    const tc = $('#copyCombo').value || '';
+    try {
+      const r = await Backend.call('combo.copyEntries', {
+        fromWeapon: src.w, fromCombo: src.from, toWeapon: tw, toCombo: tc,
+        replace: $('#copyReplace').checked,
+      });
+      closeModals();
+      await refresh();
+      toast(`已复制 ${r.copied} 条条目到「${weaponName(tw)} · ${tc || '默认'}」`, 'ok');
+    } catch (e) { toast('复制失败：' + e.message, 'err'); }
   },
   'combo.rename': async () => {
     const w = ST.weaponFilter, from = ST.active[w] || '';
