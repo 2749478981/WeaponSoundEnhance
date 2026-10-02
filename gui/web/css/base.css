@@ -468,3 +468,25 @@ body.modal-open .deco{display:none}
 ::-webkit-scrollbar-thumb{background:var(--line-2); border-radius:99px; border:3px solid transparent; background-clip:content-box}
 ::-webkit-scrollbar-thumb:hover{background:var(--muted); background-clip:content-box}
 ::-webkit-scrollbar-track{background:transparent}
+
+/* ===========================================================================
+   正式化排版（窗口按工作区 92% 打开后，给足呼吸感与信息层级）
+   =========================================================================== */
+.app{padding:16px; gap:12px}
+.brand{padding:13px 20px}
+.toolbar{padding:12px 16px; gap:8px}
+.phead{padding:12px 14px 8px}
+.phead.small{padding:11px 14px 7px; font-size:10.5px; letter-spacing:.5px}
+.status{padding:10px 20px}
+table th{padding:9px 10px; letter-spacing:.3px}
+table td{padding:8px 10px}
+#entryTable th, #entryTable td{padding:9px 12px}
+.modal .mbox{box-shadow:0 24px 60px rgba(0,0,0,.28)}
+.mhead{padding:16px 20px}
+.mbody{padding:18px 20px}
+.mhead .t{font-size:15.5px; letter-spacing:.3px}
+.sect{margin:20px 0 11px}
+.rail-scroll{padding:0 10px 10px}
+.capture, .center, .rail{padding:0}
+/* 表格滚动区给一点内边距，避免内容贴边 */
+.tablewrap{padding:0 2px}

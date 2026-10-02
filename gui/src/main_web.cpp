@@ -599,10 +599,21 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     wc.lpszClassName = L"SonarConfigGUI";
     ::RegisterClassExW(&wc);
 
-    RECT wr = { 0, 0, 1400, 900 };
+    // 默认窗口：桌面工作区的 92%，居中打开（旧版固定 1400x900，在 2K/4K 屏上偏小）
+    RECT wa = { 0, 0, 1920, 1080 };
+    ::SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+    const int aw = wa.right - wa.left, ah = wa.bottom - wa.top;
+    int ww = (aw * 92) / 100, wh = (ah * 92) / 100;
+    if (ww < 1440) ww = (aw < 1440 ? aw : 1440);
+    if (wh < 900)  wh = (ah < 900 ? ah : 900);
+    if (ww > aw) ww = aw;
+    if (wh > ah) wh = ah;
+    const int wx = wa.left + (aw - ww) / 2, wy = wa.top + (ah - wh) / 2;
+
+    RECT wr = { 0, 0, ww, wh };
     ::AdjustWindowRect(&wr, WS_OVERLAPPEDWINDOW, FALSE);
     HWND hwnd = ::CreateWindowExW(0, wc.lpszClassName, L"Sonar 配置工具",
-                                  WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
+                                  WS_OVERLAPPEDWINDOW, wx, wy,
                                   wr.right - wr.left, wr.bottom - wr.top,
                                   nullptr, nullptr, inst, nullptr);
     if (!hwnd) {
