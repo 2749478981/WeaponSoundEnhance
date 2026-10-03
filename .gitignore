@@ -55,3 +55,8 @@ tmp_webgui/
 docs/gui-main.imgu.png
 gui/web/_shots/
 ref/RingingBloom/
+
+# 参考工具的 ffmpeg 二进制（500MB，不入库；要用时自己下载放到该目录）
+tools/sound2wem/ffmpeg/
+tools/sound2wem/ffmpeg_unzip/
+tools/sound2wem/*.zip
