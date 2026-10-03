@@ -218,6 +218,11 @@ const Capture = (() => {
 
     // ---- WEM 列表 ----
     if (S.view === 'wem') {
+      // 实验性说明：WEM 捕获是"抓游戏内正在播的 wem 再同步播放"，不是官方接口，
+      // 受场景切换/循环音/同事件多次请求影响，不保证与实际发声完全一致。
+      host.appendChild(el('div', { class: 'note exp', text:
+        '⚠ 实验性：这里通过捕获游戏内的 wem 调用情况来同步播放音效。' +
+        '可能受场景切换、循环音、以及同一事件被多次请求的影响，不保证与实际发声完全一致。' }));
       // ★ 实时行也要遵守过滤：否则列表被过滤了、顶上却还显示别的武器/bank 的 wem，
       //   看起来像"过滤没生效"
       const liveWemRow = { wemMedia: L.wemMedia, bank: L.wemBank, weapon: L.wemWeapon };
