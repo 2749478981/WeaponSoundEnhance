@@ -4739,9 +4739,18 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
         if (method == "bank.outDir") {
             std::string dir = im->cfg.global.bankOutDir;
             if (dir.empty()) dir = im->BaseDir() + "wemmod";
+            // 游戏读取 nbnk 的目录：用来判断"当前输出目录是不是已经指向游戏目录"，
+            // 界面上把"设为游戏目录"按钮显示成"已是游戏目录"并禁用
+            std::string gameDir;
+            {
+                std::string g;
+                if (FindGameDirFromSelf(g)) gameDir = g + "nativePC\\sound\\wwise\\Windows";
+            }
             JVal d = JVal::obj();
             d.set("dir", JVal(ToSlash(dir)));
             d.set("custom", JVal(!im->cfg.global.bankOutDir.empty()));
+            d.set("gameDir", JVal(ToSlash(gameDir)));
+            d.set("isGameDir", JVal(!gameDir.empty() && ToSlash(dir) == ToSlash(gameDir)));
             return OkJson(d);
         }
 

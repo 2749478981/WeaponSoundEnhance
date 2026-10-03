@@ -1722,6 +1722,16 @@ async function loadBankOutDir() {
     const r = await Backend.call('bank.outDir', {});
     const el = $('#bankOutDir');
     if (el) el.value = r.dir || '';
+    // 已经是游戏目录时，把「设为游戏目录」显示成「已是游戏目录」并禁用 ——
+    // 这个按钮只是改目录，不导出；文案必须让人一眼看懂，免得以为点了就导出。
+    const btn = $('#bankGameDirBtn');
+    if (btn) {
+      btn.disabled = !!r.isGameDir;
+      btn.textContent = r.isGameDir ? '已是游戏目录' : '设为游戏目录';
+      btn.title = r.isGameDir
+        ? '当前输出目录就是游戏读取 nbnk 的位置；要生成文件请点「转换并导出」'
+        : '只是把上面的「输出目录」改成游戏读取 nbnk 的位置（不会立刻导出，导出要点「转换并导出」）';
+    }
   } catch {}
 }
 ACTIONS['bank.pickOutDir'] = async () => {
@@ -1756,7 +1766,8 @@ ACTIONS['bank.outDirToGame'] = async () => {
     const r = await Backend.call('bank.outDirToGame', {});
     const el = $('#bankOutDir');
     if (el) el.value = r.dir || '';
-    toast('导出目录已设为游戏目录，导出后按提示重载即可生效', 'ok');
+    toast('输出目录已设为游戏目录（还没导出：点「转换并导出」才会生成 nbnk）', 'ok');
+  loadBankOutDir();
   } catch (e) { toast('设置失败：' + e.message, 'err'); }
 };
 
