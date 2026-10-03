@@ -614,3 +614,49 @@ button.reload:active{transform:scale(.98)}
 .capHost .hrec .capacts{gap:4px}
 /* 派生行也收一点，避免长名称把按钮挤出去 */
 .capHost .hrec .n{min-width:0}
+/* ===========================================================================
+   彩蛋②：耄耋哈气（点击左上角猫猫的小概率触发）
+   与平时"喵"的反馈区分开：徽标抖动 + 红色光环 + 情绪气泡
+   =========================================================================== */
+.logo-badge{position:relative}
+.logo-badge.hiss{animation:hissShake .85s ease-in-out}
+.logo-badge.hiss::after{
+  content:''; position:absolute; inset:-5px; border-radius:50%; pointer-events:none;
+  animation:hissRing .9s ease-out;
+}
+@keyframes hissShake{
+  0%{transform:none}
+  12%{transform:translateX(-3px) rotate(-7deg) scale(1.08)}
+  26%{transform:translateX(3px) rotate(7deg) scale(1.10)}
+  40%{transform:translateX(-3px) rotate(-6deg) scale(1.07)}
+  55%{transform:translateX(3px) rotate(6deg) scale(1.09)}
+  72%{transform:translateX(-2px) rotate(-3deg) scale(1.04)}
+  100%{transform:none}
+}
+@keyframes hissRing{
+  0%{box-shadow:0 0 0 0 rgba(229,72,77,.55)}
+  100%{box-shadow:0 0 0 18px rgba(229,72,77,0)}
+}
+.hiss-bubble{
+  position:absolute; left:calc(100% + 12px); top:50%;
+  transform:translateY(-50%) scale(.5); transform-origin:left center;
+  opacity:0; pointer-events:none; z-index:60; white-space:nowrap;
+  background:var(--panel); color:var(--text);
+  border:calc(var(--bw) + .5px) solid var(--c-red, #e5484d);
+  border-radius:12px; padding:4px 10px; font-size:12.5px; font-weight:700;
+  box-shadow:0 6px 18px rgba(0,0,0,.18);
+  animation:hissPop 1.15s ease-out forwards;
+}
+.hiss-bubble::before{
+  content:''; position:absolute; left:-6px; top:50%; width:10px; height:10px;
+  transform:translateY(-50%) rotate(45deg); background:var(--panel);
+  border-left:calc(var(--bw) + .5px) solid var(--c-red, #e5484d);
+  border-bottom:calc(var(--bw) + .5px) solid var(--c-red, #e5484d);
+}
+@keyframes hissPop{
+  0%{opacity:0; transform:translateY(-50%) scale(.4)}
+  18%{opacity:1; transform:translateY(-50%) scale(1.08)}
+  30%{transform:translateY(-50%) scale(1)}
+  78%{opacity:1; transform:translateY(-50%) scale(1)}
+  100%{opacity:0; transform:translateY(-50%) translateX(8px) scale(1)}
+}

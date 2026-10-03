@@ -113,6 +113,26 @@ const EGG_EVERY = 10;        // 之后每 10 次再弹下一个
 let eggNextAt = EGG_FIRST_AT;
 let eggIndex = 0;
 
+// 彩蛋②：耄耋哈气 —— 正常点击 10 次之后，之后每次点击有 5% 概率哈气
+//（哈气时猫猫会抖一下 + 冒情绪气泡，和平时"喵"的反馈明显不同）
+const EGG_HISS_AFTER = 10;
+const EGG_HISS_CHANCE = 0.05;
+
+// 哈气：播 hiss.wav（内嵌资源），给徽标加抖动动画，并在旁边弹一个情绪气泡
+function hissEgg() {
+  Backend.call('ui.playAsset', { name: 'hiss.wav' }).catch(() => {});
+  const badge = $('.logo-badge');
+  if (!badge) return;
+  badge.classList.remove('hiss');
+  void badge.offsetWidth;          // 强制重排，让动画能连续触发
+  badge.classList.add('hiss');
+  const old = badge.querySelector('.hiss-bubble');
+  if (old) old.remove();
+  const bubble = h('div', { class: 'hiss-bubble', text: '😾 哈——！' });
+  badge.appendChild(bubble);
+  setTimeout(() => { badge.classList.remove('hiss'); bubble.remove(); }, 1250);
+}
+
 // 成就专属 toast：两行（第一行成就名、第二行描述；带链接的描述可点击跳转）
 function eggToast(a) {
   // 成就弹出音效（coinmul.wav：内嵌在 exe 里，解压到 %LOCALAPPDATA% 后播放）
@@ -142,6 +162,8 @@ function bindLogoEgg() {
     // 点猫猫叫一声（内嵌的 meow.wav，解压后播放；连点会先停掉上一条再播）
     Backend.call('ui.playAsset', { name: 'meow.wav' }).catch(() => {});
     eggClicks++;
+    // 耄耋哈气：正常点击 10 次之后，每次 5% 概率（与成就提示互不影响）
+    if (eggClicks > EGG_HISS_AFTER && Math.random() < EGG_HISS_CHANCE) hissEgg();
     if (!eggReady || eggClicks < eggNextAt) return;
     eggReady = false;
     const a = EGG_ACHIEVEMENTS[eggIndex % EGG_ACHIEVEMENTS.length];
