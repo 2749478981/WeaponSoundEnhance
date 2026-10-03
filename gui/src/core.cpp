@@ -1302,6 +1302,7 @@ struct Core::Impl {
     std::atomic<int> updProgress{-1};    // -1 = 未知总长
     std::atomic<bool> updInstalling{false};
     std::atomic<bool> updNeedRestart{false};
+    std::atomic<bool> updSameVer{false};   // 同版本号但仓库资产更新（热修复包）
     std::atomic<bool> updIniPending{false};
     std::atomic<bool> updStarted{false};
     std::mutex updMx;
@@ -1590,6 +1591,36 @@ struct Core::Impl {
     // ---- 内嵌资源（武器图标 / logo / 成就音效）解压到 %LOCALAPPDATA%\Sonar\assets ----
     //      资源以 zip 形式编进 exe（RCDATA #200），界面通过 https://sonar.assets 访问，
     //      所以游戏目录里不再出现 weapons_icons\ / sonar_icon.png / coinmul.wav。
+    // ---- 更新检查辅助：时间比较（版本号没变也能发现热修复包）----
+    // "2026-10-03T18:32:52Z" → Unix 秒（UTC）；解析失败返回 0
+    static unsigned long long ParseIsoUtc(const std::string& s) {
+        int y = 0, mo = 0, d = 0, h = 0, mi = 0, se = 0;
+        if (sscanf_s(s.c_str(), "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &h, &mi, &se) != 6) return 0;
+        if (y < 2000 || mo < 1 || mo > 12 || d < 1 || d > 31) return 0;
+        SYSTEMTIME st{};
+        st.wYear = (WORD)y; st.wMonth = (WORD)mo; st.wDay = (WORD)d;
+        st.wHour = (WORD)h; st.wMinute = (WORD)mi; st.wSecond = (WORD)se;
+        FILETIME ft{};
+        if (!::SystemTimeToFileTime(&st, &ft)) return 0;
+        ULARGE_INTEGER u; u.LowPart = ft.dwLowDateTime; u.HighPart = ft.dwHighDateTime;
+        return u.QuadPart / 10000000ULL - 11644473600ULL;   // FILETIME → Unix 秒
+    }
+    // 本地 exe（配置工具自身）的写入时间 → Unix 秒（UTC）
+    static unsigned long long ExeWriteTimeUtc() {
+        wchar_t p[MAX_PATH * 2] = {};
+        if (!::GetModuleFileNameW(nullptr, p, MAX_PATH * 2)) return 0;
+        HANDLE h = ::CreateFileW(p, GENERIC_READ,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                 nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h == INVALID_HANDLE_VALUE) return 0;
+        FILETIME ft{};
+        const BOOL ok = ::GetFileTime(h, nullptr, nullptr, &ft);
+        ::CloseHandle(h);
+        if (!ok) return 0;
+        ULARGE_INTEGER u; u.LowPart = ft.dwLowDateTime; u.HighPart = ft.dwHighDateTime;
+        return u.QuadPart / 10000000ULL - 11644473600ULL;
+    }
+
     static std::string EnvDirFallback() {
         char tmp[MAX_PATH] = {};
         ::GetTempPathA(MAX_PATH, tmp);
@@ -2494,6 +2525,7 @@ struct Core::Impl {
         d.set("busy", JVal(updState.load() == 1));
         d.set("installing", JVal(updInstalling.load()));
         d.set("needRestart", JVal(updNeedRestart.load()));
+        d.set("sameVer", JVal(updSameVer.load()));   // 版本号相同但仓库资产更新（热修复包）
         d.set("version", JVal(std::string(kWseGuiVersion)));
         std::lock_guard<std::mutex> lk(const_cast<std::mutex&>(updMx));
         d.set("tag", JVal(updTag));
@@ -4343,8 +4375,16 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
                         imp->updMsg.clear();
                     }
                     const int cmp = wseupd::CompareVer(r.tag, cur);
-                    imp->updProgress.store(-1);
-                    imp->updState.store(cmp > 0 ? 3 : 2);
+                    // ★ 版本号相同也可能有热修复包：比较"仓库资产上传时间"与
+                    //   "本地 exe 构建时间"（留 60 秒容差，避免时钟误差误报）。
+                    bool sameVerNewer = false;
+                    if (cmp == 0 && !r.assetUpdated.empty()) {
+                        const unsigned long long remote = Impl::ParseIsoUtc(r.assetUpdated);
+                        const unsigned long long local = Impl::ExeWriteTimeUtc();
+                        if (remote > 0 && local > 0 && remote > local + 60) sameVerNewer = true;
+                    }
+                    imp->updSameVer.store(sameVerNewer);
+                    imp->updState.store((cmp > 0 || sameVerNewer) ? 3 : 2);
                 }).detach();
             }
             (void)userInitiated;

@@ -21,6 +21,10 @@ struct Latest {
     std::string zipUrl;          // 组合包下载直链
     std::string notes;           // 更新说明（release body 的前若干行）
     std::string err;             // 失败原因（ok=false 时）
+    // ★ 资产上传时间（ISO8601 UTC）：版本号没变但重新上传了修复包时，
+    //   靠它和"本地 exe 的构建时间"比较，用户才不会漏掉热修复。
+    std::string assetUpdated;
+    std::string publishedAt;     // release 发布时间（兜底）
 };
 
 // ---------- 小工具 ----------
@@ -264,6 +268,18 @@ inline Latest FetchLatest(const std::string& proxyUtf8, std::size_t notesMaxChar
     std::string notes = JsonStr(body, "body");
     if (notes.size() > notesMaxChars) notes.resize(notesMaxChars);
     r.notes = notes;
+
+    // 资产上传时间：资产对象里 updated_at 在 browser_download_url **之前**，
+    // 所以从 zip 链接的位置往前找最近的一个 updated_at。
+    if (!r.zipUrl.empty()) {
+        const std::size_t zp = body.find(r.zipUrl);
+        if (zp != std::string::npos) {
+            const std::size_t up = body.rfind("\"updated_at\"", zp);
+            if (up != std::string::npos) r.assetUpdated = JsonStr(body.substr(up), "updated_at");
+        }
+    }
+    if (r.assetUpdated.empty()) r.assetUpdated = JsonStr(body, "updated_at");
+    r.publishedAt = JsonStr(body, "published_at");
     r.ok = true;
     return r;
 }

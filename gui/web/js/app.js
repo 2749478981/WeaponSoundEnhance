@@ -1413,7 +1413,8 @@ async function setHotkey(key, code) {
 function refreshUpdate() {
   const u = ST.upd;
   $('#updCur').textContent = 'v' + (ST.version || '—');
-  $('#updNew').textContent = u.tag || '—';
+  // 同版本号但仓库资产更新（热修复包）：明确告诉用户"为什么要更新"
+  $('#updNew').textContent = (u.tag || '—') + (u.sameVer ? '（同版本号，仓库有更新的修复包）' : '');
   $('#updNotes').innerHTML = notesToHtml(u.notes || '');
   $('#updMsg').textContent = u.err ? ('出错：' + u.err) : (u.msg || '');
   const bar = $('#updBar');
