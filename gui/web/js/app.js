@@ -117,12 +117,17 @@ let eggIndex = 0;
 //（哈气时猫猫会抖一下 + 冒情绪气泡，和平时"喵"的反馈明显不同）
 const EGG_HISS_AFTER = 10;
 const EGG_HISS_CHANCE = 0.05;
+const EGG_HISS_MS = 1250;      // 哈气持续时长 = 冷却时长：这段时间内点击无效
+let eggHissing = false;
 
-// 哈气：播 hiss.wav（内嵌资源），给徽标加抖动动画，并在旁边弹一个情绪气泡
+// 哈气：播 hiss.wav（内嵌资源），给徽标加抖动动画，并在旁边弹一个情绪气泡。
+// 哈气期间进入冷却：点击一律忽略（等动画/气泡结束），避免连点把哈气刷掉。
 function hissEgg() {
+  if (eggHissing) return;
+  eggHissing = true;
   Backend.call('ui.playAsset', { name: 'hiss.wav' }).catch(() => {});
   const badge = $('.logo-badge');
-  if (!badge) return;
+  if (!badge) { eggHissing = false; return; }
   badge.classList.remove('hiss');
   void badge.offsetWidth;          // 强制重排，让动画能连续触发
   badge.classList.add('hiss');
@@ -130,7 +135,11 @@ function hissEgg() {
   if (old) old.remove();
   const bubble = h('div', { class: 'hiss-bubble', text: '😾 哈——！' });
   badge.appendChild(bubble);
-  setTimeout(() => { badge.classList.remove('hiss'); bubble.remove(); }, 1250);
+  setTimeout(() => {
+    badge.classList.remove('hiss');
+    bubble.remove();
+    eggHissing = false;            // 冷却结束，恢复可点击
+  }, EGG_HISS_MS);
 }
 
 // 成就专属 toast：两行（第一行成就名、第二行描述；带链接的描述可点击跳转）
@@ -159,6 +168,8 @@ function bindLogoEgg() {
   const logo = $('#logoImg');
   if (!logo) return;
   logo.addEventListener('click', () => {
+    // 哈气冷却期间点击无效（等哈气动画与气泡结束）
+    if (eggHissing) return;
     // 点猫猫叫一声（内嵌的 meow.wav，解压后播放；连点会先停掉上一条再播）
     Backend.call('ui.playAsset', { name: 'meow.wav' }).catch(() => {});
     eggClicks++;

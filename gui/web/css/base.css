@@ -660,3 +660,5 @@ button.reload:active{transform:scale(.98)}
   78%{opacity:1; transform:translateY(-50%) scale(1)}
   100%{opacity:0; transform:translateY(-50%) translateX(8px) scale(1)}
 }
+/* 哈气冷却期间不接受点击，鼠标给一个禁止提示 */
+.logo-badge.hiss{cursor:not-allowed}
