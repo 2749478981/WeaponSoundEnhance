@@ -1764,7 +1764,7 @@ struct Core::Impl {
         if (!v.find("bank")) v.set("bank", JVal(head));
     }
 
-    // bank（nbnk 名）→ 武器类型。数字前缀 wp00..wp11 直接取值；
+    // bank（nbnk 名）→ 武器类型。数字前缀 wp00..wp13 直接取值（11=轻弩 12=重弩 13=弓箭）；
     // 命名 bank 用对照表（源自 D:\下载\音效源文件（含笔记） 的目录结构）。
     int WemWeapon(const std::string& bank) const {
         if (bank.size() < 4 || ((bank[0] != 'w') && (bank[0] != 'W')) ||
@@ -1777,8 +1777,8 @@ struct Core::Impl {
         std::string low = bank;
         for (auto& c : low) if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
         static const struct { const char* pre; int w; } tab[] = {
-            { "wp_hbg_", 12 }, { "wp_lbg_", 13 }, { "wp_bowgun", 12 },
-            { "wp_bow_", 11 }, { "wp_two_", 0 },  { "wp_one_", 1 },
+            { "wp_hbg_", 12 }, { "wp_lbg_", 11 }, { "wp_bowgun", 12 },
+            { "wp_bow_", 13 }, { "wp_two_", 0 },  { "wp_one_", 1 },
             { "wp_sou_", 2 },  { "wp_swo_", 3 },  { "wp_ham_", 4 },
             { "wp_hue_", 5 },  { "wp_lan_", 6 },  { "wp_gun_", 7 },
             { "wp_saxe_", 8 }, { "wp_caxe_", 9 }, { "wp_rod_", 10 },

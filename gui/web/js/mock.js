@@ -63,9 +63,9 @@
     { id: 8,  name: '斩斧' },
     { id: 9,  name: '盾斧' },
     { id: 10, name: '虫棍' },
-    { id: 11, name: '弓' },
-    { id: 12, name: '轻弩' },
-    { id: 13, name: '重弩' },
+    { id: 11, name: '轻弩' },
+    { id: 12, name: '重弩' },
+    { id: 13, name: '弓箭' },
   ];
 
   const THEMES = [

@@ -2010,7 +2010,7 @@ void App::DrawEditorDetached() {
 
     static const char* wItems[] = {
         "任意 (-1)", "0 大剑", "1 片手", "2 双刀", "3 太刀", "4 大锤", "5 笛子",
-        "6 长枪", "7 铳枪", "8 斩斧", "9 盾斧", "10 虫棍", "11 弓箭", "12 轻弩", "13 重弩"
+        "6 长枪", "7 铳枪", "8 斩斧", "9 盾斧", "10 虫棍", "11 轻弩", "12 重弩", "13 弓箭"
     };
     int wi = editor.weaponType + 1;
     if (wi < 0) wi = 0;
@@ -2470,7 +2470,7 @@ void App::DrawFsmWindow() {
     ImGui::SameLine();
     static const char* wItems[] = {
         "全部", "0 大剑", "1 片手", "2 双刀", "3 太刀", "4 大锤", "5 笛子",
-        "6 长枪", "7 铳枪", "8 斩斧", "9 盾斧", "10 虫棍", "11 弓箭", "12 轻弩", "13 重弩"
+        "6 长枪", "7 铳枪", "8 斩斧", "9 盾斧", "10 虫棍", "11 轻弩", "12 重弩", "13 弓箭"
     };
     int wi = fsmWeaponFilter + 1;
     ImGui::SetNextItemWidth(120 * dpiScale);

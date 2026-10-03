@@ -140,7 +140,7 @@ std::string CsvName(std::string name) {
 void WriteCsvHeader(std::ostream& out) {
     out << "# Sonar 动作 ID 库（基础库）\n";
     out << "# schema: weapon,fsm,lmt,name  —— 结构固定不变；解析时会忽略多余列、容忍缺列\n";
-    out << "# weapon 0..13: 大剑/片手/双刀/太刀/大锤/笛子/长枪/铳枪/斩斧/盾斧/虫棍/弓箭/轻弩/重弩；-1=通用\n";
+    out << "# weapon 0..13: 大剑/片手/双刀/太刀/大锤/笛子/长枪/铳枪/斩斧/盾斧/虫棍/轻弩/重弩/弓箭；-1=通用\n";
     out << "# fsm 或 lmt 未知时写 -1；name 不要包含英文逗号\n";
     out << "#\n";
     out << "# 本文件 = 随包/下载的“基础库”，可被「获取最新库」整体更新（只追加行，不改结构）。\n";

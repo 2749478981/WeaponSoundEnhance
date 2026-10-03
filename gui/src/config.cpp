@@ -115,9 +115,9 @@ const char* WeaponName(int t) {
         case 8:  return "斩斧";
         case 9:  return "盾斧";
         case 10: return "虫棍";
-        case 11: return "弓箭";
-        case 12: return "轻弩";
-        case 13: return "重弩";
+        case 11: return "轻弩";
+        case 12: return "重弩";
+        case 13: return "弓箭";
         default: return "任意";
     }
 }
@@ -482,7 +482,7 @@ bool SaveConfig(const std::string& path, const Config& cfg) {
     o += ";\r\n";
     o += ";  武器类型表（与原版武器序号一致）：\r\n";
     o += ";    0=大剑  1=片手  2=双刀  3=太刀  4=大锤  5=笛子\r\n";
-    o += ";    6=长枪  7=铳枪  8=斩斧  9=盾斧 10=虫棍 11=弓箭 12=轻弩 13=重弩\r\n";
+    o += ";    6=长枪  7=铳枪  8=斩斧  9=盾斧 10=虫棍 11=轻弩 12=重弩 13=弓箭\r\n";
     o += ";  每条 [AttackN] 代表一种派生攻击：\r\n";
     o += ";    WeaponType  ：武器类型（0..13）。-1 = 任意武器。\r\n";
     o += ";    ActionLMT/LMT：动作 LMT。不限 = 空 / -1 / any / * / 不限（该 FSMId 的所有动作都触发）；\r\n";
