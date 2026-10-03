@@ -1215,8 +1215,8 @@ int WemWeaponFromBank(const std::string& bank)
     std::string low = bank;
     for (auto& c : low) if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
     static const struct { const char* pre; int w; } tab[] = {
-        { "wp_hbg_", 12 }, { "wp_lbg_", 11 }, { "wp_bowgun", 12 },
-        { "wp_bow_", 13 }, { "wp_two_", 0 },  { "wp_one_", 1 },
+        { "wp_hbg_", 12 }, { "wp_lbg_", 13 }, { "wp_bowgun", 12 },
+        { "wp_bow_", 11 }, { "wp_two_", 0 },  { "wp_one_", 1 },
         { "wp_sou_", 2 },  { "wp_swo_", 3 },  { "wp_ham_", 4 },
         { "wp_hue_", 5 },  { "wp_lan_", 6 },  { "wp_gun_", 7 },
         { "wp_saxe_", 8 }, { "wp_caxe_", 9 }, { "wp_rod_", 10 },

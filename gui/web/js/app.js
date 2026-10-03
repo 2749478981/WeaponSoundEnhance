@@ -277,9 +277,9 @@ const ICON_FILES = {
   8:  'switch-axe1.png',
   9:  'charge-blade1.png',
   10: 'insect-glaive1.png',
-  11: 'light-bowgun1.png',
+  11: 'bow1.png',
   12: 'heavy-bowgun1.png',
-  13: 'bow1.png',
+  13: 'light-bowgun1.png',
 };
 const wIconUrl = id => (ICON_FILES[id] ? ST.iconBase + ICON_FILES[id] : null);
 
