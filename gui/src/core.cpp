@@ -4376,12 +4376,12 @@ std::string Core::Handle(const std::string& method, const std::string& paramsJso
                     }
                     const int cmp = wseupd::CompareVer(r.tag, cur);
                     // ★ 版本号相同也可能有热修复包：比较"仓库资产上传时间"与
-                    //   "本地 exe 构建时间"（留 60 秒容差，避免时钟误差误报）。
+                    //   "本地 exe 构建时间"（留 10 分钟容差：既容忍时钟误差，也避免"刚装完就提示更新"）。
                     bool sameVerNewer = false;
                     if (cmp == 0 && !r.assetUpdated.empty()) {
                         const unsigned long long remote = Impl::ParseIsoUtc(r.assetUpdated);
                         const unsigned long long local = Impl::ExeWriteTimeUtc();
-                        if (remote > 0 && local > 0 && remote > local + 60) sameVerNewer = true;
+                        if (remote > 0 && local > 0 && remote > local + 600) sameVerNewer = true;   // 10 分钟容差
                     }
                     imp->updSameVer.store(sameVerNewer);
                     imp->updState.store((cmp > 0 || sameVerNewer) ? 3 : 2);
