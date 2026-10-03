@@ -22,7 +22,7 @@ const Capture = (() => {
     expanded: false,
     lastDerRev: -1,
     lastWemRev: -1,
-    playingMedia: 0,
+    playingKey: '',   // 只高亮"被点的那一行"（media+时间），避免同 media 多行一起亮
   };
 
   function live() { const a = API(); return (a && a.ST && a.ST.live) || {}; }
@@ -70,8 +70,10 @@ const Capture = (() => {
     if (!r || !r.wemMedia) return;
     try {
       const res = await call('wem.play', { media: r.wemMedia, bank: r.bank || '' });
-      S.playingMedia = r.wemMedia;
-      toast(`播放 media ${r.wemMedia}（来自 ${res.bank || 'nbnk'}）`, 'ok');
+      S.playingKey = r.wemMedia + '@' + (r.time || '');
+      // 播完明确告诉用户"播的是哪条、来自哪个 bank" —— 便于判断有没有播错
+      const who = r.dispName || r.name || ('media ' + r.wemMedia);
+      toast(`播放：${who}　·　${res.bank || 'nbnk'}（media ${r.wemMedia}）`, 'ok');
       render();
     } catch (e) {
       toast('播放失败：' + (e.message || e), 'err');
@@ -113,8 +115,8 @@ const Capture = (() => {
 
   function wemRow(r, page) {
     const a = API();
-    const nm = a.wemDisplayName(r);
-    const playing = S.playingMedia === r.wemMedia;
+    const nm = r.dispName || a.wemDisplayName(r);
+    const playing = S.playingKey === (r.wemMedia + '@' + (r.time || ''));
     const meta = `media ${r.wemMedia}` + (r.bank ? ' · ' + r.bank : '') +
       (r.seqNum ? ` · 第${r.seqNum}个` : '');
     // ★ 两行显示：第一行时间+名称，第二行 media 信息 + 按钮。
@@ -179,7 +181,10 @@ const Capture = (() => {
 
     // ---- 派生列表 ----
     if (S.view === 'derived') {
-      if (L.inScene && L.fsm >= 0) {
+      // 派生实时行同样遵守武器过滤（避免"列表过滤了、顶上还显示"的错觉）
+      const liveDerVisible = (L.inScene && L.fsm >= 0) &&
+        (!weaponFilterOn() || L.weapon === (API() && API().ST ? API().ST.weaponFilter : -1));
+      if (liveDerVisible) {
         host.appendChild(row({ class: 'live-row', title: '当前动作 → 点击加入条目',
                                onclick: () => a.captureToEntry(L) },
           el('b', { text: (L.added ? '✔ ' : '') + (L.name || ('fsm ' + L.fsm)) }),
@@ -213,9 +218,17 @@ const Capture = (() => {
 
     // ---- WEM 列表 ----
     if (S.view === 'wem') {
-      if (L.wemMedia > 0) {
-        const nm = a.wemDisplayName({ wemMedia: L.wemMedia, name: L.wemName, note: L.wemNote,
-                                      custom: L.wemNameCustom, bank: L.wemBank, seqNum: L.wemSeqNum });
+      // ★ 实时行也要遵守过滤：否则列表被过滤了、顶上却还显示别的武器/bank 的 wem，
+      //   看起来像"过滤没生效"
+      const liveWemRow = { wemMedia: L.wemMedia, bank: L.wemBank, weapon: L.wemWeapon };
+      const liveWemVisible = L.wemMedia > 0 && filterList([liveWemRow]).length > 0;
+      if (L.wemMedia > 0 && !liveWemVisible) {
+        host.appendChild(el('div', { class: 'note dim',
+          text: '（当前正在播放的 wem 不在过滤范围内，已隐藏）' }));
+      }
+      if (liveWemVisible) {
+        const nm = L.wemDispName || a.wemDisplayName({ wemMedia: L.wemMedia, name: L.wemName, note: L.wemNote,
+                                                       custom: L.wemNameCustom, bank: L.wemBank, seqNum: L.wemSeqNum });
         host.appendChild(row({ class: 'live-row wem', title: '游戏正在播放的 wem' },
           el('b', { text: nm }),
           el('span', { class: 'dim', text: 'media ' + L.wemMedia + (L.wemBank ? ' · ' + L.wemBank : '') }),

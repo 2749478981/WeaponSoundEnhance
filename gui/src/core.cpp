@@ -2215,6 +2215,29 @@ struct Core::Impl {
         return true;
     }
 
+    // 统一的 wem 显示名：用户命名 > 官方注释名 > bank·第N个 > 日志里的名字 > media N。
+    // 列表行和"正在播放"行都必须走这里，否则同一条 media 在两处显示不同名字
+    // （用户会以为"播放的和我点的不一样"）。
+    std::string WemDispName(int media, const std::string& logName, const std::string& bankIn) const {
+        const std::unordered_map<int, std::string>::const_iterator uit = wemUserNames.find(media);
+        if (uit != wemUserNames.end() && !uit->second.empty()) return uit->second;
+        const std::unordered_map<int, std::string>::const_iterator nit = wemNotes.find(media);
+        if (nit != wemNotes.end() && !nit->second.empty()) return nit->second;
+        std::string bank = bankIn;
+        int seq = 0;
+        const std::unordered_map<int, std::pair<std::string, int>>::const_iterator sit = wemSeqs.find(media);
+        if (sit != wemSeqs.end()) {
+            if (bank.empty()) bank = sit->second.first;
+            seq = sit->second.second;
+        } else {
+            std::string b; int n = 0;
+            if (ParseSeqFromName(logName, b, n)) { if (bank.empty()) bank = b; seq = n; }
+        }
+        if (!bank.empty()) return seq > 0 ? (bank + " · 第" + std::to_string(seq) + "个") : bank;
+        if (!logName.empty()) return logName;
+        return "media " + std::to_string(media);
+    }
+
     // 派生捕获列表（独立）
     JVal DerJson() const {
         JVal a = JVal::arr();
@@ -2245,6 +2268,7 @@ struct Core::Impl {
             h.set("wemMedia", JVal(e.wemMedia));
             h.set("bank", JVal(e.bank));
             h.set("name", JVal(e.wemName));
+            h.set("dispName", JVal(WemDispName((int)e.wemMedia, e.wemName, e.bank)));
             h.set("custom", JVal(wemUserNames.find(e.wemMedia) != wemUserNames.end()));
             {
                 const std::unordered_map<int, std::string>::const_iterator nt = wemNotes.find(e.wemMedia);
@@ -2312,6 +2336,7 @@ struct Core::Impl {
         d.set("added", JVal(live.inScene && IsCapturedAdded(live.weapon, live.fsm, live.lmt)));
         d.set("wemMedia", JVal(curWemMedia));      // 最近一次 wem 播放（无则 -1）
         d.set("wemName", JVal(curWemName.empty() ? std::string() : curWemName));
+        d.set("wemDispName", JVal(curWemMedia > 0 ? WemDispName((int)curWemMedia, curWemName, curWemBank) : std::string()));
         d.set("wemBank", JVal(curWemBank.empty() ? std::string() : curWemBank));
         d.set("wemWeapon", JVal(curWemWeapon));
         d.set("der", DerJson());
